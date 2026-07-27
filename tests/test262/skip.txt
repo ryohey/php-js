@@ -1,0 +1,4 @@
+# Individual test skips: <path relative to test/> <reason>
+# A reason is mandatory for every entry (DESIGN.md §12).
+# (empty so far — populated as real runs surface known accepted deviations,
+# e.g. the non-`u` surrogate semantics of the PCRE translation, §8)
