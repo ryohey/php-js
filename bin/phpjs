@@ -1,0 +1,101 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+foreach ([__DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../../autoload.php'] as $autoload) {
+    if (file_exists($autoload)) {
+        require $autoload;
+        break;
+    }
+}
+
+use PhpJs\Compiler\CompileError;
+use PhpJs\Engine;
+use PhpJs\JSException;
+use PhpJs\Vm\Disassembler;
+
+function usage(): never
+{
+    fwrite(STDERR, <<<TXT
+Usage:
+  phpjs run <file.js>          Run a JS file
+  phpjs eval '<code>'          Evaluate a JS snippet and print the result
+  phpjs compile <file.js> [-o out.php]
+                               Compile to an opcache-friendly bytecode file
+  phpjs disasm <file.js>       Show the compiled bytecode
+TXT . "\n");
+    exit(2);
+}
+
+$argv0 = array_shift($argv);
+$cmd = $argv[0] ?? null;
+if ($cmd === null) {
+    usage();
+}
+
+try {
+    switch ($cmd) {
+        case 'run': {
+            $file = $argv[1] ?? usage();
+            $src = @file_get_contents($file);
+            if ($src === false) {
+                fwrite(STDERR, "phpjs: cannot read $file\n");
+                exit(1);
+            }
+            $engine = new Engine();
+            $engine->evaluate($src);
+            foreach ($engine->unhandledRejections() as $reason) {
+                fwrite(STDERR, 'Unhandled promise rejection: ' . $engine->stringify($reason) . "\n");
+            }
+            break;
+        }
+        case 'eval': {
+            $code = $argv[1] ?? usage();
+            $engine = new Engine();
+            $result = $engine->evaluate($code);
+            echo \PhpJs\Host\Display::stringify($engine->vm, $result, false), "\n";
+            break;
+        }
+        case 'compile': {
+            $file = $argv[1] ?? usage();
+            $out = null;
+            for ($i = 2; $i < count($argv); $i++) {
+                if ($argv[$i] === '-o') {
+                    $out = $argv[++$i] ?? usage();
+                }
+            }
+            $out ??= preg_replace('/\.js$/', '', $file) . '.phpjs.php';
+            $src = @file_get_contents($file);
+            if ($src === false) {
+                fwrite(STDERR, "phpjs: cannot read $file\n");
+                exit(1);
+            }
+            $tpl = (new Engine())->compile($src);
+            $php = "<?php\n\n// Compiled by php-js. Plain array so opcache keeps it in shared memory.\nreturn "
+                . var_export($tpl, true) . ";\n";
+            file_put_contents($out, $php);
+            echo "compiled: $out\n";
+            break;
+        }
+        case 'disasm': {
+            $file = $argv[1] ?? usage();
+            $src = @file_get_contents($file);
+            if ($src === false) {
+                fwrite(STDERR, "phpjs: cannot read $file\n");
+                exit(1);
+            }
+            $tpl = (new Engine())->compile($src);
+            echo Disassembler::disassemble($tpl);
+            break;
+        }
+        default:
+            usage();
+    }
+} catch (CompileError $e) {
+    fwrite(STDERR, 'phpjs: compile error: ' . $e->getMessage() . "\n");
+    exit(1);
+} catch (JSException $e) {
+    fwrite(STDERR, 'phpjs: ' . $e->getMessage() . "\n");
+    exit(1);
+}
