@@ -27,6 +27,7 @@ final class RegExpBuiltins
             'RegExp.prototype.test' => [self::class, 'test'],
             'RegExp.prototype.exec' => [self::class, 'exec'],
             'RegExp.prototype.toString' => [self::class, 'toStringMethod'],
+            'RegExp.prototype.flagGetter' => [self::class, 'flagGetter'],
         ];
     }
 
@@ -35,6 +36,34 @@ final class RegExpBuiltins
         $r->defineMethod($proto, 'test', 'RegExp.prototype.test', 1);
         $r->defineMethod($proto, 'exec', 'RegExp.prototype.exec', 1);
         $r->defineMethod($proto, 'toString', 'RegExp.prototype.toString', 0);
+        // ES2015 moved source/global/ignoreCase/multiline off the instance and
+        // onto the prototype as accessors; instances no longer own them.
+        foreach (self::FLAG_ACCESSORS as $name) {
+            $getter = $r->nativeFn('RegExp.prototype.flagGetter', 'get ' . $name, 0);
+            $proto->defineOwnAccessor($name, $getter, null, JSObject::C);
+        }
+    }
+
+    private const FLAG_ACCESSORS = ['source', 'global', 'ignoreCase', 'multiline'];
+
+    /** The shared getter behind RegExp.prototype.{source,global,ignoreCase,multiline}. */
+    public static function flagGetter(Vm $vm, mixed $t, array $args, ?JSNativeFunction $fn = null): mixed
+    {
+        $name = substr($fn?->name ?? 'get source', 4);
+        if (!$t instanceof JSRegExp) {
+            // RegExp.prototype itself answers with the spec's placeholders.
+            if ($t instanceof JSObject && $t === $vm->realm->recall('RegExp.prototype')) {
+                return $name === 'source' ? '(?:)' : JSUndefined::$undefined;
+            }
+            $vm->throwError('TypeError', "RegExp.prototype.$name getter called on incompatible receiver");
+        }
+        return match ($name) {
+            'source' => $t->jsSource,
+            'global' => $t->global,
+            'ignoreCase' => str_contains($t->jsFlags, 'i'),
+            'multiline' => str_contains($t->jsFlags, 'm'),
+            default => JSUndefined::$undefined,
+        };
     }
 
     public static function makeConstructor(Realm $r): JSNativeFunction
@@ -60,10 +89,6 @@ final class RegExpBuiltins
         $re->pcre = $pcre;
         $re->global = str_contains($flags, 'g');
         $re->sticky = str_contains($flags, 'y');
-        $re->defineOwnData('source', $re->jsSource, 0);
-        $re->defineOwnData('global', $re->global, 0);
-        $re->defineOwnData('ignoreCase', str_contains($flags, 'i'), 0);
-        $re->defineOwnData('multiline', str_contains($flags, 'm'), 0);
         $re->defineOwnData('lastIndex', 0, JSObject::W);
         return $re;
     }

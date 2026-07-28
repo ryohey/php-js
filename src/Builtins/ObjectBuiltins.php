@@ -82,6 +82,7 @@ final class ObjectBuiltins
         return self::call($vm, JSUndefined::$undefined, $args);
     }
 
+    /** For Object.defineProperty/defineProperties, which still demand an object. */
     private static function requireObject(Vm $vm, array $args, string $who): JSObject
     {
         $v = (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined);
@@ -91,21 +92,31 @@ final class ObjectBuiltins
         return $v;
     }
 
+    /**
+     * ES2015 changed the reflection statics to coerce their argument instead
+     * of rejecting primitives: Object.keys(1) is [], not a TypeError. Only
+     * null and undefined still throw.
+     */
+    private static function coerceObject(Vm $vm, array $args): JSObject
+    {
+        return Conversions::toObject($vm, \array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined);
+    }
+
     public static function keys(Vm $vm, mixed $t, array $args): mixed
     {
-        $o = self::requireObject($vm, $args, 'Object.keys');
+        $o = self::coerceObject($vm, $args);
         return $vm->realm->newArray($o->ownEnumerableKeys());
     }
 
     public static function getOwnPropertyNames(Vm $vm, mixed $t, array $args): mixed
     {
-        $o = self::requireObject($vm, $args, 'Object.getOwnPropertyNames');
+        $o = self::coerceObject($vm, $args);
         return $vm->realm->newArray($o->ownKeys());
     }
 
     public static function getPrototypeOf(Vm $vm, mixed $t, array $args): mixed
     {
-        $o = self::requireObject($vm, $args, 'Object.getPrototypeOf');
+        $o = self::coerceObject($vm, $args);
         return $o->proto ?? null;
     }
 
@@ -195,7 +206,7 @@ final class ObjectBuiltins
 
     public static function getOwnPropertyDescriptor(Vm $vm, mixed $t, array $args): mixed
     {
-        $o = self::requireObject($vm, $args, 'Object.getOwnPropertyDescriptor');
+        $o = self::coerceObject($vm, $args);
         $key = Conversions::toString($vm, (\array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined));
         $d = $o->ownDescriptor($key);
         if ($d === null) {

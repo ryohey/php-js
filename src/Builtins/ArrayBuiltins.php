@@ -161,6 +161,27 @@ final class ArrayBuiltins
 
     private const DENSE_SCAN_LIMIT = 65536;
 
+    /**
+     * ArraySpeciesCreate, minus @@species (an ES5 realm has no Symbols): the
+     * result is always a plain Array, but the constructor lookup and the
+     * uint32 length limit are still observable.
+     */
+    private static function speciesCreate(Vm $vm, JSObject $o, int $length): JSArray
+    {
+        if ($o instanceof JSArray) {
+            $ctor = $o->get('constructor', $vm);
+            if (!$ctor instanceof JSUndefined && !$ctor instanceof JSObject) {
+                $vm->throwError('TypeError', 'Array constructor is not an object');
+            }
+        }
+        if ($length > 4294967295) {
+            $vm->throwError('RangeError', 'Invalid array length');
+        }
+        $result = new JSArray($vm->realm->arrayPrototype());
+        $result->length = $length;
+        return $result;
+    }
+
     private static function getIdx(Vm $vm, JSObject $o, int $i, bool &$present): mixed
     {
         if ($o instanceof JSArray) {
@@ -342,7 +363,7 @@ final class ArrayBuiltins
         $len = self::lengthOf($vm, $o);
         $start = self::relIndex($vm, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined), $len, 0);
         $end = self::relIndex($vm, (\array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined), $len, $len);
-        $result = new JSArray($vm->realm->arrayPrototype());
+        $result = self::speciesCreate($vm, $o, max(0, $end - $start));
         $visit = self::visitList($o, $len);
         $count = $visit === null ? max(0, $end - $start) : count($visit);
         for ($j = 0; $j < $count; $j++) {
@@ -533,6 +554,9 @@ final class ArrayBuiltins
         $o = self::thisArray($vm, $t, 'indexOf');
         $len = self::lengthOf($vm, $o);
         $needle = (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined);
+        if ($len === 0) {
+            return -1; // the length check precedes ToInteger(fromIndex)
+        }
         $from = count($args) > 1 ? (int)Conversions::toInteger($vm, $args[1]) : 0;
         if ($from < 0) {
             $from = max(0, $len + $from);
@@ -558,6 +582,9 @@ final class ArrayBuiltins
         $o = self::thisArray($vm, $t, 'lastIndexOf');
         $len = self::lengthOf($vm, $o);
         $needle = (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined);
+        if ($len === 0) {
+            return -1; // the length check precedes ToInteger(fromIndex)
+        }
         $from = count($args) > 1 ? (int)Conversions::toInteger($vm, $args[1]) : $len - 1;
         if ($from < 0) {
             $from = $len + $from;
@@ -601,9 +628,11 @@ final class ArrayBuiltins
     public static function forEach(Vm $vm, mixed $t, array $args): mixed
     {
         $o = self::thisArray($vm, $t, 'forEach');
+        // LengthOfArrayLike precedes IsCallable(callbackfn), so a length
+        // getter runs even when the callback turns out to be invalid.
+        $len = self::lengthOf($vm, $o);
         $fn = self::callbackOf($vm, $args, 'forEach');
         $thisArg = (\array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined);
-        $len = self::lengthOf($vm, $o);
         $visit = self::visitList($o, $len);
         $count = $visit === null ? $len : count($visit);
         for ($j = 0; $j < $count; $j++) {
@@ -620,11 +649,12 @@ final class ArrayBuiltins
     public static function map(Vm $vm, mixed $t, array $args): mixed
     {
         $o = self::thisArray($vm, $t, 'map');
+        // LengthOfArrayLike precedes IsCallable(callbackfn), so a length
+        // getter runs even when the callback turns out to be invalid.
+        $len = self::lengthOf($vm, $o);
         $fn = self::callbackOf($vm, $args, 'map');
         $thisArg = (\array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined);
-        $len = self::lengthOf($vm, $o);
-        $result = new JSArray($vm->realm->arrayPrototype());
-        $result->length = $len;
+        $result = self::speciesCreate($vm, $o, $len);
         $visit = self::visitList($o, $len);
         $count = $visit === null ? $len : count($visit);
         for ($j = 0; $j < $count; $j++) {
@@ -641,10 +671,12 @@ final class ArrayBuiltins
     public static function filter(Vm $vm, mixed $t, array $args): mixed
     {
         $o = self::thisArray($vm, $t, 'filter');
+        // LengthOfArrayLike precedes IsCallable(callbackfn), so a length
+        // getter runs even when the callback turns out to be invalid.
+        $len = self::lengthOf($vm, $o);
         $fn = self::callbackOf($vm, $args, 'filter');
         $thisArg = (\array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined);
-        $len = self::lengthOf($vm, $o);
-        $result = new JSArray($vm->realm->arrayPrototype());
+        $result = self::speciesCreate($vm, $o, 0);
         $n = 0;
         $visit = self::visitList($o, $len);
         $count = $visit === null ? $len : count($visit);
@@ -673,8 +705,8 @@ final class ArrayBuiltins
     private static function reduceImpl(Vm $vm, mixed $t, array $args, bool $fromRight): mixed
     {
         $o = self::thisArray($vm, $t, $fromRight ? 'reduceRight' : 'reduce');
-        $fn = self::callbackOf($vm, $args, 'reduce');
         $len = self::lengthOf($vm, $o);
+        $fn = self::callbackOf($vm, $args, 'reduce');
         $visit = self::visitList($o, $len);
         if ($visit === null) {
             $visit = $len > 0 ? range(0, $len - 1) : [];
@@ -707,9 +739,11 @@ final class ArrayBuiltins
     public static function some(Vm $vm, mixed $t, array $args): mixed
     {
         $o = self::thisArray($vm, $t, 'some');
+        // LengthOfArrayLike precedes IsCallable(callbackfn), so a length
+        // getter runs even when the callback turns out to be invalid.
+        $len = self::lengthOf($vm, $o);
         $fn = self::callbackOf($vm, $args, 'some');
         $thisArg = (\array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined);
-        $len = self::lengthOf($vm, $o);
         $visit = self::visitList($o, $len);
         $count = $visit === null ? $len : count($visit);
         for ($j = 0; $j < $count; $j++) {
@@ -726,9 +760,11 @@ final class ArrayBuiltins
     public static function every(Vm $vm, mixed $t, array $args): mixed
     {
         $o = self::thisArray($vm, $t, 'every');
+        // LengthOfArrayLike precedes IsCallable(callbackfn), so a length
+        // getter runs even when the callback turns out to be invalid.
+        $len = self::lengthOf($vm, $o);
         $fn = self::callbackOf($vm, $args, 'every');
         $thisArg = (\array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined);
-        $len = self::lengthOf($vm, $o);
         $visit = self::visitList($o, $len);
         $count = $visit === null ? $len : count($visit);
         for ($j = 0; $j < $count; $j++) {
