@@ -64,6 +64,39 @@ final class TypeOps
         return $a === $b;
     }
 
+    /** 9.12 The SameValue Algorithm (distinguishes +0/-0, treats NaN as equal). */
+    public static function sameValue(mixed $a, mixed $b): bool
+    {
+        $aNum = is_int($a) || is_float($a);
+        if ($aNum) {
+            if (!is_int($b) && !is_float($b)) {
+                return false;
+            }
+            $aNan = is_float($a) && is_nan($a);
+            $bNan = is_float($b) && is_nan($b);
+            if ($aNan || $bNan) {
+                return $aNan && $bNan;
+            }
+            if ($a == 0 && $b == 0) {
+                return self::isNegativeZero($a) === self::isNegativeZero($b);
+            }
+            return $a == $b;
+        }
+        if (is_string($a)) {
+            return is_string($b) && $a === $b;
+        }
+        if (is_bool($a)) {
+            return is_bool($b) && $a === $b;
+        }
+        return $a === $b;
+    }
+
+    /** True for -0 only. fdiv() is required: PHP 8's `/` throws on zero divisors. */
+    public static function isNegativeZero(int|float $v): bool
+    {
+        return is_float($v) && $v == 0.0 && fdiv(1.0, $v) < 0;
+    }
+
     /** 11.9.3 Abstract Equality Comparison. */
     public static function looseEquals(Vm $vm, mixed $a, mixed $b): bool
     {

@@ -32,7 +32,8 @@ final class ErrorBuiltins
         $parentProto = $kind === 'Error' ? $r->objectPrototype() : $r->errorPrototype('Error');
         $proto = new JSObject($parentProto);
         $proto->nativeId = "$kind.prototype";
-        $proto->className = 'Error';
+        // Error.prototype is an ordinary object; only instances report
+        // [object Error] (ES5.1 said otherwise, ES6 corrected it).
         $proto->defineOwnData('name', $kind, JSObject::W | JSObject::C);
         $proto->defineOwnData('message', '', JSObject::W | JSObject::C);
         if ($kind === 'Error') {

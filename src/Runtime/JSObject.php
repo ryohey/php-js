@@ -165,9 +165,123 @@ class JSObject
 
     public function defineOwnAccessor(string $key, mixed $getter, mixed $setter, int $flags): void
     {
-        unset($this->props[$key]);
+        // A null placeholder keeps the key in $props so enumeration reports it
+        // in creation order alongside data properties. Every read consults
+        // $descs for the ACCESSOR bit first, and the VM's `?? null` fast paths
+        // fall through on null, so the placeholder is never observable.
+        $this->props[$key] = null;
         $this->descs ??= [];
         $this->descs[$key] = [$getter, $setter, $flags | self::ACCESSOR];
+    }
+
+    /**
+     * [[DefineOwnProperty]] (8.12.9). $desc carries only the fields the caller
+     * specified, keyed 'value' / 'get' / 'set' / 'writable' / 'enumerable' /
+     * 'configurable'; absent keys mean "not present" and are inherited from the
+     * existing property (or default to false/undefined when creating).
+     *
+     * Returns false when the definition is rejected; throws a TypeError first
+     * when $throw is set.
+     */
+    public function defineOwnProperty(string $key, array $desc, Vm $vm, bool $throw = true): bool
+    {
+        $hasAccessorField = array_key_exists('get', $desc) || array_key_exists('set', $desc);
+        $hasDataField = array_key_exists('value', $desc) || array_key_exists('writable', $desc);
+        $current = $this->ownDescriptor($key);
+
+        if ($current === null) {
+            if (!$this->extensible) {
+                return $this->rejectDefine($vm, $throw, "Cannot define property $key, object is not extensible");
+            }
+            $flags = 0;
+            if ($desc['enumerable'] ?? false) {
+                $flags |= self::E;
+            }
+            if ($desc['configurable'] ?? false) {
+                $flags |= self::C;
+            }
+            if ($hasAccessorField) {
+                $this->defineOwnAccessor($key, $desc['get'] ?? null, $desc['set'] ?? null, $flags);
+            } else {
+                if ($desc['writable'] ?? false) {
+                    $flags |= self::W;
+                }
+                $this->defineOwnData($key, $desc['value'] ?? JSUndefined::$undefined, $flags);
+            }
+            return true;
+        }
+
+        $curFlags = $current[2];
+        $curIsAccessor = (bool)($curFlags & self::ACCESSOR);
+        if (!($curFlags & self::C)) {
+            if (($desc['configurable'] ?? false) === true) {
+                return $this->rejectDefine($vm, $throw, "Cannot redefine property: $key");
+            }
+            if (array_key_exists('enumerable', $desc) && $desc['enumerable'] !== (bool)($curFlags & self::E)) {
+                return $this->rejectDefine($vm, $throw, "Cannot redefine property: $key");
+            }
+            if ($hasAccessorField !== $curIsAccessor && ($hasAccessorField || $hasDataField)) {
+                return $this->rejectDefine($vm, $throw, "Cannot redefine property: $key");
+            }
+            if ($curIsAccessor) {
+                if (array_key_exists('get', $desc) && ($desc['get'] ?? null) !== $current[0]) {
+                    return $this->rejectDefine($vm, $throw, "Cannot redefine property: $key");
+                }
+                if (array_key_exists('set', $desc) && ($desc['set'] ?? null) !== $current[1]) {
+                    return $this->rejectDefine($vm, $throw, "Cannot redefine property: $key");
+                }
+            } elseif (!($curFlags & self::W)) {
+                if (($desc['writable'] ?? false) === true) {
+                    return $this->rejectDefine($vm, $throw, "Cannot redefine property: $key");
+                }
+                if (array_key_exists('value', $desc) && !TypeOps::sameValue($desc['value'], $current[0])) {
+                    return $this->rejectDefine($vm, $throw, "Cannot redefine property: $key");
+                }
+            }
+        }
+
+        $flags = $curFlags & (self::E | self::C);
+        if (array_key_exists('enumerable', $desc)) {
+            $flags = $desc['enumerable'] ? ($flags | self::E) : ($flags & ~self::E);
+        }
+        if (array_key_exists('configurable', $desc)) {
+            $flags = $desc['configurable'] ? ($flags | self::C) : ($flags & ~self::C);
+        }
+
+        if ($hasAccessorField) {
+            $this->defineOwnAccessor(
+                $key,
+                array_key_exists('get', $desc) ? $desc['get'] : ($curIsAccessor ? $current[0] : null),
+                array_key_exists('set', $desc) ? $desc['set'] : ($curIsAccessor ? $current[1] : null),
+                $flags
+            );
+            return true;
+        }
+        if ($hasDataField || !$curIsAccessor) {
+            // Converting an accessor to data resets writable to its default.
+            if (!$curIsAccessor && ($curFlags & self::W)) {
+                $flags |= self::W;
+            }
+            if (array_key_exists('writable', $desc)) {
+                $flags = $desc['writable'] ? ($flags | self::W) : ($flags & ~self::W);
+            }
+            $value = array_key_exists('value', $desc)
+                ? $desc['value']
+                : ($curIsAccessor ? JSUndefined::$undefined : $current[0]);
+            $this->defineOwnData($key, $value, $flags);
+            return true;
+        }
+        // Generic descriptor over an accessor: only the attributes change.
+        $this->defineOwnAccessor($key, $current[0], $current[1], $flags);
+        return true;
+    }
+
+    protected function rejectDefine(Vm $vm, bool $throw, string $message): bool
+    {
+        if ($throw) {
+            $vm->throwError('TypeError', $message);
+        }
+        return false;
     }
 
     /** @return array{0: mixed, 1: mixed, 2: int}|null [getterOrValue, setter, flags] */
@@ -209,7 +323,34 @@ class JSObject
         return true;
     }
 
-    /** @return list<string> own enumerable keys, in insertion order */
+    /**
+     * [[OwnPropertyKeys]] ordering: array indices in ascending numeric order
+     * first, then the remaining string keys in creation order. PHP arrays
+     * preserve insertion order for both, so the indices need re-sorting.
+     *
+     * @param list<string> $keys
+     * @return list<string>
+     */
+    protected static function orderKeys(array $keys): array
+    {
+        $indices = [];
+        $strings = [];
+        foreach ($keys as $k) {
+            $idx = JSArray::asIndex($k);
+            if ($idx !== null) {
+                $indices[] = $idx;
+            } else {
+                $strings[] = $k;
+            }
+        }
+        if ($indices === []) {
+            return $strings;
+        }
+        sort($indices);
+        return array_merge(array_map('strval', $indices), $strings);
+    }
+
+    /** @return list<string> own enumerable keys in [[OwnPropertyKeys]] order */
     public function ownEnumerableKeys(): array
     {
         $this->ensureAllOwn();
@@ -218,7 +359,7 @@ class JSObject
             foreach ($this->props as $k => $_) {
                 $keys[] = (string)$k;
             }
-            return $keys;
+            return self::orderKeys($keys);
         }
         foreach ($this->props as $k => $_) {
             $d = $this->descs[$k] ?? null;
@@ -226,12 +367,7 @@ class JSObject
                 $keys[] = (string)$k;
             }
         }
-        foreach ($this->descs as $k => $d) {
-            if (($d[2] & self::ACCESSOR) && ($d[2] & self::E)) {
-                $keys[] = (string)$k;
-            }
-        }
-        return $keys;
+        return self::orderKeys($keys);
     }
 
     /** @return list<string> all own keys (including non-enumerable) */
@@ -242,13 +378,6 @@ class JSObject
         foreach ($this->props as $k => $_) {
             $keys[] = (string)$k;
         }
-        if ($this->descs !== null) {
-            foreach ($this->descs as $k => $d) {
-                if ($d[2] & self::ACCESSOR) {
-                    $keys[] = (string)$k;
-                }
-            }
-        }
-        return $keys;
+        return self::orderKeys($keys);
     }
 }

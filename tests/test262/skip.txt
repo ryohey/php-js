@@ -1,4 +1,143 @@
-# Individual test skips: <path relative to test/> <reason>
-# A reason is mandatory for every entry (DESIGN.md §12).
-# (empty so far — populated as real runs surface known accepted deviations,
-# e.g. the non-`u` surrogate semantics of the PCRE translation, §8)
+# Skips: "<path relative to test/> <reason>". A path ending in "/" skips the
+# whole subtree. A reason is mandatory for every entry (DESIGN.md §12).
+#
+# Most out-of-scope tests are filtered by feature tag (excluded-features.txt).
+# The entries below cover post-ES5.1 builtins that carry no feature tag, so
+# only their path identifies them.
+
+# --- ES2015+ Math methods (ES5.1 has none of these) ---
+built-ins/Math/acosh/ post-ES5 builtin
+built-ins/Math/asinh/ post-ES5 builtin
+built-ins/Math/atanh/ post-ES5 builtin
+built-ins/Math/cbrt/ post-ES5 builtin
+built-ins/Math/clz32/ post-ES5 builtin
+built-ins/Math/cosh/ post-ES5 builtin
+built-ins/Math/expm1/ post-ES5 builtin
+built-ins/Math/fround/ post-ES5 builtin
+built-ins/Math/hypot/ post-ES5 builtin
+built-ins/Math/imul/ post-ES5 builtin
+built-ins/Math/log10/ post-ES5 builtin
+built-ins/Math/log1p/ post-ES5 builtin
+built-ins/Math/log2/ post-ES5 builtin
+built-ins/Math/sign/ post-ES5 builtin
+built-ins/Math/sinh/ post-ES5 builtin
+built-ins/Math/tanh/ post-ES5 builtin
+built-ins/Math/trunc/ post-ES5 builtin
+built-ins/Math/f16round/ post-ES5 builtin
+built-ins/Math/sumPrecise/ post-ES5 builtin
+
+# --- ES2015+ Number statics/methods ---
+built-ins/Number/isInteger/ post-ES5 builtin
+built-ins/Number/isNaN/ post-ES5 builtin
+built-ins/Number/isFinite/ post-ES5 builtin
+built-ins/Number/isSafeInteger/ post-ES5 builtin
+built-ins/Number/parseFloat/ post-ES5 builtin
+built-ins/Number/parseInt/ post-ES5 builtin
+built-ins/Number/EPSILON/ post-ES5 builtin
+built-ins/Number/MAX_SAFE_INTEGER/ post-ES5 builtin
+built-ins/Number/MIN_SAFE_INTEGER/ post-ES5 builtin
+
+# --- ES2015+ Object statics ---
+built-ins/Object/assign/ post-ES5 builtin
+built-ins/Object/entries/ post-ES5 builtin
+built-ins/Object/values/ post-ES5 builtin
+built-ins/Object/fromEntries/ post-ES5 builtin
+built-ins/Object/is/ post-ES5 builtin
+built-ins/Object/hasOwn/ post-ES5 builtin
+built-ins/Object/groupBy/ post-ES5 builtin
+built-ins/Object/setPrototypeOf/ post-ES5 builtin
+built-ins/Object/getOwnPropertySymbols/ post-ES5 builtin
+built-ins/Object/prototype/__proto__/ Annex B accessor, out of scope
+built-ins/Object/prototype/__defineGetter__/ Annex B, out of scope
+built-ins/Object/prototype/__defineSetter__/ Annex B, out of scope
+built-ins/Object/prototype/__lookupGetter__/ Annex B, out of scope
+built-ins/Object/prototype/__lookupSetter__/ Annex B, out of scope
+
+# --- ES2015+ Array statics/methods ---
+built-ins/Array/from/ post-ES5 builtin
+built-ins/Array/of/ post-ES5 builtin
+built-ins/Array/prototype/at/ post-ES5 builtin
+built-ins/Array/prototype/copyWithin/ post-ES5 builtin
+built-ins/Array/prototype/entries/ post-ES5 builtin
+built-ins/Array/prototype/fill/ post-ES5 builtin
+built-ins/Array/prototype/find/ post-ES5 builtin
+built-ins/Array/prototype/findIndex/ post-ES5 builtin
+built-ins/Array/prototype/findLast/ post-ES5 builtin
+built-ins/Array/prototype/findLastIndex/ post-ES5 builtin
+built-ins/Array/prototype/flat/ post-ES5 builtin
+built-ins/Array/prototype/flatMap/ post-ES5 builtin
+built-ins/Array/prototype/includes/ post-ES5 builtin
+built-ins/Array/prototype/keys/ post-ES5 builtin
+built-ins/Array/prototype/values/ post-ES5 builtin
+built-ins/Array/prototype/toReversed/ post-ES5 builtin
+built-ins/Array/prototype/toSorted/ post-ES5 builtin
+built-ins/Array/prototype/toSpliced/ post-ES5 builtin
+built-ins/Array/prototype/with/ post-ES5 builtin
+
+# --- ES2015+ String methods ---
+built-ins/String/raw/ post-ES5 builtin
+built-ins/String/fromCodePoint/ post-ES5 builtin
+built-ins/String/prototype/at/ post-ES5 builtin
+built-ins/String/prototype/codePointAt/ post-ES5 builtin
+built-ins/String/prototype/endsWith/ post-ES5 builtin
+built-ins/String/prototype/includes/ post-ES5 builtin
+built-ins/String/prototype/isWellFormed/ post-ES5 builtin
+built-ins/String/prototype/matchAll/ post-ES5 builtin
+built-ins/String/prototype/normalize/ post-ES5 builtin
+built-ins/String/prototype/padEnd/ post-ES5 builtin
+built-ins/String/prototype/padStart/ post-ES5 builtin
+built-ins/String/prototype/repeat/ post-ES5 builtin
+built-ins/String/prototype/replaceAll/ post-ES5 builtin
+built-ins/String/prototype/startsWith/ post-ES5 builtin
+built-ins/String/prototype/toWellFormed/ post-ES5 builtin
+built-ins/String/prototype/trimStart/ post-ES5 builtin
+built-ins/String/prototype/trimEnd/ post-ES5 builtin
+built-ins/String/prototype/anchor/ Annex B string HTML method
+built-ins/String/prototype/big/ Annex B string HTML method
+built-ins/String/prototype/blink/ Annex B string HTML method
+built-ins/String/prototype/bold/ Annex B string HTML method
+built-ins/String/prototype/fixed/ Annex B string HTML method
+built-ins/String/prototype/fontcolor/ Annex B string HTML method
+built-ins/String/prototype/fontsize/ Annex B string HTML method
+built-ins/String/prototype/italics/ Annex B string HTML method
+built-ins/String/prototype/link/ Annex B string HTML method
+built-ins/String/prototype/small/ Annex B string HTML method
+built-ins/String/prototype/strike/ Annex B string HTML method
+built-ins/String/prototype/sub/ Annex B string HTML method
+built-ins/String/prototype/substr/ Annex B, partially implemented
+built-ins/String/prototype/sup/ Annex B string HTML method
+
+# --- ES2015+ Function/RegExp/Error surface ---
+built-ins/Function/prototype/Symbol.hasInstance/ post-ES5 builtin
+built-ins/RegExp/prototype/Symbol.match/ post-ES5 builtin
+built-ins/RegExp/prototype/Symbol.replace/ post-ES5 builtin
+built-ins/RegExp/prototype/Symbol.search/ post-ES5 builtin
+built-ins/RegExp/prototype/Symbol.split/ post-ES5 builtin
+built-ins/RegExp/prototype/flags/ post-ES5 builtin
+built-ins/RegExp/prototype/sticky/ post-ES5 accessor
+built-ins/RegExp/prototype/unicode/ post-ES5 accessor
+built-ins/RegExp/prototype/dotAll/ post-ES5 accessor
+built-ins/RegExp/prototype/hasIndices/ post-ES5 accessor
+built-ins/RegExp/prototype/unicodeSets/ post-ES5 accessor
+built-ins/RegExp/prototype/compile/ Annex B, out of scope
+built-ins/RegExp/escape/ post-ES5 builtin
+built-ins/Error/isError/ stage-3 proposal, out of scope
+built-ins/Error/prototype/stack/ error-stack-accessor proposal, out of scope
+built-ins/NativeErrors/AggregateError/ post-ES5 builtin
+
+# --- ES2015+ Date surface ---
+built-ins/Date/prototype/Symbol.toPrimitive/ post-ES5 builtin
+
+# --- Promise combinators beyond the ES2015 core ---
+built-ins/Promise/allSettled/ post-ES2015 builtin
+built-ins/Promise/any/ post-ES2015 builtin
+built-ins/Promise/try/ post-ES2015 builtin
+built-ins/Promise/withResolvers/ post-ES2015 builtin
+built-ins/Promise/prototype/finally/ post-ES2015 builtin
+
+# --- Annex B global functions ---
+built-ins/global/ realm-shape tests depend on post-ES5 intrinsics
+built-ins/eval/ direct-eval scope access is not implemented (DESIGN.md §15)
+language/eval-code/ direct-eval scope access is not implemented (DESIGN.md §15)
+language/statements/with/ `with` is not implemented (DESIGN.md §15)
+language/expressions/object/method-definition/ ES6 shorthand methods

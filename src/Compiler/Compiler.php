@@ -65,15 +65,15 @@ final class Compiler
             $body = $node->getBody();
         } else {
             if ($node->getGenerator()) {
-                $this->fail($node, 'Generators are not supported (ES5 target)');
+                $this->unsupported($node, 'Generators are not supported (ES5 target)');
             }
             if (method_exists($node, 'getAsync') && $node->getAsync()) {
-                $this->fail($node, 'Async functions are not supported (ES5 target)');
+                $this->unsupported($node, 'Async functions are not supported (ES5 target)');
             }
             $ctx->name = $node->getId() !== null ? $node->getId()->getName() : '';
             foreach ($node->getParams() as $i => $p) {
                 if ($p->getType() !== 'Identifier') {
-                    $this->fail($p, 'Parameter patterns are not supported (ES5 target)');
+                    $this->unsupported($p, 'Parameter patterns are not supported (ES5 target)');
                 }
                 $name = $p->getName();
                 $ctx->params[] = $name;
@@ -81,7 +81,7 @@ final class Compiler
             }
             $bodyNode = $node->getBody();
             if ($bodyNode->getType() !== 'BlockStatement') {
-                $this->fail($node, 'Expression-bodied functions are not supported (ES5 target)');
+                $this->unsupported($node, 'Expression-bodied functions are not supported (ES5 target)');
             }
             $body = $bodyNode->getBody();
         }
@@ -134,12 +134,12 @@ final class Compiler
         switch ($node->getType()) {
             case 'VariableDeclaration':
                 if ($node->getKind() !== 'var') {
-                    $this->fail($node, "'{$node->getKind()}' declarations are not supported (ES5 target; downlevel first)");
+                    $this->unsupported($node, "'{$node->getKind()}' declarations are not supported (ES5 target; downlevel first)");
                 }
                 foreach ($node->getDeclarations() as $d) {
                     $id = $d->getId();
                     if ($id->getType() !== 'Identifier') {
-                        $this->fail($id, 'Destructuring is not supported (ES5 target)');
+                        $this->unsupported($id, 'Destructuring is not supported (ES5 target)');
                     }
                     $name = $id->getName();
                     if ($ctx->isProgram) {
@@ -251,7 +251,7 @@ final class Compiler
             case 'ObjectExpression':
                 foreach ($node->getProperties() as $p) {
                     if ($p->getType() !== 'Property') {
-                        $this->fail($p, 'Spread properties are not supported (ES5 target)');
+                        $this->unsupported($p, 'Spread properties are not supported (ES5 target)');
                     }
                     $this->analyzeNode($p->getValue(), $ctx);
                 }
@@ -344,7 +344,7 @@ final class Compiler
                 if (($handler = $node->getHandler()) !== null) {
                     $param = $handler->getParam();
                     if ($param === null || $param->getType() !== 'Identifier') {
-                        $this->fail($handler, 'Catch parameter patterns are not supported (ES5 target)');
+                        $this->unsupported($handler, 'Catch parameter patterns are not supported (ES5 target)');
                     }
                     $b = new Binding($ctx, $param->getName(), 'catch');
                     $ctx->extraBindings[] = $b;
@@ -359,10 +359,10 @@ final class Compiler
                 $this->analyzeNode($node->getBody(), $ctx);
                 return;
             case 'WithStatement':
-                $this->fail($node, "'with' statements are not supported");
+                $this->unsupported($node, "'with' statements are not supported");
                 // no break (fail throws)
             default:
-                $this->fail($node, "Unsupported syntax: $type (ES5 target; downlevel first)");
+                $this->unsupported($node, "Unsupported syntax: $type (ES5 target; downlevel first)");
         }
     }
 
@@ -654,7 +654,7 @@ final class Compiler
                     $c->emit(Op::POP);
                     $c->tempFree($keyTmp);
                 } else {
-                    $this->fail($left, 'Unsupported for-in target');
+                    $this->unsupported($left, 'Unsupported for-in target');
                 }
                 $this->genStmt($node->getBody());
                 $this->patchContinues($loop, $lNext);
@@ -739,10 +739,10 @@ final class Compiler
                 $this->genStmt($node->getBody());
                 return;
             case 'WithStatement':
-                $this->fail($node, "'with' statements are not supported");
+                $this->unsupported($node, "'with' statements are not supported");
                 // no break (fail throws)
             default:
-                $this->fail($node, "Unsupported statement: $type");
+                $this->unsupported($node, "Unsupported statement: $type");
         }
     }
 
@@ -982,7 +982,7 @@ final class Compiler
                 $args = $node->getArguments();
                 foreach ($args as $a) {
                     if ($a->getType() === 'SpreadElement') {
-                        $this->fail($a, 'Spread arguments are not supported (ES5 target)');
+                        $this->unsupported($a, 'Spread arguments are not supported (ES5 target)');
                     }
                     $this->genExpr($a);
                 }
@@ -1007,13 +1007,13 @@ final class Compiler
             case 'BinaryExpression': {
                 $this->genExpr($node->getLeft());
                 $this->genExpr($node->getRight());
-                $c->emit(self::binaryOp($node->getOperator()) ?? $this->fail($node, 'Unsupported operator ' . $node->getOperator()));
+                $c->emit(self::binaryOp($node->getOperator()) ?? $this->unsupported($node, 'Unsupported operator ' . $node->getOperator()));
                 return;
             }
             case 'LogicalExpression': {
                 $op = $node->getOperator();
                 if ($op !== '&&' && $op !== '||') {
-                    $this->fail($node, "Operator '$op' is not supported (ES5 target)");
+                    $this->unsupported($node, "Operator '$op' is not supported (ES5 target)");
                 }
                 $this->genExpr($node->getLeft());
                 $j = $c->emitJump($op === '&&' ? Op::JF_KEEP : Op::JT_KEEP);
@@ -1046,7 +1046,7 @@ final class Compiler
                 return;
             }
             default:
-                $this->fail($node, "Unsupported expression: $type (ES5 target; downlevel first)");
+                $this->unsupported($node, "Unsupported expression: $type (ES5 target; downlevel first)");
         }
     }
 
@@ -1071,9 +1071,9 @@ final class Compiler
         } elseif ($node instanceof RegExpLiteral) {
             $c->emit(Op::NEW_REGEXP, $c->constIndex($node->getPattern()), $c->constIndex($node->getFlags()));
         } elseif ($node instanceof BigIntLiteral) {
-            $this->fail($node, 'BigInt literals are not supported (ES5 target)');
+            $this->unsupported($node, 'BigInt literals are not supported (ES5 target)');
         } else {
-            $this->fail($node, 'Unsupported literal');
+            $this->unsupported($node, 'Unsupported literal');
         }
     }
 
@@ -1144,7 +1144,7 @@ final class Compiler
                 }
                 return;
             default:
-                $this->fail($node, "Unsupported unary operator '$op'");
+                $this->unsupported($node, "Unsupported unary operator '$op'");
         }
     }
 
@@ -1213,7 +1213,7 @@ final class Compiler
         $left = self::unwrapParens($node->getLeft());
         $right = $node->getRight();
         if ($left->getType() !== 'Identifier' && $left->getType() !== 'MemberExpression') {
-            $this->fail($left, 'Destructuring assignment is not supported (ES5 target)');
+            $this->unsupported($left, 'Destructuring assignment is not supported (ES5 target)');
         }
         if ($op === '=') {
             if ($left->getType() === 'Identifier') {
@@ -1226,7 +1226,7 @@ final class Compiler
         }
         $binOp = self::binaryOp(substr($op, 0, -1));
         if ($binOp === null) {
-            $this->fail($node, "Unsupported assignment operator '$op'");
+            $this->unsupported($node, "Unsupported assignment operator '$op'");
         }
         if ($left->getType() === 'Identifier') {
             $this->emitLoadName($left->getName());
@@ -1302,7 +1302,7 @@ final class Compiler
             $v = $key->getValue();
             return Conversions::numberToString(is_int($v) || is_float($v) ? $v : (float)$v);
         }
-        $this->fail($key, 'Unsupported property key');
+        $this->unsupported($key, 'Unsupported property key');
     }
 
     // ---- name access --------------------------------------------------------
@@ -1371,7 +1371,7 @@ final class Compiler
             return;
         }
         if ($name === 'arguments' && !$c->isProgram) {
-            $this->fail(null, 'Assignment to arguments is not supported');
+            $this->unsupported(null, 'Assignment to arguments is not supported');
         }
         $c->emit(Op::SET_GLOBAL, $c->constIndex($name));
     }
@@ -1386,13 +1386,27 @@ final class Compiler
         }
     }
 
-    /** @return never */
+    /** A genuine early error: the source is invalid ECMAScript. @return never */
     private function fail(?object $node, string $message): mixed
     {
-        $line = '';
+        throw new CompileError($message . $this->at($node));
+    }
+
+    /**
+     * The source is valid ECMAScript but uses a construct outside the ES5.1
+     * target. Callers distinguish this from a real syntax error.
+     * @return never
+     */
+    private function unsupported(?object $node, string $message): mixed
+    {
+        throw CompileError::unsupported($message . $this->at($node));
+    }
+
+    private function at(?object $node): string
+    {
         if ($node !== null && method_exists($node, 'getLocation')) {
-            $line = ' (line ' . $node->getLocation()->getStart()->getLine() . ')';
+            return ' (line ' . $node->getLocation()->getStart()->getLine() . ')';
         }
-        throw new CompileError($message . $line);
+        return '';
     }
 }

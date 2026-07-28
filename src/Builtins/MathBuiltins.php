@@ -8,6 +8,7 @@ use PhpJs\Runtime\Conversions;
 use PhpJs\Runtime\JSObject;
 use PhpJs\Runtime\JSUndefined;
 use PhpJs\Runtime\Realm;
+use PhpJs\Runtime\TypeOps;
 use PhpJs\Vm\Vm;
 
 final class MathBuiltins
@@ -69,7 +70,7 @@ final class MathBuiltins
     private static function intify(float $f): int|float
     {
         if (!is_nan($f) && !is_infinite($f) && $f == floor($f)
-            && $f >= -9007199254740992.0 && $f <= 9007199254740992.0 && !($f == 0.0 && 1 / $f < 0)) {
+            && $f >= -9007199254740992.0 && $f <= 9007199254740992.0 && !TypeOps::isNegativeZero($f)) {
             return (int)$f;
         }
         return $f;
@@ -180,7 +181,7 @@ final class MathBuiltins
             if (is_float($n) && is_nan($n)) {
                 return NAN;
             }
-            if ($n < $best || ($n == 0 && $best == 0 && is_float($n) && 1 / (float)$n < 0)) {
+            if ($n < $best || ($n == 0 && $best == 0 && TypeOps::isNegativeZero($n))) {
                 $best = $n;
             }
         }
@@ -195,7 +196,7 @@ final class MathBuiltins
             if (is_float($n) && is_nan($n)) {
                 return NAN;
             }
-            if ($n > $best || ($n == 0 && $best == 0 && is_float($best) && 1 / (float)$best < 0)) {
+            if ($n > $best || ($n == 0 && $best == 0 && TypeOps::isNegativeZero($best))) {
                 $best = $n;
             }
         }

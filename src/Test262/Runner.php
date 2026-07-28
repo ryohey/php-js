@@ -27,6 +27,15 @@ final class Runner
     private array $excludedFeatures = [];
     /** @var array<string, string> harness file cache */
     private array $harnessCache = [];
+    /**
+     * Compiled harness programs, keyed by include-set + mode. Compiling the
+     * harness costs ~45x what running it does, and the same handful of
+     * include-sets repeat across the whole suite, so this is the difference
+     * between a 40-minute and a 1-minute run.
+     *
+     * @var array<string, array<string, mixed>>
+     */
+    private array $harnessTemplates = [];
 
     public int $passed = 0;
     public int $failed = 0;
@@ -52,12 +61,30 @@ final class Runner
         }
     }
 
+    /**
+     * Skip entries are `<path> <reason>`. A path ending in `/` skips the whole
+     * subtree, which is how post-ES5 builtins (Math.trunc, Object.assign, …)
+     * are excluded: they carry no `features:` tag to filter on.
+     */
     public function loadSkipList(string $file): void
     {
         foreach (self::readListFile($file) as $line) {
             $parts = preg_split('/\s+/', $line, 2);
             $this->skipList[$parts[0]] = $parts[1] ?? '(no reason given)';
         }
+    }
+
+    private function skipReason(string $relPath): ?string
+    {
+        if (isset($this->skipList[$relPath])) {
+            return $this->skipList[$relPath];
+        }
+        foreach ($this->skipList as $prefix => $reason) {
+            if (str_ends_with($prefix, '/') && str_starts_with($relPath, $prefix)) {
+                return $reason;
+            }
+        }
+        return null;
     }
 
     /** @return list<string> */
@@ -126,8 +153,9 @@ final class Runner
     /** @return array{0: string, 1: string} [status, message] */
     public function runTest(string $relPath): array
     {
-        if (isset($this->skipList[$relPath])) {
-            return [self::SKIP, $this->skipList[$relPath]];
+        $skip = $this->skipReason($relPath);
+        if ($skip !== null) {
+            return [self::SKIP, $skip];
         }
         $file = $this->test262Dir . '/test/' . $relPath;
         $source = @file_get_contents($file);
@@ -154,32 +182,17 @@ final class Runner
             default => ['sloppy', 'strict'],
         };
         foreach ($modes as $mode) {
-            [$ok, $message] = $this->runOnce($source, $fm, $mode);
-            if (!$ok) {
-                return [self::FAIL, "[$mode] $message"];
+            [$status, $message] = $this->runOnce($source, $fm, $mode);
+            if ($status !== self::PASS) {
+                return [$status, "[$mode] $message"];
             }
         }
         return [self::PASS, ''];
     }
 
-    /** @return array{0: bool, 1: string} */
+    /** @return array{0: string, 1: string} [status, message] */
     private function runOnce(string $source, FrontMatter $fm, string $mode): array
     {
-        $prefix = '';
-        if ($mode !== 'raw') {
-            if ($mode === 'strict') {
-                $prefix .= "\"use strict\";\n";
-            }
-            $harness = $this->harness('assert.js') . "\n" . $this->harness('sta.js') . "\n";
-            if ($fm->hasFlag('async')) {
-                $harness .= $this->harness('doneprintHandle.js') . "\n";
-            }
-            foreach ($fm->includes as $include) {
-                $harness .= $this->harness($include) . "\n";
-            }
-            $prefix .= $harness;
-        }
-
         $output = '';
         $engine = new Engine(function (string $s) use (&$output) {
             $output .= $s;
@@ -191,34 +204,51 @@ final class Runner
             JSObject::W | JSObject::C
         );
 
+        $directive = $mode === 'strict' ? "\"use strict\";\n" : '';
+        if ($mode !== 'raw') {
+            // The harness runs as its own program. Program-level declarations
+            // become global object properties, so the test still sees them.
+            try {
+                $engine->runTemplate($this->harnessTemplate($fm, $mode, $directive));
+            } catch (\Throwable $e) {
+                return [self::FAIL, 'harness failed: ' . $e->getMessage()];
+            }
+        }
+
         try {
-            $engine->evaluate($prefix . $source);
+            $engine->evaluate($directive . $source);
         } catch (CompileError $e) {
             if ($fm->negativePhase === 'parse' || $fm->negativePhase === 'early') {
-                return [true, ''];
+                return [self::PASS, ''];
             }
-            return [false, 'compile error: ' . $e->getMessage()];
+            if ($e->unsupportedSyntax) {
+                // The test source itself is written in post-ES5 syntax, so an
+                // ES5.1 engine cannot run it. Not an engine defect: input code
+                // is expected to be downleveled (DESIGN.md scope).
+                return [self::SKIP, 'out-of-scope syntax: ' . $e->getMessage()];
+            }
+            return [self::FAIL, 'compile error: ' . $e->getMessage()];
         } catch (JSException $e) {
             if ($fm->negativeType !== null && $fm->negativePhase !== 'parse') {
                 $name = $this->errorName($engine, $e->jsValue);
                 if ($name === $fm->negativeType) {
-                    return [true, ''];
+                    return [self::PASS, ''];
                 }
-                return [false, "expected {$fm->negativeType}, got $name"];
+                return [self::FAIL, "expected {$fm->negativeType}, got $name"];
             }
-            return [false, $e->getMessage()];
+            return [self::FAIL, $e->getMessage()];
         } catch (\Throwable $e) {
-            return [false, 'HOST CRASH: ' . get_class($e) . ': ' . $e->getMessage()];
+            return [self::FAIL, 'HOST CRASH: ' . get_class($e) . ': ' . $e->getMessage()];
         }
 
         if ($fm->negativeType !== null) {
-            return [false, "expected {$fm->negativeType} but completed normally"];
+            return [self::FAIL, "expected {$fm->negativeType} but completed normally"];
         }
         if ($fm->hasFlag('async') && !str_contains($output, 'Test262:AsyncTestComplete')) {
             $firstLine = strtok($output, "\n");
-            return [false, 'async test did not complete: ' . ($firstLine === false ? '(no output)' : $firstLine)];
+            return [self::FAIL, 'async test did not complete: ' . ($firstLine === false ? '(no output)' : $firstLine)];
         }
-        return [true, ''];
+        return [self::PASS, ''];
     }
 
     private function errorName(Engine $engine, mixed $value): string
@@ -233,6 +263,27 @@ final class Runner
             }
         }
         return get_debug_type($value);
+    }
+
+    /** @return array<string, mixed> compiled harness program for this include-set */
+    private function harnessTemplate(FrontMatter $fm, string $mode, string $directive): array
+    {
+        $includes = ['assert.js', 'sta.js'];
+        if ($fm->hasFlag('async')) {
+            $includes[] = 'doneprintHandle.js';
+        }
+        foreach ($fm->includes as $include) {
+            $includes[] = $include;
+        }
+        $key = $mode . '|' . implode(',', $includes);
+        if (isset($this->harnessTemplates[$key])) {
+            return $this->harnessTemplates[$key];
+        }
+        $src = $directive;
+        foreach ($includes as $include) {
+            $src .= $this->harness($include) . "\n";
+        }
+        return $this->harnessTemplates[$key] = \PhpJs\Compiler\Compiler::compile($src);
     }
 
     private function harness(string $name): string

@@ -143,41 +143,55 @@ final class ObjectBuiltins
         return $o;
     }
 
+    /** ToPropertyDescriptor (8.10.5) + [[DefineOwnProperty]]. */
     private static function applyDescriptor(Vm $vm, JSObject $o, string $key, mixed $desc): void
+    {
+        $o->defineOwnProperty($key, self::toPropertyDescriptor($vm, $desc), $vm);
+    }
+
+    /**
+     * ToPropertyDescriptor (8.10.5): only the fields actually present on the
+     * descriptor object end up in the result, so [[DefineOwnProperty]] can tell
+     * "absent" apart from "explicitly false".
+     *
+     * @return array<string, mixed>
+     */
+    public static function toPropertyDescriptor(Vm $vm, mixed $desc): array
     {
         if (!$desc instanceof JSObject) {
             $vm->throwError('TypeError', 'Property description must be an object');
         }
-        $und = JSUndefined::$undefined;
-        $get = $desc->hasProperty('get') ? $desc->get('get', $vm) : $und;
-        $set = $desc->hasProperty('set') ? $desc->get('set', $vm) : $und;
-        $hasAccessor = !($get instanceof JSUndefined) || !($set instanceof JSUndefined);
-        $flags = 0;
-        if (Conversions::toBoolean($desc->hasProperty('enumerable') ? $desc->get('enumerable', $vm) : false)) {
-            $flags |= JSObject::E;
-        }
-        if (Conversions::toBoolean($desc->hasProperty('configurable') ? $desc->get('configurable', $vm) : false)) {
-            $flags |= JSObject::C;
-        }
-        if ($hasAccessor) {
-            foreach ([$get, $set] as $fn) {
-                if (!($fn instanceof JSUndefined) && !($fn instanceof JSFunctionBase)) {
-                    $vm->throwError('TypeError', 'Getter/setter must be a function');
-                }
+        $out = [];
+        foreach (['enumerable', 'configurable', 'writable'] as $flag) {
+            if ($desc->hasProperty($flag)) {
+                $out[$flag] = Conversions::toBoolean($desc->get($flag, $vm));
             }
-            $o->defineOwnAccessor(
-                $key,
-                $get instanceof JSUndefined ? null : $get,
-                $set instanceof JSUndefined ? null : $set,
-                $flags
+        }
+        if ($desc->hasProperty('value')) {
+            $out['value'] = $desc->get('value', $vm);
+        }
+        foreach (['get', 'set'] as $accessor) {
+            if (!$desc->hasProperty($accessor)) {
+                continue;
+            }
+            $fn = $desc->get($accessor, $vm);
+            if ($fn instanceof JSUndefined) {
+                $out[$accessor] = null;
+                continue;
+            }
+            if (!$fn instanceof JSFunctionBase) {
+                $vm->throwError('TypeError', "Getter/setter must be a function or undefined");
+            }
+            $out[$accessor] = $fn;
+        }
+        if ((array_key_exists('get', $out) || array_key_exists('set', $out))
+            && (array_key_exists('value', $out) || array_key_exists('writable', $out))) {
+            $vm->throwError(
+                'TypeError',
+                'Invalid property descriptor: cannot both specify accessors and a value or writable attribute'
             );
-            return;
         }
-        if (Conversions::toBoolean($desc->hasProperty('writable') ? $desc->get('writable', $vm) : false)) {
-            $flags |= JSObject::W;
-        }
-        $value = $desc->hasProperty('value') ? $desc->get('value', $vm) : $und;
-        $o->defineOwnData($key, $value, $flags);
+        return $out;
     }
 
     public static function getOwnPropertyDescriptor(Vm $vm, mixed $t, array $args): mixed
@@ -209,15 +223,16 @@ final class ObjectBuiltins
             return $o;
         }
         $o->extensible = false;
-        $o->ensureAllOwn();
-        $o->descs ??= [];
         foreach ($o->ownKeys() as $key) {
-            $d = $o->descs[$key] ?? [null, null, JSObject::DEFAULT_ATTRS];
-            $d[2] &= ~(JSObject::C | (($d[2] & JSObject::ACCESSOR) ? 0 : JSObject::W));
-            $o->descs[$key] = $d;
-        }
-        if ($o instanceof JSArray) {
-            $o->descs['length'] = [null, null, 0];
+            $d = $o->ownDescriptor($key);
+            if ($d === null) {
+                continue;
+            }
+            $desc = ['configurable' => false];
+            if (!($d[2] & JSObject::ACCESSOR)) {
+                $desc['writable'] = false;
+            }
+            $o->defineOwnProperty($key, $desc, $vm, false);
         }
         return $o;
     }
@@ -247,12 +262,8 @@ final class ObjectBuiltins
             return $o;
         }
         $o->extensible = false;
-        $o->ensureAllOwn();
-        $o->descs ??= [];
         foreach ($o->ownKeys() as $key) {
-            $d = $o->descs[$key] ?? [null, null, JSObject::DEFAULT_ATTRS];
-            $d[2] &= ~JSObject::C;
-            $o->descs[$key] = $d;
+            $o->defineOwnProperty($key, ['configurable' => false], $vm, false);
         }
         return $o;
     }

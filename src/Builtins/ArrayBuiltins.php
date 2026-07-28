@@ -152,6 +152,9 @@ final class ArrayBuiltins
     {
         $o = self::thisArray($vm, $t, 'push');
         if ($o instanceof JSArray) {
+            if (!$o->lengthWritable && $args !== []) {
+                $vm->throwError('TypeError', 'Cannot add property past a non-writable length');
+            }
             foreach ($args as $v) {
                 $o->elements[$o->length++] = $v;
             }
@@ -288,7 +291,7 @@ final class ArrayBuiltins
     {
         $o = self::thisArray($vm, $t, 'splice');
         if (!$o instanceof JSArray) {
-            $vm->throwError('TypeError', 'Array.prototype.splice on non-array is not supported');
+            return self::spliceGeneric($vm, $o, $args);
         }
         $len = $o->length;
         $start = self::relIndex($vm, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined), $len, 0);
@@ -348,19 +351,89 @@ final class ArrayBuiltins
         return $result;
     }
 
+    /** 15.4.4.12 on a generic array-like: read/write/delete through [[Get]]/[[Put]]. */
+    private static function spliceGeneric(Vm $vm, JSObject $o, array $args): JSArray
+    {
+        $len = self::lengthOf($vm, $o);
+        $start = self::relIndex($vm, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined), $len, 0);
+        $deleteCount = count($args) < 2
+            ? $len - $start
+            : max(0, min((int)Conversions::toInteger($vm, $args[1]), $len - $start));
+        $items = array_slice($args, 2);
+        $removed = new JSArray($vm->realm->arrayPrototype());
+        for ($i = 0; $i < $deleteCount; $i++) {
+            $present = false;
+            $v = self::getIdx($vm, $o, $start + $i, $present);
+            if ($present) {
+                $removed->elements[$i] = $v;
+            }
+        }
+        $removed->length = $deleteCount;
+
+        $itemCount = count($items);
+        if ($itemCount < $deleteCount) {
+            for ($k = $start; $k < $len - $deleteCount; $k++) {
+                self::moveIdx($vm, $o, $k + $deleteCount, $k + $itemCount);
+            }
+            for ($k = $len; $k > $len - $deleteCount + $itemCount; $k--) {
+                $o->deleteKey((string)($k - 1), $vm, false);
+            }
+        } elseif ($itemCount > $deleteCount) {
+            for ($k = $len - $deleteCount; $k > $start; $k--) {
+                self::moveIdx($vm, $o, $k + $deleteCount - 1, $k + $itemCount - 1);
+            }
+        }
+        foreach ($items as $i => $v) {
+            $o->set((string)($start + $i), $v, $vm, false);
+        }
+        $o->set('length', $len - $deleteCount + $itemCount, $vm, false);
+        return $removed;
+    }
+
+    /** Copy index $from to $to, deleting $to when $from is a hole. */
+    private static function moveIdx(Vm $vm, JSObject $o, int $from, int $to): void
+    {
+        $present = false;
+        $v = self::getIdx($vm, $o, $from, $present);
+        if ($present) {
+            $o->set((string)$to, $v, $vm, false);
+        } else {
+            $o->deleteKey((string)$to, $vm, false);
+        }
+    }
+
     public static function reverse(Vm $vm, mixed $t, array $args): mixed
     {
         $o = self::thisArray($vm, $t, 'reverse');
-        if (!$o instanceof JSArray) {
-            $vm->throwError('TypeError', 'Array.prototype.reverse on non-array is not supported');
+        if ($o instanceof JSArray) {
+            $len = $o->length;
+            $new = [];
+            foreach ($o->elements as $i => $v) {
+                $new[$len - 1 - $i] = $v;
+            }
+            ksort($new);
+            $o->elements = $new;
+            return $o;
         }
-        $len = $o->length;
-        $new = [];
-        foreach ($o->elements as $i => $v) {
-            $new[$len - 1 - $i] = $v;
+        $len = self::lengthOf($vm, $o);
+        $middle = intdiv($len, 2);
+        for ($lower = 0; $lower < $middle; $lower++) {
+            $upper = $len - $lower - 1;
+            $lowerExists = false;
+            $lowerValue = self::getIdx($vm, $o, $lower, $lowerExists);
+            $upperExists = false;
+            $upperValue = self::getIdx($vm, $o, $upper, $upperExists);
+            if ($lowerExists && $upperExists) {
+                $o->set((string)$lower, $upperValue, $vm, false);
+                $o->set((string)$upper, $lowerValue, $vm, false);
+            } elseif ($upperExists) {
+                $o->set((string)$lower, $upperValue, $vm, false);
+                $o->deleteKey((string)$upper, $vm, false);
+            } elseif ($lowerExists) {
+                $o->deleteKey((string)$lower, $vm, false);
+                $o->set((string)$upper, $lowerValue, $vm, false);
+            }
         }
-        ksort($new);
-        $o->elements = $new;
         return $o;
     }
 
@@ -538,23 +611,32 @@ final class ArrayBuiltins
         return true;
     }
 
+    /**
+     * 15.4.4.11. Sort order puts defined values first, then undefined, then
+     * holes — so values, undefined count and hole count are tracked separately.
+     */
     public static function sort(Vm $vm, mixed $t, array $args): mixed
     {
         $o = self::thisArray($vm, $t, 'sort');
-        if (!$o instanceof JSArray) {
-            $vm->throwError('TypeError', 'Array.prototype.sort on non-array is not supported');
-        }
         $comparator = (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined);
+        if (!$comparator instanceof JSUndefined && !$comparator instanceof JSFunctionBase) {
+            $vm->throwError('TypeError', 'The comparison function must be either a function or undefined');
+        }
+        $len = self::lengthOf($vm, $o);
         $values = [];
         $undefs = 0;
-        foreach ($o->elements as $v) {
+        for ($i = 0; $i < $len; $i++) {
+            $present = false;
+            $v = self::getIdx($vm, $o, $i, $present);
+            if (!$present) {
+                continue;
+            }
             if ($v instanceof JSUndefined) {
                 $undefs++;
             } else {
                 $values[] = $v;
             }
         }
-        $holes = $o->length - count($values) - $undefs;
         if ($comparator instanceof JSFunctionBase) {
             usort($values, function ($a, $b) use ($vm, $comparator) {
                 $r = Conversions::toNumber($vm, $vm->invoke($comparator, JSUndefined::$undefined, [$a, $b]));
@@ -564,18 +646,30 @@ final class ArrayBuiltins
                 return $r < 0 ? -1 : ($r > 0 ? 1 : 0);
             });
         } else {
-            usort($values, function ($a, $b) use ($vm) {
-                return strcmp(Conversions::toString($vm, $a), Conversions::toString($vm, $b));
-            });
+            usort($values, fn ($a, $b) => strcmp(Conversions::toString($vm, $a), Conversions::toString($vm, $b)));
         }
-        $elements = [];
+
+        $defined = count($values);
+        if ($o instanceof JSArray) {
+            $elements = [];
+            foreach ($values as $i => $v) {
+                $elements[$i] = $v;
+            }
+            for ($i = 0; $i < $undefs; $i++) {
+                $elements[$defined + $i] = JSUndefined::$undefined;
+            }
+            $o->elements = $elements;
+            return $o;
+        }
         foreach ($values as $i => $v) {
-            $elements[$i] = $v;
+            $o->set((string)$i, $v, $vm, false);
         }
         for ($i = 0; $i < $undefs; $i++) {
-            $elements[count($values) + $i] = JSUndefined::$undefined;
+            $o->set((string)($defined + $i), JSUndefined::$undefined, $vm, false);
         }
-        $o->elements = $elements;
+        for ($i = $defined + $undefs; $i < $len; $i++) {
+            $o->deleteKey((string)$i, $vm, false);
+        }
         return $o;
     }
 }

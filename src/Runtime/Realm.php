@@ -41,6 +41,14 @@ final class Realm
 
     /** @var array<string, JSObject> memoized builtin containers */
     private array $memo = [];
+    /**
+     * Globals that have already been materialized. Lazy initialization must
+     * happen exactly once per name: without this, deleting a builtin global
+     * would resurrect it on the next property miss.
+     *
+     * @var array<string, true>
+     */
+    private array $materialized = [];
 
     private const GLOBAL_NAMES = [
         'undefined', 'NaN', 'Infinity', 'globalThis',
@@ -66,6 +74,9 @@ final class Realm
 
     public function materializeGlobal(string $name): bool
     {
+        if (isset($this->materialized[$name])) {
+            return false;
+        }
         $g = $this->globalObject;
         $value = match ($name) {
             'undefined' => JSUndefined::$undefined,
@@ -100,6 +111,7 @@ final class Realm
         if ($value === '__miss__' && $name !== '__miss__') {
             return false;
         }
+        $this->materialized[$name] = true;
         $flags = match ($name) {
             'undefined', 'NaN', 'Infinity' => 0,
             default => JSObject::W | JSObject::C,
@@ -111,10 +123,7 @@ final class Realm
     public function materializeAllGlobals(): void
     {
         foreach (self::GLOBAL_NAMES as $name) {
-            if (!array_key_exists($name, $this->globalObject->props)
-                && ($this->globalObject->descs === null || !isset($this->globalObject->descs[$name]))) {
-                $this->materializeGlobal($name);
-            }
+            $this->materializeGlobal($name);
         }
     }
 
@@ -180,6 +189,7 @@ final class Realm
             $proto->nativeId = 'Object.prototype';
             $this->memo['Object.prototype'] = $proto;
             ObjectBuiltins::populateProto($this, $proto);
+            $this->objectConstructor();
         }
         return $this->memo['Object.prototype'];
     }
@@ -192,6 +202,7 @@ final class Realm
             $proto->nativeId = 'Function.prototype';
             $this->memo['Function.prototype'] = $proto;
             FunctionBuiltins::populateProto($this, $proto);
+            $this->functionConstructor();
         }
         return $this->memo['Function.prototype'];
     }
@@ -213,6 +224,7 @@ final class Realm
             $proto->nativeId = 'Array.prototype';
             $this->memo['Array.prototype'] = $proto;
             ArrayBuiltins::populateProto($this, $proto);
+            $this->arrayConstructor();
         }
         return $this->memo['Array.prototype'];
     }
@@ -229,6 +241,7 @@ final class Realm
             $proto->nativeId = 'String.prototype';
             $this->memo['String.prototype'] = $proto;
             StringBuiltins::populateProto($this, $proto);
+            $this->stringConstructor();
         }
         return $this->memo['String.prototype'];
     }
@@ -245,6 +258,7 @@ final class Realm
             $proto->nativeId = 'Number.prototype';
             $this->memo['Number.prototype'] = $proto;
             NumberBuiltins::populateProto($this, $proto);
+            $this->numberConstructor();
         }
         return $this->memo['Number.prototype'];
     }
@@ -261,6 +275,7 @@ final class Realm
             $proto->nativeId = 'Boolean.prototype';
             $this->memo['Boolean.prototype'] = $proto;
             BooleanBuiltins::populateProto($this, $proto);
+            $this->booleanConstructor();
         }
         return $this->memo['Boolean.prototype'];
     }
@@ -308,6 +323,7 @@ final class Realm
             $proto->nativeId = 'RegExp.prototype';
             $this->memo['RegExp.prototype'] = $proto;
             RegExpBuiltins::populateProto($this, $proto);
+            $this->regexpConstructor();
         }
         return $this->memo['RegExp.prototype'];
     }
@@ -325,6 +341,7 @@ final class Realm
             $proto->className = 'Date';
             $this->memo['Date.prototype'] = $proto;
             DateBuiltins::populateProto($this, $proto);
+            $this->dateConstructor();
         }
         return $this->memo['Date.prototype'];
     }
@@ -341,6 +358,7 @@ final class Realm
             $proto->nativeId = 'Promise.prototype';
             $this->memo['Promise.prototype'] = $proto;
             PromiseBuiltins::populateProto($this, $proto);
+            $this->promiseConstructor();
         }
         return $this->memo['Promise.prototype'];
     }
