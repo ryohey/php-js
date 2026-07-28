@@ -27,6 +27,7 @@ final class ArrayBuiltins
             'Array.ctor' => [self::class, 'ctor'],
             'Array.isArray' => [self::class, 'isArray'],
             'Array.prototype.toString' => [self::class, 'toString'],
+            'Array.prototype.toLocaleString' => [self::class, 'toLocaleString'],
             'Array.prototype.join' => [self::class, 'join'],
             'Array.prototype.push' => [self::class, 'push'],
             'Array.prototype.pop' => [self::class, 'pop'],
@@ -52,7 +53,7 @@ final class ArrayBuiltins
     public static function populateProto(Realm $r, JSObject $proto): void
     {
         foreach ([
-            'toString' => 0, 'join' => 1, 'push' => 1, 'pop' => 0, 'shift' => 0,
+            'toString' => 0, 'toLocaleString' => 0, 'join' => 1, 'push' => 1, 'pop' => 0, 'shift' => 0,
             'unshift' => 1, 'slice' => 2, 'splice' => 2, 'concat' => 1,
             'reverse' => 0, 'indexOf' => 1, 'lastIndexOf' => 1, 'forEach' => 1,
             'map' => 1, 'filter' => 1, 'reduce' => 1, 'reduceRight' => 1,
@@ -198,7 +199,33 @@ final class ArrayBuiltins
 
     public static function toString(Vm $vm, mixed $t, array $args): mixed
     {
-        return self::join($vm, $t, []);
+        $o = Conversions::toObject($vm, $t);
+        $join = $o->get('join', $vm);
+        if ($join instanceof JSFunctionBase) {
+            return $vm->invoke($join, $o, []);
+        }
+        return ObjectBuiltins::protoToString($vm, $o, []);
+    }
+
+    /** 15.4.4.3: join with "," after calling each element's toLocaleString. */
+    public static function toLocaleString(Vm $vm, mixed $t, array $args): mixed
+    {
+        $o = Conversions::toObject($vm, $t);
+        $len = self::lengthOf($vm, $o);
+        $parts = [];
+        for ($i = 0; $i < $len; $i++) {
+            $v = $o->get((string)$i, $vm);
+            if ($v === null || $v instanceof JSUndefined) {
+                $parts[] = '';
+                continue;
+            }
+            $fn = Conversions::toObject($vm, $v)->get('toLocaleString', $vm);
+            if (!$fn instanceof JSFunctionBase) {
+                $vm->throwError('TypeError', 'toLocaleString is not callable');
+            }
+            $parts[] = Conversions::toString($vm, $vm->invoke($fn, $v, []));
+        }
+        return implode(',', $parts);
     }
 
     public static function join(Vm $vm, mixed $t, array $args): mixed
@@ -219,22 +246,13 @@ final class ArrayBuiltins
     public static function push(Vm $vm, mixed $t, array $args): mixed
     {
         $o = self::thisArray($vm, $t, 'push');
-        if ($o instanceof JSArray) {
-            if (!$o->lengthWritable && $args !== []) {
-                $vm->throwError('TypeError', 'Cannot add property past a non-writable length');
-            }
-            foreach ($args as $v) {
-                $o->elements[$o->length++] = $v;
-            }
-            return $o->length;
-        }
         $len = self::lengthOf($vm, $o);
         foreach ($args as $v) {
             if ($len >= Conversions::MAX_EXACT_INT - 1) {
                 $vm->throwError('TypeError', 'Cannot push past the maximum array-like length');
             }
-            // The spec's Set(..., true) means these failures surface as
-            // TypeErrors even when the caller is sloppy code.
+            // Set(..., true) throughout, so a frozen receiver or a
+            // non-writable length surfaces as a TypeError even from sloppy code.
             $o->set((string)$len, $v, $vm, true);
             $len++;
         }
@@ -313,7 +331,7 @@ final class ArrayBuiltins
         $o = self::thisArray($vm, $t, 'unshift');
         $len = self::lengthOf($vm, $o);
         $n = count($args);
-        if ($o instanceof JSArray) {
+        if ($o instanceof JSArray && $o->lengthWritable && $o->extensible && $o->descs === null) {
             $new = [];
             foreach ($args as $i => $v) {
                 $new[$i] = $v;
@@ -327,6 +345,11 @@ final class ArrayBuiltins
         }
         if ($len + $n > Conversions::MAX_EXACT_INT - 1) {
             $vm->throwError('TypeError', 'Cannot unshift past the maximum array-like length');
+        }
+        if ($n === 0) {
+            // Still performs Set(O, "length", len, true).
+            $o->set('length', $len, $vm, true);
+            return $len;
         }
         for ($i = $len - 1; $i >= 0; $i--) {
             $present = false;
@@ -393,7 +416,7 @@ final class ArrayBuiltins
             ? $len - $start
             : max(0, min((int)Conversions::toInteger($vm, $args[1]), $len - $start));
         $items = array_slice($args, 2);
-        $removed = new JSArray($vm->realm->arrayPrototype());
+        $removed = self::speciesCreate($vm, $o, 0);
         // Driven by the elements present, not by deleteCount: an array length
         // is a uint32, so scanning the requested range can mean billions of
         // iterations over a handful of real elements.
@@ -429,7 +452,7 @@ final class ArrayBuiltins
     public static function concat(Vm $vm, mixed $t, array $args): mixed
     {
         $o = self::thisArray($vm, $t, 'concat');
-        $result = new JSArray($vm->realm->arrayPrototype());
+        $result = self::speciesCreate($vm, $o, 0);
         $n = 0;
         $sources = array_merge([$o], $args);
         foreach ($sources as $src) {
@@ -466,7 +489,7 @@ final class ArrayBuiltins
         $items = array_slice($args, 2);
         $itemCount = count($items);
 
-        $removed = new JSArray($vm->realm->arrayPrototype());
+        $removed = self::speciesCreate($vm, $o, 0);
         $removed->length = $deleteCount;
         $shift = $itemCount - $deleteCount;
         $survivors = [];
