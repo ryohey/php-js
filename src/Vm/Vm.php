@@ -131,7 +131,13 @@ final class Vm
             $ctor = $ctor->target;
         }
         if ($ctor instanceof JSNativeFunction) {
-            return (BuiltinRegistry::get($ctor->ctorId ?? $ctor->fnId))($this, $args, $ctor);
+            if ($ctor->ctorId === null) {
+                // No [[Construct]]: builtins like Function.prototype.call are
+                // callable but not constructors, and their call signature does
+                // not match the construct one.
+                $this->throwError('TypeError', ($ctor->name !== '' ? $ctor->name : 'value') . ' is not a constructor');
+            }
+            return (BuiltinRegistry::get($ctor->ctorId))($this, $args, $ctor);
         }
         if (!$ctor instanceof JSFunction) {
             $this->throwError('TypeError', 'not a constructor');
@@ -744,7 +750,7 @@ final class Vm
                         $argc = $code[$pc++];
                         $ctorPos = $sp - $argc - 1;
                         $ctor = $stack[$ctorPos];
-                        if ($ctor instanceof JSFunction) {
+                        if ($ctor instanceof JSFunction) { // NEW_OP fast path
                             if ($fi + 1 >= self::MAX_FRAMES) {
                                 $this->throwError('RangeError', 'Maximum call stack size exceeded');
                             }

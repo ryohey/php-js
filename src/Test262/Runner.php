@@ -213,6 +213,13 @@ final class Runner
             // become global object properties, so the test still sees them.
             try {
                 $engine->runTemplate($this->harnessTemplate($fm, $mode, $directive));
+            } catch (CompileError $e) {
+                if ($e->unsupportedSyntax) {
+                    // An include written in post-ES5 syntax: the test cannot
+                    // run here for the same reason an ES6 test body cannot.
+                    return [self::SKIP, 'harness uses out-of-scope syntax: ' . $e->getMessage()];
+                }
+                return [self::FAIL, 'harness failed to compile: ' . $e->getMessage()];
             } catch (\Throwable $e) {
                 return [self::FAIL, 'harness failed: ' . $e->getMessage()];
             }

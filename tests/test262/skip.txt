@@ -150,3 +150,4 @@ built-ins/Number/parseInt.js post-ES5 builtin (Number.parseInt)
 built-ins/Number/parseFloat.js post-ES5 builtin (Number.parseFloat)
 built-ins/Number/MAX_VALUE/value.js compares against Number.MAX_SAFE_INTEGER (post-ES5)
 built-ins/Number/MIN_VALUE/value.js compares against Number.EPSILON (post-ES5)
+built-ins/Array/fromAsync/ post-ES5 builtin
