@@ -310,6 +310,20 @@ final class Conversions
         $vm->throwError('TypeError', 'Cannot convert ' . ($v === null ? 'null' : 'undefined') . ' to object');
     }
 
+    /**
+     * ToLength: clamp to [0, 2^53-1]. Generic array-like operations use this
+     * rather than ToUint32, so `{length: 4294967296}` keeps its length instead
+     * of wrapping to 0.
+     */
+    public static function toLength(Vm $vm, mixed $v): int
+    {
+        $n = self::toInteger($vm, $v);
+        if ($n <= 0) {
+            return 0;
+        }
+        return $n >= self::MAX_EXACT_INT ? self::MAX_EXACT_INT - 1 : (int)$n;
+    }
+
     /** ToInteger (9.4), used by string/array builtins. */
     public static function toInteger(Vm $vm, mixed $v): int|float
     {

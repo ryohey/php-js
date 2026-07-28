@@ -111,8 +111,55 @@ final class ArrayBuiltins
         if ($o instanceof JSArray) {
             return $o->length;
         }
-        return Conversions::toUint32($vm, $o->get('length', $vm));
+        // Generic array-likes use ToLength, not ToUint32: {length: 2**32} must
+        // keep its length rather than wrapping to 0.
+        return Conversions::toLength($vm, $o->get('length', $vm));
     }
+
+    /**
+     * Ascending indices a hole-skipping traversal must visit.
+     *
+     * Returns null to mean "scan 0..len-1 densely", which is both the spec's
+     * algorithm and the fast path. A length up to 2^53-1 is legal, so a sparse
+     * receiver is instead walked by the index keys it actually has — holes are
+     * skipped either way, and with no Proxy in an ES5 realm the absent indices
+     * are unobservable.
+     *
+     * @return list<int>|null
+     */
+    private static function visitList(JSObject $o, int $len): ?array
+    {
+        if ($len <= self::DENSE_SCAN_LIMIT) {
+            return null;
+        }
+        if ($o instanceof JSArray) {
+            if (count($o->elements) * 8 >= $len) {
+                return null; // mostly dense: the plain scan is cheaper
+            }
+            $keys = [];
+            foreach (array_keys($o->elements) as $i) {
+                if ($i < $len) {
+                    $keys[] = $i;
+                }
+            }
+            sort($keys);
+            return $keys;
+        }
+        $seen = [];
+        for ($p = $o; $p !== null; $p = $p->proto) {
+            foreach ($p->ownKeys() as $k) {
+                $idx = JSArray::asIndex($k);
+                if ($idx !== null && $idx < $len) {
+                    $seen[$idx] = true;
+                }
+            }
+        }
+        $keys = array_keys($seen);
+        sort($keys);
+        return $keys;
+    }
+
+    private const DENSE_SCAN_LIMIT = 65536;
 
     private static function getIdx(Vm $vm, JSObject $o, int $i, bool &$present): mixed
     {
@@ -162,10 +209,15 @@ final class ArrayBuiltins
         }
         $len = self::lengthOf($vm, $o);
         foreach ($args as $v) {
-            $o->set((string)$len, $v, $vm, false);
+            if ($len >= Conversions::MAX_EXACT_INT - 1) {
+                $vm->throwError('TypeError', 'Cannot push past the maximum array-like length');
+            }
+            // The spec's Set(..., true) means these failures surface as
+            // TypeErrors even when the caller is sloppy code.
+            $o->set((string)$len, $v, $vm, true);
             $len++;
         }
-        $o->set('length', $len, $vm, false);
+        $o->set('length', $len, $vm, true);
         return $len;
     }
 
@@ -174,18 +226,34 @@ final class ArrayBuiltins
         $o = self::thisArray($vm, $t, 'pop');
         $len = self::lengthOf($vm, $o);
         if ($len === 0) {
+            // Even the empty case must normalize length (a garbage length
+            // like NaN or -1 becomes 0).
+            $o->set('length', 0, $vm, true);
             return JSUndefined::$undefined;
         }
+        $idx = $len - 1;
         $present = false;
-        $v = self::getIdx($vm, $o, $len - 1, $present);
-        if ($o instanceof JSArray) {
-            unset($o->elements[$len - 1]);
-            $o->length = $len - 1;
-        } else {
-            $o->deleteKey((string)($len - 1), $vm, false);
-            $o->set('length', $len - 1, $vm, false);
-        }
+        $v = self::getIdx($vm, $o, $idx, $present);
+        $o->deleteKey((string)$idx, $vm, true);
+        $o->set('length', $idx, $vm, true);
         return $v;
+    }
+
+    /** True if any index below $len is inherited, which blocks the fast paths. */
+    private static function protoHasIndex(JSObject $o, int $len): bool
+    {
+        for ($p = $o->proto; $p !== null; $p = $p->proto) {
+            if ($p instanceof JSArray && $p->elements !== []) {
+                return true;
+            }
+            foreach ($p->ownKeys() as $k) {
+                $idx = JSArray::asIndex($k);
+                if ($idx !== null && $idx < $len) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     public static function shift(Vm $vm, mixed $t, array $args): mixed
@@ -193,32 +261,29 @@ final class ArrayBuiltins
         $o = self::thisArray($vm, $t, 'shift');
         $len = self::lengthOf($vm, $o);
         if ($len === 0) {
+            $o->set('length', 0, $vm, true);
             return JSUndefined::$undefined;
+        }
+        if ($o instanceof JSArray && $o->lengthWritable && $o->descs === null
+            && !self::protoHasIndex($o, $len)) {
+            $first = $o->elements[0] ?? JSUndefined::$undefined;
+            $shifted = [];
+            foreach ($o->elements as $i => $v) {
+                if ($i > 0) {
+                    $shifted[$i - 1] = $v;
+                }
+            }
+            $o->elements = $shifted;
+            $o->length = $len - 1;
+            return $first;
         }
         $present = false;
         $first = self::getIdx($vm, $o, 0, $present);
-        if ($o instanceof JSArray) {
-            $new = [];
-            foreach ($o->elements as $i => $v) {
-                if ($i > 0) {
-                    $new[$i - 1] = $v;
-                }
-            }
-            $o->elements = $new;
-            $o->length = $len - 1;
-        } else {
-            for ($i = 1; $i < $len; $i++) {
-                $present = false;
-                $v = self::getIdx($vm, $o, $i, $present);
-                if ($present) {
-                    $o->set((string)($i - 1), $v, $vm, false);
-                } else {
-                    $o->deleteKey((string)($i - 1), $vm, false);
-                }
-            }
-            $o->deleteKey((string)($len - 1), $vm, false);
-            $o->set('length', $len - 1, $vm, false);
+        for ($i = 1; $i < $len; $i++) {
+            self::moveIdx($vm, $o, $i, $i - 1, true);
         }
+        $o->deleteKey((string)($len - 1), $vm, true);
+        $o->set('length', $len - 1, $vm, true);
         return $first;
     }
 
@@ -239,19 +304,22 @@ final class ArrayBuiltins
             $o->length = $len + $n;
             return $o->length;
         }
+        if ($len + $n > Conversions::MAX_EXACT_INT - 1) {
+            $vm->throwError('TypeError', 'Cannot unshift past the maximum array-like length');
+        }
         for ($i = $len - 1; $i >= 0; $i--) {
             $present = false;
             $v = self::getIdx($vm, $o, $i, $present);
             if ($present) {
-                $o->set((string)($i + $n), $v, $vm, false);
+                $o->set((string)($i + $n), $v, $vm, true);
             } else {
-                $o->deleteKey((string)($i + $n), $vm, false);
+                $o->deleteKey((string)($i + $n), $vm, true);
             }
         }
         foreach ($args as $i => $v) {
-            $o->set((string)$i, $v, $vm, false);
+            $o->set((string)$i, $v, $vm, true);
         }
-        $o->set('length', $len + $n, $vm, false);
+        $o->set('length', $len + $n, $vm, true);
         return $len + $n;
     }
 
@@ -300,9 +368,13 @@ final class ArrayBuiltins
             : max(0, min((int)Conversions::toInteger($vm, $args[1]), $len - $start));
         $items = array_slice($args, 2);
         $removed = new JSArray($vm->realm->arrayPrototype());
-        for ($i = 0; $i < $deleteCount; $i++) {
-            if (array_key_exists($start + $i, $o->elements)) {
-                $removed->elements[$i] = $o->elements[$start + $i];
+        // Driven by the elements present, not by deleteCount: an array length
+        // is a uint32, so scanning the requested range can mean billions of
+        // iterations over a handful of real elements.
+        $end = $start + $deleteCount;
+        foreach ($o->elements as $i => $v) {
+            if ($i >= $start && $i < $end) {
+                $removed->elements[$i - $start] = $v;
             }
         }
         $removed->length = $deleteCount;
@@ -351,7 +423,11 @@ final class ArrayBuiltins
         return $result;
     }
 
-    /** 15.4.4.12 on a generic array-like: read/write/delete through [[Get]]/[[Put]]. */
+    /**
+     * 15.4.4.12 on a generic array-like. Works from the set of indices the
+     * receiver actually has rather than scanning 0..len: a length may be up to
+     * 2^53-1, so the spec's element-by-element shift is not runnable as written.
+     */
     private static function spliceGeneric(Vm $vm, JSObject $o, array $args): JSArray
     {
         $len = self::lengthOf($vm, $o);
@@ -360,45 +436,53 @@ final class ArrayBuiltins
             ? $len - $start
             : max(0, min((int)Conversions::toInteger($vm, $args[1]), $len - $start));
         $items = array_slice($args, 2);
+        $itemCount = count($items);
+
         $removed = new JSArray($vm->realm->arrayPrototype());
-        for ($i = 0; $i < $deleteCount; $i++) {
+        $removed->length = $deleteCount;
+        $shift = $itemCount - $deleteCount;
+        $survivors = [];
+        $touched = [];
+        $visit = self::visitList($o, $len);
+        $indices = $visit ?? ($len > 0 ? range(0, $len - 1) : []);
+        foreach ($indices as $i) {
+            if ($i < $start) {
+                continue;
+            }
+            $touched[$i] = true;
             $present = false;
-            $v = self::getIdx($vm, $o, $start + $i, $present);
-            if ($present) {
-                $removed->elements[$i] = $v;
+            $v = self::getIdx($vm, $o, $i, $present);
+            if (!$present) {
+                continue;
+            }
+            if ($i < $start + $deleteCount) {
+                $removed->elements[$i - $start] = $v;
+            } else {
+                $survivors[$i + $shift] = $v;
             }
         }
-        $removed->length = $deleteCount;
-
-        $itemCount = count($items);
-        if ($itemCount < $deleteCount) {
-            for ($k = $start; $k < $len - $deleteCount; $k++) {
-                self::moveIdx($vm, $o, $k + $deleteCount, $k + $itemCount);
-            }
-            for ($k = $len; $k > $len - $deleteCount + $itemCount; $k--) {
-                $o->deleteKey((string)($k - 1), $vm, false);
-            }
-        } elseif ($itemCount > $deleteCount) {
-            for ($k = $len - $deleteCount; $k > $start; $k--) {
-                self::moveIdx($vm, $o, $k + $deleteCount - 1, $k + $itemCount - 1);
-            }
+        foreach (array_keys($touched) as $i) {
+            $o->deleteKey((string)$i, $vm, false);
         }
         foreach ($items as $i => $v) {
-            $o->set((string)($start + $i), $v, $vm, false);
+            $o->set((string)($start + $i), $v, $vm, true);
         }
-        $o->set('length', $len - $deleteCount + $itemCount, $vm, false);
+        foreach ($survivors as $i => $v) {
+            $o->set((string)$i, $v, $vm, true);
+        }
+        $o->set('length', $len + $shift, $vm, true);
         return $removed;
     }
 
     /** Copy index $from to $to, deleting $to when $from is a hole. */
-    private static function moveIdx(Vm $vm, JSObject $o, int $from, int $to): void
+    private static function moveIdx(Vm $vm, JSObject $o, int $from, int $to, bool $strict = false): void
     {
         $present = false;
         $v = self::getIdx($vm, $o, $from, $present);
         if ($present) {
-            $o->set((string)$to, $v, $vm, false);
+            $o->set((string)$to, $v, $vm, $strict);
         } else {
-            $o->deleteKey((string)$to, $vm, false);
+            $o->deleteKey((string)$to, $vm, $strict);
         }
     }
 
@@ -446,7 +530,13 @@ final class ArrayBuiltins
         if ($from < 0) {
             $from = max(0, $len + $from);
         }
-        for ($i = $from; $i < $len; $i++) {
+        $visit = self::visitList($o, $len);
+        $count = $visit === null ? $len : count($visit);
+        for ($j = 0; $j < $count; $j++) {
+            $i = $visit === null ? $j : $visit[$j];
+            if ($i < $from) {
+                continue;
+            }
             $present = false;
             $v = self::getIdx($vm, $o, $i, $present);
             if ($present && TypeOps::strictEquals($v, $needle)) {
@@ -467,7 +557,22 @@ final class ArrayBuiltins
         } else {
             $from = min($from, $len - 1);
         }
-        for ($i = $from; $i >= 0; $i--) {
+        $visit = self::visitList($o, $len);
+        if ($visit === null) {
+            for ($i = $from; $i >= 0; $i--) {
+                $present = false;
+                $v = self::getIdx($vm, $o, $i, $present);
+                if ($present && TypeOps::strictEquals($v, $needle)) {
+                    return $i;
+                }
+            }
+            return -1;
+        }
+        for ($j = count($visit) - 1; $j >= 0; $j--) {
+            $i = $visit[$j];
+            if ($i > $from) {
+                continue;
+            }
             $present = false;
             $v = self::getIdx($vm, $o, $i, $present);
             if ($present && TypeOps::strictEquals($v, $needle)) {
@@ -492,7 +597,10 @@ final class ArrayBuiltins
         $fn = self::callbackOf($vm, $args, 'forEach');
         $thisArg = (\array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined);
         $len = self::lengthOf($vm, $o);
-        for ($i = 0; $i < $len; $i++) {
+        $visit = self::visitList($o, $len);
+        $count = $visit === null ? $len : count($visit);
+        for ($j = 0; $j < $count; $j++) {
+            $i = $visit === null ? $j : $visit[$j];
             $present = false;
             $v = self::getIdx($vm, $o, $i, $present);
             if ($present) {
@@ -510,7 +618,10 @@ final class ArrayBuiltins
         $len = self::lengthOf($vm, $o);
         $result = new JSArray($vm->realm->arrayPrototype());
         $result->length = $len;
-        for ($i = 0; $i < $len; $i++) {
+        $visit = self::visitList($o, $len);
+        $count = $visit === null ? $len : count($visit);
+        for ($j = 0; $j < $count; $j++) {
+            $i = $visit === null ? $j : $visit[$j];
             $present = false;
             $v = self::getIdx($vm, $o, $i, $present);
             if ($present) {
@@ -528,7 +639,10 @@ final class ArrayBuiltins
         $len = self::lengthOf($vm, $o);
         $result = new JSArray($vm->realm->arrayPrototype());
         $n = 0;
-        for ($i = 0; $i < $len; $i++) {
+        $visit = self::visitList($o, $len);
+        $count = $visit === null ? $len : count($visit);
+        for ($j = 0; $j < $count; $j++) {
+            $i = $visit === null ? $j : $visit[$j];
             $present = false;
             $v = self::getIdx($vm, $o, $i, $present);
             if ($present && Conversions::toBoolean($vm->invoke($fn, $thisArg, [$v, $i, $o]))) {
@@ -554,7 +668,11 @@ final class ArrayBuiltins
         $o = self::thisArray($vm, $t, $fromRight ? 'reduceRight' : 'reduce');
         $fn = self::callbackOf($vm, $args, 'reduce');
         $len = self::lengthOf($vm, $o);
-        $indices = $fromRight ? range($len - 1, 0, -1) : ($len > 0 ? range(0, $len - 1) : []);
+        $visit = self::visitList($o, $len);
+        if ($visit === null) {
+            $visit = $len > 0 ? range(0, $len - 1) : [];
+        }
+        $indices = $fromRight ? array_reverse($visit) : $visit;
         $acc = null;
         $hasAcc = count($args) > 1;
         if ($hasAcc) {
@@ -585,7 +703,10 @@ final class ArrayBuiltins
         $fn = self::callbackOf($vm, $args, 'some');
         $thisArg = (\array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined);
         $len = self::lengthOf($vm, $o);
-        for ($i = 0; $i < $len; $i++) {
+        $visit = self::visitList($o, $len);
+        $count = $visit === null ? $len : count($visit);
+        for ($j = 0; $j < $count; $j++) {
+            $i = $visit === null ? $j : $visit[$j];
             $present = false;
             $v = self::getIdx($vm, $o, $i, $present);
             if ($present && Conversions::toBoolean($vm->invoke($fn, $thisArg, [$v, $i, $o]))) {
@@ -601,7 +722,10 @@ final class ArrayBuiltins
         $fn = self::callbackOf($vm, $args, 'every');
         $thisArg = (\array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined);
         $len = self::lengthOf($vm, $o);
-        for ($i = 0; $i < $len; $i++) {
+        $visit = self::visitList($o, $len);
+        $count = $visit === null ? $len : count($visit);
+        for ($j = 0; $j < $count; $j++) {
+            $i = $visit === null ? $j : $visit[$j];
             $present = false;
             $v = self::getIdx($vm, $o, $i, $present);
             if ($present && !Conversions::toBoolean($vm->invoke($fn, $thisArg, [$v, $i, $o]))) {
