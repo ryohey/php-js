@@ -30,6 +30,25 @@ render: 80.11 ms each (12.5/s over 10 iterations), 5492 bytes of HTML
 byte-identical output, not merely "looks like HTML". `tests/ReactSsrTest.php`
 runs the same comparison under PHPUnit.
 
+## Where it stands
+
+Measured on this machine (PHP 8.4, no opcache preload), `renderToStaticMarkup`:
+
+| Rows | php-js | Node 22 | ratio |
+|---|---|---|---|
+| 20 | 76.6 ms | 1.36 ms | 56x |
+| 100 | 391 ms | 5.25 ms | 75x |
+
+Output is byte-identical in both cases. Boot is a further ~127 ms, of which
+~114 ms is compiling React — a cost the bytecode-file path removes entirely.
+
+The gap is dispatch, not the builtins: one render makes about 4000 native calls
+in total, so essentially all of the time is the `while/switch` loop executing
+bytecode at roughly 3M instructions per second. That is the risk DESIGN.md §15
+named, now with a number attached. Closing it means fewer instructions per
+operation (superinstructions, fused compare-and-branch) rather than a faster
+instruction.
+
 ## Reading the numbers
 
 `boot` and `render` are reported separately because they behave differently

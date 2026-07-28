@@ -596,6 +596,9 @@ final class Compiler
         }
         switch ($type) {
             case 'ExpressionStatement':
+                if (!$c->isProgram && $this->emitDiscardedUpdate($node->getExpression())) {
+                    return; // ++/-- on a local: no value to keep or discard
+                }
                 $this->genExpr($node->getExpression());
                 $c->emit($c->isProgram ? Op::SET_COMPLETION : Op::POP);
                 return;
@@ -684,8 +687,10 @@ final class Compiler
                 $lCont = $c->here();
                 $this->patchContinues($loop, $lCont);
                 if ($node->getUpdate() !== null) {
-                    $this->genExpr($node->getUpdate());
-                    $c->emit(Op::POP);
+                    if ($c->isProgram || !$this->emitDiscardedUpdate($node->getUpdate())) {
+                        $this->genExpr($node->getUpdate());
+                        $c->emit(Op::POP);
+                    }
                 }
                 $c->emit(Op::JMP, $lCond);
                 if ($jEnd >= 0) {
@@ -849,6 +854,35 @@ final class Compiler
         if ($n !== null && $n->getType() === 'FunctionDeclaration') {
             $this->fail($n, 'Function declarations cannot appear in statement position');
         }
+    }
+
+    /**
+     * `i++` whose value is thrown away, on an uncaptured local: emit the fused
+     * INC_LOCAL/DEC_LOCAL instead of the eight-instruction generic form.
+     * Only valid where the result is truly unused, so the ToNumber-then-add
+     * ordering is unobservable.
+     */
+    private function emitDiscardedUpdate(object $node): bool
+    {
+        if ($node->getType() !== 'UpdateExpression') {
+            return false;
+        }
+        $arg = self::unwrapParens($node->getArgument());
+        if ($arg->getType() !== 'Identifier') {
+            return false;
+        }
+        $binding = $this->resolve($arg->getName());
+        if (!$binding instanceof Binding || $binding->captured) {
+            return false;
+        }
+        if ($this->cur->strict) {
+            $this->checkAssignmentTarget($arg->getName(), $arg);
+        }
+        $this->cur->emit(
+            $node->getOperator() === '++' ? Op::INC_LOCAL : Op::DEC_LOCAL,
+            $binding->slot
+        );
+        return true;
     }
 
     /** Non-loop labeled statement: only `break label` targets it. */

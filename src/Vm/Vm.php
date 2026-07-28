@@ -209,14 +209,20 @@ final class Vm
         $env = $frame[self::F_ENV];
         $pc = $frame[self::F_PC];
         $sp = $this->sp;
+        // Both of these were property accesses on every instruction, which is
+        // measurable at this dispatch cost. The countdown is a plain local and
+        // only exists at all when a limit is armed; $this->sp is instead
+        // published by the individual opcodes that can re-enter the VM.
+        $deadline = $this->deadline;
+        $ticks = self::DEADLINE_CHECK_INTERVAL;
 
         for (;;) {
             try {
-                $this->sp = $sp; // keep reentrant helpers safe (see DESIGN.md §4.3)
-                if (--$this->ticksToDeadlineCheck <= 0) {
-                    $this->ticksToDeadlineCheck = self::DEADLINE_CHECK_INTERVAL;
-                    if ($this->deadline !== null && microtime(true) > $this->deadline) {
-                        $this->deadline = null; // let the unwind itself complete
+                if ($deadline !== null && --$ticks <= 0) {
+                    $ticks = self::DEADLINE_CHECK_INTERVAL;
+                    if (microtime(true) > $deadline) {
+                        $this->deadline = $deadline = null; // let the unwind finish
+                        $this->sp = $sp;
                         $this->throwError('RangeError', 'Script execution timed out');
                     }
                 }
@@ -291,11 +297,13 @@ final class Vm
                         if (null !== ($v = $g->props[$name] ?? null)) {
                             $stack[$sp++] = $v;
                         } else {
+                            $this->sp = $sp;
                             $stack[$sp++] = $this->globalGet($name);
                         }
                         break;
                     }
                     case Op::SET_GLOBAL:
+                        $this->sp = $sp;
                         $this->globalSet($consts[$code[$pc++]], $stack[$sp - 1], $strict);
                         break;
                     case Op::DECL_GLOBAL: {
@@ -307,6 +315,7 @@ final class Vm
                         break;
                     }
                     case Op::TYPEOF_GLOBAL: {
+                        $this->sp = $sp;
                         $name = $consts[$code[$pc++]];
                         $g = $realm->globalObject;
                         $stack[$sp++] = $g->hasProperty($name)
@@ -315,6 +324,7 @@ final class Vm
                         break;
                     }
                     case Op::DEL_GLOBAL: {
+                        $this->sp = $sp;
                         $name = $consts[$code[$pc++]];
                         $g = $realm->globalObject;
                         $stack[$sp++] = $g->hasOwn($name) ? $g->deleteKey($name, $this, false) : true;
@@ -329,6 +339,7 @@ final class Vm
                         } elseif ($obj instanceof JSArray && $key === 'length') {
                             $stack[$sp - 1] = $obj->length;
                         } else {
+                            $this->sp = $sp;
                             $stack[$sp - 1] = $this->getMember($obj, $key);
                         }
                         break;
@@ -341,6 +352,7 @@ final class Vm
                             && !($obj instanceof JSArray && $key === 'length')) {
                             $obj->props[$key] = $val;
                         } else {
+                            $this->sp = $sp;
                             $this->setMember($obj, $key, $val, $strict);
                         }
                         $stack[$sp - 1] = $val;
@@ -355,9 +367,11 @@ final class Vm
                             } elseif (array_key_exists($key, $obj->elements)) {
                                 $stack[$sp - 1] = null;
                             } else {
+                                $this->sp = $sp;
                                 $stack[$sp - 1] = $this->getMember($obj, $key);
                             }
                         } else {
+                            $this->sp = $sp;
                             $stack[$sp - 1] = $this->getMember($obj, $key);
                         }
                         break;
@@ -373,6 +387,7 @@ final class Vm
                                 $obj->length = $key + 1;
                             }
                         } else {
+                            $this->sp = $sp;
                             $this->setMember($obj, $key, $val, $strict);
                         }
                         $stack[$sp - 1] = $val;
@@ -381,6 +396,7 @@ final class Vm
                     case Op::DEL_ELEM: {
                         $key = $stack[--$sp];
                         $obj = $stack[$sp - 1];
+                        $this->sp = $sp;
                         $stack[$sp - 1] = $this->deleteMember($obj, $key, $strict);
                         break;
                     }
@@ -390,6 +406,7 @@ final class Vm
                         if ($obj instanceof JSObject && null !== ($v = $obj->props[$key] ?? null)) {
                             $fn = $v;
                         } else {
+                            $this->sp = $sp;
                             $fn = $this->getMember($obj, $key);
                         }
                         $stack[$sp - 1] = $fn;
@@ -399,6 +416,7 @@ final class Vm
                     case Op::GET_METHOD_ELEM: {
                         $key = $stack[--$sp];
                         $obj = $stack[$sp - 1];
+                        $this->sp = $sp;
                         $stack[$sp - 1] = $this->getMember($obj, $key);
                         $stack[$sp++] = $obj;
                         break;
@@ -434,6 +452,7 @@ final class Vm
                         } elseif (is_string($a) && is_string($b)) {
                             $stack[$sp - 1] = $a . $b;
                         } else {
+                            $this->sp = $sp;
                             $stack[$sp - 1] = TypeOps::add($this, $a, $b);
                         }
                         break;
@@ -442,9 +461,11 @@ final class Vm
                         $b = $stack[--$sp];
                         $a = $stack[$sp - 1];
                         if (!(is_int($a) || is_float($a))) {
+                            $this->sp = $sp;
                             $a = Conversions::toNumber($this, $a);
                         }
                         if (!(is_int($b) || is_float($b))) {
+                            $this->sp = $sp;
                             $b = Conversions::toNumber($this, $b);
                         }
                         $stack[$sp - 1] = $a - $b;
@@ -454,9 +475,11 @@ final class Vm
                         $b = $stack[--$sp];
                         $a = $stack[$sp - 1];
                         if (!(is_int($a) || is_float($a))) {
+                            $this->sp = $sp;
                             $a = Conversions::toNumber($this, $a);
                         }
                         if (!(is_int($b) || is_float($b))) {
+                            $this->sp = $sp;
                             $b = Conversions::toNumber($this, $b);
                         }
                         $stack[$sp - 1] = $a * $b;
@@ -466,9 +489,11 @@ final class Vm
                         $b = $stack[--$sp];
                         $a = $stack[$sp - 1];
                         if (!(is_int($a) || is_float($a))) {
+                            $this->sp = $sp;
                             $a = Conversions::toNumber($this, $a);
                         }
                         if (!(is_int($b) || is_float($b))) {
+                            $this->sp = $sp;
                             $b = Conversions::toNumber($this, $b);
                         }
                         $stack[$sp - 1] = fdiv((float)$a, (float)$b);
@@ -494,6 +519,7 @@ final class Vm
                     case Op::NEG: {
                         $a = $stack[$sp - 1];
                         if (!(is_int($a) || is_float($a))) {
+                            $this->sp = $sp;
                             $a = Conversions::toNumber($this, $a);
                         }
                         // Negating int 0 must produce -0, which only float has.
@@ -503,6 +529,7 @@ final class Vm
                     case Op::TONUM: {
                         $a = $stack[$sp - 1];
                         if (!(is_int($a) || is_float($a))) {
+                            $this->sp = $sp;
                             $stack[$sp - 1] = Conversions::toNumber($this, $a);
                         }
                         break;
@@ -512,6 +539,7 @@ final class Vm
                         break;
                     case Op::BNOT: {
                         $a = $stack[$sp - 1];
+                        $this->sp = $sp;
                         $i = is_int($a) ? ((($a & 0xFFFFFFFF) ^ 0x80000000) - 0x80000000) : Conversions::toInt32($this, $a);
                         $stack[$sp - 1] = ~$i;
                         break;
@@ -528,6 +556,7 @@ final class Vm
                     case Op::USHR: {
                         $b = $stack[--$sp];
                         $a = $stack[$sp - 1];
+                        $this->sp = $sp;
                         $a = is_int($a) ? ((($a & 0xFFFFFFFF) ^ 0x80000000) - 0x80000000) : Conversions::toInt32($this, $a);
                         $b = is_int($b) ? ((($b & 0xFFFFFFFF) ^ 0x80000000) - 0x80000000) : Conversions::toInt32($this, $b);
                         $stack[$sp - 1] = match ($op) {
@@ -549,6 +578,7 @@ final class Vm
                         } elseif (is_string($a) && is_string($b)) {
                             $stack[$sp - 1] = $a === $b;
                         } else {
+                            $this->sp = $sp;
                             $stack[$sp - 1] = TypeOps::looseEquals($this, $a, $b);
                         }
                         break;
@@ -561,6 +591,7 @@ final class Vm
                         } elseif (is_string($a) && is_string($b)) {
                             $stack[$sp - 1] = $a !== $b;
                         } else {
+                            $this->sp = $sp;
                             $stack[$sp - 1] = !TypeOps::looseEquals($this, $a, $b);
                         }
                         break;
@@ -589,6 +620,7 @@ final class Vm
                         } elseif (is_string($a) && is_string($b)) {
                             $stack[$sp - 1] = strcmp($a, $b) < 0;
                         } else {
+                            $this->sp = $sp;
                             $stack[$sp - 1] = TypeOps::lessThan($this, $a, $b, true) ?? false;
                         }
                         break;
@@ -601,6 +633,7 @@ final class Vm
                         } elseif (is_string($a) && is_string($b)) {
                             $stack[$sp - 1] = strcmp($a, $b) > 0;
                         } else {
+                            $this->sp = $sp;
                             $stack[$sp - 1] = TypeOps::lessThan($this, $b, $a, false) ?? false;
                         }
                         break;
@@ -613,6 +646,7 @@ final class Vm
                         } elseif (is_string($a) && is_string($b)) {
                             $stack[$sp - 1] = strcmp($a, $b) <= 0;
                         } else {
+                            $this->sp = $sp;
                             $r = TypeOps::lessThan($this, $b, $a, false);
                             $stack[$sp - 1] = $r === null ? false : !$r;
                         }
@@ -626,6 +660,7 @@ final class Vm
                         } elseif (is_string($a) && is_string($b)) {
                             $stack[$sp - 1] = strcmp($a, $b) >= 0;
                         } else {
+                            $this->sp = $sp;
                             $r = TypeOps::lessThan($this, $a, $b, true);
                             $stack[$sp - 1] = $r === null ? false : !$r;
                         }
@@ -633,11 +668,13 @@ final class Vm
                     }
                     case Op::IN_OP: {
                         $obj = $stack[--$sp];
+                        $this->sp = $sp;
                         $stack[$sp - 1] = TypeOps::inOp($this, $stack[$sp - 1], $obj);
                         break;
                     }
                     case Op::INSTANCEOF: {
                         $ctor = $stack[--$sp];
+                        $this->sp = $sp;
                         $stack[$sp - 1] = TypeOps::instanceofOp($this, $stack[$sp - 1], $ctor);
                         break;
                     }
@@ -881,6 +918,7 @@ final class Vm
                         $pattern = $consts[$code[$pc++]];
                         $flags = $consts[$code[$pc++]];
                         $pcre = $consts[$code[$pc++]];
+                        $this->sp = $sp;
                         $stack[$sp++] = $realm->createRegExp($pattern, $flags, $pcre);
                         break;
                     }
@@ -934,6 +972,7 @@ final class Vm
                     case Op::FORIN_INIT: {
                         $slot = $code[$pc++];
                         $v = $stack[--$sp];
+                        $this->sp = $sp;
                         if ($v === null || $v instanceof JSUndefined) {
                             $stack[$base + $slot] = [[], 0, null];
                         } else {
@@ -971,6 +1010,31 @@ final class Vm
                         $stack[$base + $slot][1] = $i;
                         if (!$pushed) {
                             $pc = $target;
+                        }
+                        break;
+                    }
+
+                    case Op::INC_LOCAL: {
+                        $slot = $base + $code[$pc++];
+                        $v = $stack[$slot];
+                        if (is_int($v)) {
+                            $stack[$slot] = $v + 1;
+                        } else {
+                            $this->sp = $sp;
+                            $n = (is_float($v)) ? $v : Conversions::toNumber($this, $v);
+                            $stack[$slot] = $n + 1;
+                        }
+                        break;
+                    }
+                    case Op::DEC_LOCAL: {
+                        $slot = $base + $code[$pc++];
+                        $v = $stack[$slot];
+                        if (is_int($v)) {
+                            $stack[$slot] = $v - 1;
+                        } else {
+                            $this->sp = $sp;
+                            $n = (is_float($v)) ? $v : Conversions::toNumber($this, $v);
+                            $stack[$slot] = $n - 1;
                         }
                         break;
                     }

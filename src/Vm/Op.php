@@ -110,7 +110,15 @@ final class Op
     public const FORIN_INIT = 78;  // t   pops object, stores iterator in slot
     public const FORIN_NEXT = 79;  // t a pushes next key or jumps to a
 
-    public const NOP = 80;
+    /**
+     * Statement-position ++/-- on an uncaptured local. The generic form costs
+     * eight instructions (load, ToNumber, dup, push, add, store, pop, pop);
+     * loop counters are common enough to earn one.
+     */
+    public const INC_LOCAL = 80;  // n
+    public const DEC_LOCAL = 81;  // n
+
+    public const NOP = 82;
 
     /** Operand kind string per opcode (one char per operand). */
     public const OPERANDS = [
@@ -143,6 +151,7 @@ final class Op
         self::ARGUMENTS => '',
         self::THROW => '', self::TRY_ENTER => 'a', self::TRY_LEAVE => '',
         self::FORIN_INIT => 't', self::FORIN_NEXT => 'ta',
+        self::INC_LOCAL => 'n', self::DEC_LOCAL => 'n',
         self::NOP => '',
     ];
 
