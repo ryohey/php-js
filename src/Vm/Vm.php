@@ -1123,6 +1123,18 @@ final class Vm
         throw new JSThrowSignal($value);
     }
 
+    /**
+     * Whether the code that is currently executing is strict. `eval` consults
+     * this so evaluated source inherits the caller's mode, which is the part of
+     * direct-eval semantics that is observable without scope injection
+     * (DESIGN.md §15).
+     */
+    public function callerIsStrict(): bool
+    {
+        $top = end($this->frames);
+        return $top !== false && $top[self::F_TPL]['strict'];
+    }
+
     /** Current JS stack description, innermost first (for Error.stack). */
     public function captureStack(): string
     {

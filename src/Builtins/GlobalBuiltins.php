@@ -111,8 +111,12 @@ final class GlobalBuiltins
         if (!is_string($src)) {
             return $src;
         }
+        // Direct eval inherits the caller's strictness. Scope injection is not
+        // implemented (DESIGN.md §15), but the mode is, and it is what most
+        // strict-mode early-error tests actually observe.
+        $prefix = $vm->callerIsStrict() ? "\"use strict\";\n" : '';
         try {
-            $tpl = Compiler::compile($src);
+            $tpl = Compiler::compile($prefix . $src);
         } catch (\PhpJs\Compiler\CompileError $e) {
             $vm->throwError('SyntaxError', $e->getMessage());
         }

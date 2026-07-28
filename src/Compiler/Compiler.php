@@ -14,6 +14,7 @@ use Peast\Syntax\Node\StringLiteral;
 use PhpJs\RegExp\RegExpSyntaxError;
 use PhpJs\RegExp\RegExpTranslator;
 use PhpJs\Runtime\Conversions;
+use PhpJs\Runtime\StringOps;
 use PhpJs\Vm\Op;
 
 /**
@@ -1155,7 +1156,10 @@ final class Compiler
                 $c->emit(Op::PUSH_CONST, $c->constIndex(is_float($v) ? $v : (float)$v));
             }
         } elseif ($node instanceof StringLiteral) {
-            $c->emit(Op::PUSH_CONST, $c->constIndex($node->getValue()));
+            if ($c->strict) {
+                $this->checkStrictStringEscapes($node);
+            }
+            $c->emit(Op::PUSH_CONST, $c->constIndex(self::decodeStringLiteral($node->getRaw())));
         } elseif ($node instanceof RegExpLiteral) {
             // A regexp literal is an early error, so translate it here rather
             // than at runtime: bad patterns and flags become SyntaxErrors at
@@ -1183,6 +1187,152 @@ final class Compiler
         } else {
             $this->unsupported($node, 'Unsupported literal');
         }
+    }
+
+    /**
+     * Strict mode forbids legacy octal escapes and \8 / \9 in string literals
+     * (ES5.1 7.8.4 / Annex B). Peast accepts them, so the check lives here.
+     */
+    private function checkStrictStringEscapes(object $node): void
+    {
+        $raw = $node->getRaw();
+        $len = strlen($raw);
+        for ($i = 0; $i < $len - 1; $i++) {
+            if ($raw[$i] !== '\\') {
+                continue;
+            }
+            $next = $raw[$i + 1];
+            $i++; // consume the escaped character
+            if ($next === '8' || $next === '9') {
+                $this->fail($node, "\\$next is not allowed in strict mode");
+            }
+            if ($next < '0' || $next > '7') {
+                continue;
+            }
+            // \0 is legal as long as no decimal digit follows it.
+            $following = $raw[$i + 1] ?? '';
+            if ($next === '0' && ($following < '0' || $following > '9')) {
+                continue;
+            }
+            $this->fail($node, 'Octal escape sequences are not allowed in strict mode');
+        }
+    }
+
+    /**
+     * Decode a string literal from its source text.
+     *
+     * Peast's getValue() leaves legacy octal escapes undecoded ("\\0" comes
+     * back as two characters) and decodes "\\101" inconsistently, so the
+     * escape grammar is handled here. Working in UTF-16 code units lets an
+     * adjacent \uD83D\uDE00 pair combine into one code point while lone
+     * surrogates survive as WTF-8.
+     */
+    public static function decodeStringLiteral(string $raw): string
+    {
+        $body = substr($raw, 1, -1);
+        $len = strlen($body);
+        $units = [];
+        for ($i = 0; $i < $len; $i++) {
+            $ch = $body[$i];
+            if ($ch !== '\\') {
+                if (ord($ch) < 0x80) {
+                    $units[] = ord($ch);
+                    continue;
+                }
+                $width = match (true) {
+                    (ord($ch) & 0xE0) === 0xC0 => 2,
+                    (ord($ch) & 0xF0) === 0xE0 => 3,
+                    (ord($ch) & 0xF8) === 0xF0 => 4,
+                    default => 1,
+                };
+                foreach (StringOps::toCodeUnits(substr($body, $i, $width)) as $u) {
+                    $units[] = $u;
+                }
+                $i += $width - 1;
+                continue;
+            }
+            $i++;
+            if ($i >= $len) {
+                break;
+            }
+            $e = $body[$i];
+            switch ($e) {
+                case 'b': $units[] = 0x08; break;
+                case 'f': $units[] = 0x0C; break;
+                case 'n': $units[] = 0x0A; break;
+                case 'r': $units[] = 0x0D; break;
+                case 't': $units[] = 0x09; break;
+                case 'v': $units[] = 0x0B; break;
+                case "\n": break;                       // line continuation
+                case "\r":
+                    if (($body[$i + 1] ?? '') === "\n") {
+                        $i++;
+                    }
+                    break;
+                case 'x':
+                    $hex = substr($body, $i + 1, 2);
+                    if (strlen($hex) === 2 && ctype_xdigit($hex)) {
+                        $units[] = (int)hexdec($hex);
+                        $i += 2;
+                    } else {
+                        $units[] = ord($e);
+                    }
+                    break;
+                case 'u':
+                    if (($body[$i + 1] ?? '') === '{') {
+                        $close = strpos($body, '}', $i + 2);
+                        $digits = $close === false ? '' : substr($body, $i + 2, $close - $i - 2);
+                        if ($digits !== '' && ctype_xdigit($digits)) {
+                            foreach (StringOps::toCodeUnits(StringOps::encodeCp((int)hexdec($digits))) as $u) {
+                                $units[] = $u;
+                            }
+                            $i = $close;
+                            break;
+                        }
+                    }
+                    $hex = substr($body, $i + 1, 4);
+                    if (strlen($hex) === 4 && ctype_xdigit($hex)) {
+                        $units[] = (int)hexdec($hex);
+                        $i += 4;
+                    } else {
+                        $units[] = ord($e);
+                    }
+                    break;
+                default:
+                    if ($e >= '0' && $e <= '7') {
+                        // LegacyOctalEscapeSequence: up to three digits, and at
+                        // most two when the first is 4-7.
+                        $maxDigits = $e <= '3' ? 3 : 2;
+                        $octal = $e;
+                        while (strlen($octal) < $maxDigits) {
+                            $next = $body[$i + 1] ?? '';
+                            if ($next < '0' || $next > '7') {
+                                break;
+                            }
+                            $octal .= $next;
+                            $i++;
+                        }
+                        $units[] = (int)octdec($octal);
+                        break;
+                    }
+                    // Any other escaped character stands for itself.
+                    if (ord($e) < 0x80) {
+                        $units[] = ord($e);
+                    } else {
+                        $width = match (true) {
+                            (ord($e) & 0xE0) === 0xC0 => 2,
+                            (ord($e) & 0xF0) === 0xE0 => 3,
+                            (ord($e) & 0xF8) === 0xF0 => 4,
+                            default => 1,
+                        };
+                        foreach (StringOps::toCodeUnits(substr($body, $i, $width)) as $u) {
+                            $units[] = $u;
+                        }
+                        $i += $width - 1;
+                    }
+            }
+        }
+        return StringOps::fromCodeUnits($units);
     }
 
     private function genUnary(object $node): void
