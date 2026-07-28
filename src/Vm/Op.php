@@ -96,7 +96,7 @@ final class Op
     public const NEW_OBJECT = 68;
     public const NEW_ARRAY = 69;   // i (element count popped)
     public const NEW_FUNC = 70;    // f
-    public const NEW_REGEXP = 71;  // k k (pattern, flags)
+    public const NEW_REGEXP = 71;  // k k k (pattern, flags, translated PCRE)
     public const PUSH_THIS = 72;
     public const PUSH_CALLEE = 73;
     public const ARGUMENTS = 74;
@@ -139,7 +139,7 @@ final class Op
         self::RETURN => '', self::RETURN_UNDEF => '',
         self::SET_COMPLETION => '', self::RETURN_COMPLETION => '',
         self::NEW_OBJECT => '', self::NEW_ARRAY => 'i', self::NEW_FUNC => 'f',
-        self::NEW_REGEXP => 'kk', self::PUSH_THIS => '', self::PUSH_CALLEE => '',
+        self::NEW_REGEXP => 'kkk', self::PUSH_THIS => '', self::PUSH_CALLEE => '',
         self::ARGUMENTS => '',
         self::THROW => '', self::TRY_ENTER => 'a', self::TRY_LEAVE => '',
         self::FORIN_INIT => 't', self::FORIN_NEXT => 'ta',

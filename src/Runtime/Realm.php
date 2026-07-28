@@ -159,9 +159,10 @@ final class Realm
         return $err;
     }
 
-    public function createRegExp(string $pattern, string $flags): JSObject
+    /** $pcre is the pre-translated form when it came from a literal. */
+    public function createRegExp(string $pattern, string $flags, ?string $pcre = null): JSObject
     {
-        return RegExpBuiltins::create($this, $pattern, $flags);
+        return RegExpBuiltins::create($this, $pattern, $flags, $pcre);
     }
 
     public function enqueueMicrotask(mixed $callable, array $args): void

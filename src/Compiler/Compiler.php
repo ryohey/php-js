@@ -11,6 +11,8 @@ use Peast\Syntax\Node\NullLiteral;
 use Peast\Syntax\Node\NumericLiteral;
 use Peast\Syntax\Node\RegExpLiteral;
 use Peast\Syntax\Node\StringLiteral;
+use PhpJs\RegExp\RegExpSyntaxError;
+use PhpJs\RegExp\RegExpTranslator;
 use PhpJs\Runtime\Conversions;
 use PhpJs\Vm\Op;
 
@@ -413,6 +415,14 @@ final class Compiler
     {
         $ctx->nparams = count($ctx->params);
         $ctx->nlocals = $ctx->nparams;
+        // A mapped arguments object aliases the parameters, and the only
+        // heap-safe place to share them is an environment slot (§11.3).
+        $mapParams = $ctx->usesArguments && !$ctx->strict;
+        foreach ($ctx->bindings as $b) {
+            if ($mapParams && $b->kind === 'param') {
+                $b->captured = true;
+            }
+        }
         foreach ($ctx->bindings as $b) {
             if ($b->kind === 'param') {
                 $b->slot = $b->paramIndex;
@@ -438,6 +448,14 @@ final class Compiler
                 $b->envIndex = $ctx->nenv++;
             } else {
                 $b->slot = $ctx->nlocals++;
+            }
+        }
+        if ($mapParams) {
+            foreach ($ctx->params as $i => $name) {
+                // With a repeated parameter name only the last position is
+                // aliased; the earlier ones are shadowed and unmapped.
+                $shadowed = in_array($name, array_slice($ctx->params, $i + 1), true);
+                $ctx->argMap[$i] = $shadowed ? -1 : $ctx->bindings[$name]->envIndex;
             }
         }
     }
@@ -1139,7 +1157,27 @@ final class Compiler
         } elseif ($node instanceof StringLiteral) {
             $c->emit(Op::PUSH_CONST, $c->constIndex($node->getValue()));
         } elseif ($node instanceof RegExpLiteral) {
-            $c->emit(Op::NEW_REGEXP, $c->constIndex($node->getPattern()), $c->constIndex($node->getFlags()));
+            // A regexp literal is an early error, so translate it here rather
+            // than at runtime: bad patterns and flags become SyntaxErrors at
+            // compile time, and the PCRE form rides the constant pool into
+            // opcache (DESIGN.md §8).
+            $raw = $node->getRaw();
+            if (preg_match('/[\r\n\x{2028}\x{2029}]/u', $raw)) {
+                $this->fail($node, 'Regular expression literal may not span lines');
+            }
+            $pattern = $node->getPattern();
+            $flags = $node->getFlags();
+            try {
+                $pcre = RegExpTranslator::translate($pattern, $flags);
+            } catch (RegExpSyntaxError $e) {
+                $this->fail($node, $e->getMessage());
+            }
+            $c->emit(
+                Op::NEW_REGEXP,
+                $c->constIndex($pattern),
+                $c->constIndex($flags),
+                $c->constIndex($pcre)
+            );
         } elseif ($node instanceof BigIntLiteral) {
             $this->unsupported($node, 'BigInt literals are not supported (ES5 target)');
         } else {
@@ -1180,7 +1218,12 @@ final class Compiler
                     if ($b instanceof Binding) {
                         $this->emitLoadBinding($b);
                         $c->emit(Op::TYPEOF);
+                    } elseif ($arg->getName() === 'arguments' && !$c->isProgram) {
+                        $c->emit(Op::ARGUMENTS);
+                        $c->emit(Op::TYPEOF);
                     } else {
+                        // Only a genuinely free name may take the
+                        // "unresolvable is undefined" path.
                         $c->emit(Op::TYPEOF_GLOBAL, $c->constIndex($arg->getName()));
                     }
                 } else {

@@ -27,6 +27,12 @@ final class Ctx
     public array $fnDecls = [];
     /** @var list<string> program-level var names (global object properties) */
     public array $globalDecls = [];
+    /**
+     * Environment slot backing each parameter position, or -1 when that
+     * position is not aliased. Empty unless a mapped arguments object is needed.
+     * @var array<int, int>
+     */
+    public array $argMap = [];
     public int $nparams = 0;
     public int $nlocals = 0;
     public int $nenv = 0;
@@ -133,6 +139,7 @@ final class Ctx
             'nlocals' => $this->nlocals,
             'nenv' => $this->nenv,
             'usesArgs' => $this->usesArguments,
+            'argMap' => $this->argMap,
             'code' => $this->code,
             'consts' => $this->consts,
             'children' => $this->children,

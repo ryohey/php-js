@@ -16,6 +16,11 @@ language/eval-code
 language/statementList
 language/directive-prologue
 language/asi
+language/arguments-object
+language/literals
+language/identifier-resolution
+language/future-reserved-words
+language/source-text
 built-ins/Object
 built-ins/Function
 built-ins/Array

@@ -880,7 +880,8 @@ final class Vm
                     case Op::NEW_REGEXP: {
                         $pattern = $consts[$code[$pc++]];
                         $flags = $consts[$code[$pc++]];
-                        $stack[$sp++] = $realm->createRegExp($pattern, $flags);
+                        $pcre = $consts[$code[$pc++]];
+                        $stack[$sp++] = $realm->createRegExp($pattern, $flags, $pcre);
                         break;
                     }
                     case Op::PUSH_THIS:
@@ -892,14 +893,27 @@ final class Vm
                     case Op::ARGUMENTS: {
                         if ($frame[self::F_ARGSOBJ] === null) {
                             $args = $frame[self::F_ARGS] ?? [];
-                            $obj = new JSObject($realm->objectPrototype());
-                            $obj->className = 'Arguments';
-                            foreach ($args ?? [] as $i => $v) {
-                                $obj->props[$i] = $v;
+                            $obj = new \PhpJs\Runtime\JSArgumentsObject($realm->objectPrototype(), $env);
+                            foreach ($args as $i => $v) {
+                                $obj->props[(string)$i] = $v;
                             }
-                            $obj->defineOwnData('length', count($args ?? []), JSObject::W | JSObject::C);
-                            if (!$strict && $frame[self::F_FUNC] !== null) {
-                                $obj->defineOwnData('callee', $frame[self::F_FUNC], JSObject::W | JSObject::C);
+                            $obj->defineOwnData('length', count($args), JSObject::W | JSObject::C);
+                            if ($strict) {
+                                // Strict arguments objects are unmapped and
+                                // poison callee/caller.
+                                $thrower = $realm->nativeFn('Function.prototype.restricted', '', 0);
+                                foreach (['callee', 'caller'] as $poisoned) {
+                                    $obj->defineOwnAccessor($poisoned, $thrower, $thrower, 0);
+                                }
+                            } else {
+                                if ($frame[self::F_FUNC] !== null) {
+                                    $obj->defineOwnData('callee', $frame[self::F_FUNC], JSObject::W | JSObject::C);
+                                }
+                                foreach ($tpl['argMap'] as $i => $envIndex) {
+                                    if ($envIndex >= 0 && $i < count($args)) {
+                                        $obj->map[$i] = $envIndex;
+                                    }
+                                }
                             }
                             $frame[self::F_ARGSOBJ] = $obj;
                         }

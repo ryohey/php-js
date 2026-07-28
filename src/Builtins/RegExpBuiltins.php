@@ -73,10 +73,10 @@ final class RegExpBuiltins
         return $ctor;
     }
 
-    public static function create(Realm $realm, string $pattern, string $flags): JSRegExp
+    public static function create(Realm $realm, string $pattern, string $flags, ?string $pcre = null): JSRegExp
     {
         try {
-            $pcre = RegExpTranslator::translate($pattern, $flags);
+            $pcre ??= RegExpTranslator::translate($pattern, $flags);
         } catch (RegExpSyntaxError $e) {
             if ($realm->vm !== null) {
                 $realm->vm->throwError('SyntaxError', $e->getMessage());
