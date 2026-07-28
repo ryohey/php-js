@@ -36,6 +36,12 @@ final class Realm
 
     /** Host-side output sink for console.* — not part of the JS heap. */
     public mixed $hostWriter = null;
+    /**
+     * Handle for whatever host layer owns this realm (a module loader, a
+     * request context). Host-side only: it is never reachable from a JSObject,
+     * so it does not violate the snapshot constraints of §11.3.
+     */
+    public mixed $hostContext = null;
 
     /** @var array<string, JSObject> memoized builtin containers */
     private array $memo = [];

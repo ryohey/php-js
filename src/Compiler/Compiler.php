@@ -578,6 +578,15 @@ final class Compiler
         $labels = $this->pendingLabels;
         $this->pendingLabels = [];
         $type = $node->getType();
+        if ($labels !== [] && !isset(self::CONSUMES_LABELS[$type])) {
+            // Any statement may carry a label, and `break label` must exit it.
+            // Statement kinds that manage their own break/continue targets are
+            // listed in CONSUMES_LABELS; everything else gets a plain wrapper.
+            $wrapper = $this->pushLoop($labels, false);
+            $this->genStmt($node);
+            $this->popLoop($wrapper);
+            return;
+        }
         if ($c->isProgram && isset(self::RESETS_COMPLETION[$type])) {
             // These statements start with V = undefined, so a preceding
             // expression statement's value must not leak out of them
@@ -808,6 +817,17 @@ final class Compiler
      * Statement types whose completion value starts as undefined rather than
      * inheriting the previous statement's value.
      */
+    /** Statement kinds that push their own break/continue target for a label. */
+    private const CONSUMES_LABELS = [
+        'WhileStatement' => true,
+        'DoWhileStatement' => true,
+        'ForStatement' => true,
+        'ForInStatement' => true,
+        'SwitchStatement' => true,
+        'BlockStatement' => true,
+        'LabeledStatement' => true,
+    ];
+
     private const RESETS_COMPLETION = [
         'WhileStatement' => true,
         'DoWhileStatement' => true,

@@ -1,0 +1,107 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+foreach ([__DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../../vendor/autoload.php'] as $autoload) {
+    if (file_exists($autoload)) {
+        require $autoload;
+        break;
+    }
+}
+
+use PhpJs\Bench\Benchmark;
+use PhpJs\JSException;
+
+$options = [
+    'items' => Benchmark::DEFAULT_ITEMS,
+    'iterations' => 20,
+    'method' => 'renderToStaticMarkup',
+    'print' => false,
+    'compare' => false,
+];
+for ($i = 1; $i < $argc; $i++) {
+    switch ($argv[$i]) {
+        case '--items':
+            $options['items'] = (int)$argv[++$i];
+            break;
+        case '--iterations':
+            $options['iterations'] = (int)$argv[++$i];
+            break;
+        case '--method':
+            $options['method'] = $argv[++$i];
+            break;
+        case '--print':
+            $options['print'] = true;
+            break;
+        case '--compare-node':
+            $options['compare'] = true;
+            break;
+        case '--help':
+            fwrite(STDOUT, <<<TXT
+            Usage: react-ssr-bench [options]
+              --items N         list rows to render (default 20)
+              --iterations N    timed renders after a warm-up (default 20)
+              --method NAME     renderToStaticMarkup | renderToString
+              --print           write the rendered HTML to stdout
+              --compare-node    also render under Node and diff the two outputs
+
+            TXT);
+            exit(0);
+        default:
+            fwrite(STDERR, "Unknown option: {$argv[$i]}\n");
+            exit(2);
+    }
+}
+
+$bench = new Benchmark(dirname(__DIR__));
+
+try {
+    $bench->boot();
+    printf(
+        "boot: %.1f ms (%d modules, %.1f ms compiling), react %s\n",
+        $bench->bootSeconds * 1000,
+        $bench->modulesLoaded,
+        $bench->compileSeconds * 1000,
+        $bench->reactVersion()
+    );
+
+    $html = $bench->render($options['items'], $options['method']);
+    if ($options['print']) {
+        echo $html, "\n";
+    }
+
+    if ($options['compare']) {
+        $node = Benchmark::renderWithNode(dirname(__DIR__), $options['items'], $options['method']);
+        if ($node === null) {
+            fwrite(STDERR, "compare: node is not available, skipping\n");
+        } elseif ($node === $html) {
+            printf("compare: byte-identical to Node (%d bytes)\n", strlen($node));
+        } else {
+            fwrite(STDERR, "compare: OUTPUT DIFFERS from Node\n");
+            fwrite(STDERR, '  php-js: ' . substr($html, 0, 200) . "\n");
+            fwrite(STDERR, '  node:   ' . substr($node, 0, 200) . "\n");
+            exit(1);
+        }
+    }
+
+    $result = $bench->measure($options['iterations'], $options['items'], $options['method']);
+    printf(
+        "render: %.2f ms each (%.1f/s over %d iterations), %d bytes of HTML\n",
+        $result['perRenderMs'],
+        $result['rendersPerSecond'],
+        $result['iterations'],
+        $result['htmlBytes']
+    );
+} catch (JSException $e) {
+    fwrite(STDERR, "JS error:\n" . Benchmark::describe($e, $bench->host()) . "\n");
+    $out = $bench->host()->takeOutput();
+    if ($out !== '') {
+        fwrite(STDERR, "--- guest output ---\n$out");
+    }
+    exit(1);
+} catch (Throwable $e) {
+    fwrite(STDERR, get_class($e) . ': ' . $e->getMessage() . "\n");
+    fwrite(STDERR, $e->getTraceAsString() . "\n");
+    exit(1);
+}

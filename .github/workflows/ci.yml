@@ -49,3 +49,35 @@ jobs:
           find src bin -name '*.php' -print0 | xargs -0 -n1 php -l > /dev/null
           php -l bin/phpjs > /dev/null
           echo "lint OK"
+
+  packages:
+    name: Packages (node-compat, React SSR)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, opcache
+          coverage: none
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: node-compat
+        working-directory: packages/node-compat
+        run: |
+          composer install --no-interaction --no-progress
+          vendor/bin/phpunit
+
+      - name: React SSR benchmark
+        working-directory: packages/react-ssr-bench
+        run: |
+          npm install --no-audit --no-fund
+          composer install --no-interaction --no-progress
+          vendor/bin/phpunit
+          php bin/react-ssr-bench --items 20 --iterations 5 --compare-node

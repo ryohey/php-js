@@ -1,0 +1,12 @@
+{
+  "name": "phpjs-react-ssr-fixture",
+  "private": true,
+  "description": "Builds the ES5 React SSR bundle consumed by the PHP benchmark",
+  "scripts": {
+    "build": "node build.js"
+  },
+  "dependencies": {
+    "react": "^17.0.2",
+    "react-dom": "^17.0.2"
+  }
+}

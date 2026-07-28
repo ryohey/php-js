@@ -1,0 +1,42 @@
+{
+    "name": "ryohey/php-js-react-ssr-bench",
+    "description": "React server-side rendering benchmark for the php-js runtime",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.2",
+        "ryohey/php-js": "dev-main",
+        "ryohey/php-js-node-compat": "dev-main"
+    },
+    "autoload": {
+        "psr-4": {
+            "PhpJs\\Bench\\": "src/"
+        }
+    },
+    "bin": [
+        "bin/react-ssr-bench"
+    ],
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../.."
+        },
+        {
+            "type": "path",
+            "url": "../node-compat"
+        }
+    ],
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "autoload-dev": {
+        "psr-4": {
+            "PhpJs\\Bench\\Tests\\": "tests/"
+        }
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0"
+    }
+}

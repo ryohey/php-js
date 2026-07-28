@@ -14,12 +14,41 @@ final class BuiltinRegistry
 {
     /** @var array<string, callable>|null */
     private static ?array $table = null;
+    /** @var array<string, callable> host-supplied entries, kept across resets */
+    private static array $hostTable = [];
 
     public static function get(string $id): callable
     {
         self::$table ??= self::build();
         return self::$table[$id]
+            ?? self::$hostTable[$id]
             ?? throw new \LogicException("Unknown builtin function id: $id");
+    }
+
+    /**
+     * Register host natives (a module loader, timers, an fs bridge) without
+     * touching the core table. The heap only ever stores the string ID, so
+     * host functions stay outside the snapshot-safe object graph the same way
+     * builtins do (DESIGN.md §5.2).
+     *
+     * IDs are process-wide, matching the engine's own: a template compiled
+     * against one set of host natives must not be run against another.
+     *
+     * @param array<string, callable> $entries
+     */
+    public static function registerHost(array $entries): void
+    {
+        foreach ($entries as $id => $fn) {
+            if (isset(self::$hostTable[$id]) && self::$hostTable[$id] !== $fn) {
+                throw new \LogicException("Host builtin '$id' is already registered");
+            }
+            self::$hostTable[$id] = $fn;
+        }
+    }
+
+    public static function hasHost(string $id): bool
+    {
+        return isset(self::$hostTable[$id]);
     }
 
     private static function build(): array
