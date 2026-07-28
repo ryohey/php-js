@@ -14,9 +14,9 @@ The project's progress metric is the test262 pass rate over the ES5.1 subset
 
 | Area | Pass rate | Run |
 |---|---|---|
-| **overall** | **94.6%** | 12715 |
-| `language/` | 93.9% | 4047 |
-| `built-ins/` | 95.0% | 8668 |
+| **overall** | **96.5%** | 13048 |
+| `language/` | 94.2% | 4398 |
+| `built-ins/` | 97.7% | 8650 |
 
 A further ~22000 tests are skipped as out of scope: ES6+ features by front-matter
 tag, post-ES5 builtins by path, and — the largest group — tests whose *own source*
@@ -45,21 +45,22 @@ The core language works end to end:
   only `undefined` is a sentinel
 - **Objects**: PHP-array property storage, spec `[[DefineOwnProperty]]`,
   `[[OwnPropertyKeys]]` ordering, array exotic behaviour including sparse
-  index attributes
+  index attributes, and a mapped `arguments` object
 - **Builtins** (native PHP): Object, Function (`call`/`apply`/`bind`, the
   `Function` constructor), Array (generic over array-likes, sparse-aware),
   String, Number, Boolean, Math, JSON (spec `Walk`/`Str` with reviver and
   replacer), Error family, console, RegExp (translated to PCRE2), Date
 - **Promise** + microtask queue (native state machine, VM re-entry only for
-  user callbacks)
+  user callbacks; combinators build their result through `NewPromiseCapability`)
 - **Bytecode files**: emitted as `<?php return [...];` — plain arrays that
   opcache keeps in shared memory (`phpjs compile`)
 
-Known gaps, all tracked in DESIGN.md §15: direct `eval` cannot inject bindings
-into the enclosing scope, `with` is unimplemented, `arguments` is not mapped to
-its parameters, Promise subclassing (`this`-as-constructor, `Symbol.species`)
-is missing, and local time is fixed to UTC. ES6+ syntax is intentionally out of
-scope — downlevel with SWC first.
+Known gaps, all tracked in DESIGN.md §15: direct `eval` inherits the caller's
+strict mode but cannot inject bindings into the enclosing scope, `with` is
+unimplemented, `@@species` does not exist in an ES5 realm, and local time is
+fixed to UTC. The regexp translator accepts some patterns the spec rejects,
+since PCRE does the parsing. ES6+ syntax is intentionally out of scope —
+downlevel with SWC first.
 
 ## Usage
 

@@ -331,8 +331,8 @@ From M1 onward, the test262 pass rate is measured continuously in CI.
 
 ### 12.1 Measured baseline
 
-Against a current tc39/test262 checkout, the ES5.1 subset stands at **94.6%**
-(12031 / 12715 run; `language/` 93.9%, `built-ins/` 95.0%). The whole suite runs
+Against a current tc39/test262 checkout, the ES5.1 subset stands at **96.5%**
+(12590 / 13048 run; `language/` 94.2%, `built-ins/` 97.7%). The whole suite runs
 in about two minutes.
 
 Roughly 22000 further tests are skipped. Three groups, in order of size:
@@ -364,10 +364,10 @@ invisible from unit tests:
 ## 15. Risks and Open Questions
 
 - **Dispatch-cost floor**: PHP's `switch(int)` dispatch may simply be too slow. At M1 completion, measure "N× vs QuickJS" on fib/loop microbenchmarks to decide whether to invest in superinstructions and opcode ordering.
-- **Direct `eval`**: the dynamic-scoping fallout is wide. Currently `eval` is always *indirect* — it compiles and runs in the global scope and cannot inject a binding into the calling function, which is what the remaining `compound-assignment` and `eval-code` failures are. Implementing it means marking the containing function as dynamically scoped and emitting name-based lookups there (§4.5).
+- **Direct `eval`**: the dynamic-scoping fallout is wide. `eval` now inherits the caller's strict mode, which is what most strict-mode early-error tests observe, but it still compiles and runs in the global scope and cannot inject a binding into the calling function — the remaining `compound-assignment` and `eval-code` failures. Implementing it means marking the containing function as dynamically scoped and emitting name-based lookups there (§4.5). Inheriting strictness is also technically wrong for *indirect* eval, which the spec keeps sloppy; that trade is deliberate until direct eval is distinguished at the call site.
 - **`with`**: unimplemented; the compiler rejects it. Same machinery as direct `eval`, so both should land together.
-- **Mapped `arguments`**: the object is materialized but its indices are not aliased to the parameters, so `arguments[0] = x` does not update the parameter in non-strict code.
-- **Promise subclassing**: the combinators always build a base `Promise` instead of reading `this` as the constructor via `NewPromiseCapability`, and `Symbol.species` does not exist in an ES5 realm. This is most of the remaining `built-ins/Promise` gap.
+- **`@@species`**: `ArraySpeciesCreate` and the Promise combinators honour the constructor lookup and its observable errors, but always produce a base Array/Promise — an ES5 realm has no Symbols to key the species hook on.
+- **RegExp pattern validation**: PCRE does the parsing, so patterns the spec rejects as early errors are accepted (most of the remaining `language/literals/regexp` failures). Fixing this needs a JS pattern validator in front of the translator.
 - **Local time is UTC.** `getTimezoneOffset()` reports 0 and every local getter mirrors its UTC counterpart. Time zone and DST policy has no good answer in a shared-nothing request model; revisit only with a host-supplied zone.
 - **`Function` constructor**: requires shipping Peast + the compiler in the runtime. Accepted as dynamic compilation that bypasses opcache (assumed rare).
 - **Regexp semantic gaps** (§8): managed via the skip list; fix individually as real applications hit them.
