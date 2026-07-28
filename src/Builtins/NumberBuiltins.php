@@ -66,7 +66,7 @@ final class NumberBuiltins
         if (is_int($t) || is_float($t)) {
             return $t;
         }
-        if ($t instanceof JSPrimitiveWrapper && (is_int($t->primitiveValue) || is_float($t->primitiveValue))) {
+        if ($t instanceof JSPrimitiveWrapper && $t->className === 'Number') {
             return $t->primitiveValue;
         }
         $vm->throwError('TypeError', 'Number.prototype method called on incompatible receiver');
@@ -123,10 +123,13 @@ final class NumberBuiltins
     public static function toFixed(Vm $vm, mixed $t, array $args): mixed
     {
         $n = self::thisNumber($vm, $t);
-        $digits = (int)Conversions::toInteger($vm, $args[0] ?? 0);
-        if ($digits < 0 || $digits > 100) {
+        // Range-check before the int cast: ToInteger(Infinity) is Infinity,
+        // and casting that to int would silently land inside the valid range.
+        $requested = Conversions::toInteger($vm, $args[0] ?? 0);
+        if ($requested < 0 || $requested > 100) {
             $vm->throwError('RangeError', 'toFixed() digits argument must be between 0 and 100');
         }
+        $digits = (int)$requested;
         if (is_float($n) && (is_nan($n))) {
             return 'NaN';
         }
@@ -136,9 +139,15 @@ final class NumberBuiltins
         if (abs($n) >= 1e21) {
             return Conversions::numberToString($n);
         }
-        return number_format((float)$n, $digits, '.', '');
+        // %F rounds half away from zero on the exact binary value, which is
+        // what 15.7.4.5 asks for; number_format() loses digits on large values.
+        return sprintf('%.*F', $digits, (float)$n);
     }
 
+    /**
+     * 15.7.4.7. Note the check order the spec mandates: ToInteger, then NaN,
+     * then Infinity, and only then the range check.
+     */
     public static function toPrecision(Vm $vm, mixed $t, array $args): mixed
     {
         $n = self::thisNumber($vm, $t);
@@ -146,25 +155,67 @@ final class NumberBuiltins
         if ($arg instanceof JSUndefined) {
             return Conversions::numberToString($n);
         }
-        $p = (int)Conversions::toInteger($vm, $arg);
-        if ($p < 1 || $p > 100) {
+        $requested = Conversions::toInteger($vm, $arg);
+        if (is_float($n) && is_nan($n)) {
+            return 'NaN';
+        }
+        $sign = '';
+        if ($n < 0) {
+            $sign = '-';
+            $n = -$n;
+        }
+        if (is_float($n) && is_infinite($n)) {
+            return $sign . 'Infinity';
+        }
+        if ($requested < 1 || $requested > 100) {
             $vm->throwError('RangeError', 'toPrecision() argument must be between 1 and 100');
         }
-        $s = sprintf('%.' . $p . 'G', (float)$n);
-        // Normalize PHP's exponent format (1.0E+5) toward JS (1.0e+5).
-        return str_replace(['E+', 'E-'], ['e+', 'e-'], $s);
+        $p = (int)$requested;
+        if ($n == 0) {
+            $digits = str_repeat('0', $p);
+            return $sign . ($p === 1 ? '0' : '0.' . substr($digits, 1));
+        }
+        [$digits, $e] = Conversions::exponentialParts((float)$n, $p - 1);
+        if ($e < -6 || $e >= $p) {
+            return $sign . self::exponentialForm($digits, $e);
+        }
+        if ($e === $p - 1) {
+            return $sign . $digits;
+        }
+        if ($e >= 0) {
+            return $sign . substr($digits, 0, $e + 1) . '.' . substr($digits, $e + 1);
+        }
+        return $sign . '0.' . str_repeat('0', -($e + 1)) . $digits;
     }
 
+    /** 15.7.4.6 */
     public static function toExponential(Vm $vm, mixed $t, array $args): mixed
     {
         $n = self::thisNumber($vm, $t);
         $arg = (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined);
-        $digits = $arg instanceof JSUndefined ? 6 : (int)Conversions::toInteger($vm, $arg);
-        if ($digits < 0 || $digits > 100) {
+        $requested = $arg instanceof JSUndefined ? null : Conversions::toInteger($vm, $arg);
+        if (is_float($n) && is_nan($n)) {
+            return 'NaN';
+        }
+        $sign = '';
+        if ($n < 0) {
+            $sign = '-';
+            $n = -$n;
+        }
+        if (is_float($n) && is_infinite($n)) {
+            return $sign . 'Infinity';
+        }
+        if ($requested !== null && ($requested < 0 || $requested > 100)) {
             $vm->throwError('RangeError', 'toExponential() argument must be between 0 and 100');
         }
-        $s = sprintf('%.' . $digits . 'e', (float)$n);
-        // PHP prints e+05; JS wants e+5 (no leading zeros in the exponent).
-        return preg_replace('/e([+-])0*(\d)/', 'e$1$2', $s);
+        $f = $requested === null ? null : (int)$requested;
+        [$digits, $e] = Conversions::exponentialParts((float)$n, $f);
+        return $sign . self::exponentialForm($digits, $e);
+    }
+
+    private static function exponentialForm(string $digits, int $e): string
+    {
+        $mantissa = strlen($digits) > 1 ? $digits[0] . '.' . substr($digits, 1) : $digits;
+        return $mantissa . 'e' . ($e >= 0 ? '+' : '-') . abs($e);
     }
 }

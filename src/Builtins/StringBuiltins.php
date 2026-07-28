@@ -93,7 +93,7 @@ final class StringBuiltins
         if (is_string($t)) {
             return $t;
         }
-        if ($t instanceof JSPrimitiveWrapper && is_string($t->primitiveValue)) {
+        if ($t instanceof JSPrimitiveWrapper && $t->className === 'String') {
             return $t->primitiveValue;
         }
         if ($t === null || $t instanceof JSUndefined) {
@@ -107,7 +107,7 @@ final class StringBuiltins
         if (is_string($t)) {
             return $t;
         }
-        if ($t instanceof JSPrimitiveWrapper && is_string($t->primitiveValue)) {
+        if ($t instanceof JSPrimitiveWrapper && $t->className === 'String') {
             return $t->primitiveValue;
         }
         $vm->throwError('TypeError', 'String.prototype.toString called on incompatible receiver');

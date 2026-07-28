@@ -13,6 +13,15 @@ use PhpJs\Vm\Vm;
  */
 final class Conversions
 {
+    /**
+     * 2^53. A JS number is a double, so the int|float representation
+     * (DESIGN.md §3.1) may only use PHP ints for magnitudes a double can hold
+     * exactly. Past this, an int would print more digits than the double it
+     * stands for — e.g. (1000000000000000128).toString() must be
+     * "1000000000000000100".
+     */
+    public const MAX_EXACT_INT = 9007199254740992;
+
     private const WS_PATTERN =
         '/^(?:[\x09-\x0D\x20]|\xC2\xA0|\xEF\xBB\xBF|\xE1\x9A\x80|\xE2\x80[\x80-\x8A\xA8\xA9\xAF]|\xE2\x81\x9F|\xE3\x80\x80)+/';
 
@@ -73,8 +82,11 @@ final class Conversions
             return -INF;
         }
         if (preg_match('/^[+-]?\d+$/', $s)) {
+            if ($s === '-0') {
+                return -0.0; // only float carries the sign of zero
+            }
             $f = (float)$s;
-            return ($f >= -PHP_INT_MAX && $f <= PHP_INT_MAX) ? (int)$s : $f;
+            return ($f >= -self::MAX_EXACT_INT && $f <= self::MAX_EXACT_INT) ? (int)$s : $f;
         }
         if (preg_match('/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/', $s)) {
             return (float)$s;
@@ -164,18 +176,8 @@ final class Conversions
             $sign = '-';
             $m = -$m;
         }
-        $repr = var_export($m, true);
-        if (!preg_match('/^(\d+)(?:\.(\d+))?(?:E([+-]?\d+))?$/i', $repr, $mt)) {
-            return $sign . $repr; // unreachable defensively
-        }
-        $digits = $mt[1] . ($mt[2] ?? '');
-        $lenFrac = strlen($mt[2] ?? '');
-        $e = (int)($mt[3] ?? 0);
-        $trimmed = rtrim($digits, '0');
-        $removedTrailing = strlen($digits) - strlen($trimmed);
-        $s = ltrim($trimmed, '0');
+        [$s, $n] = self::decimalParts($m);
         $k = strlen($s);
-        $n = $e - $lenFrac + $removedTrailing + $k;
         if ($k <= $n && $n <= 21) {
             return $sign . $s . str_repeat('0', $n - $k);
         }
@@ -191,6 +193,80 @@ final class Conversions
             return $sign . $s . 'e' . $expoStr;
         }
         return $sign . $s[0] . '.' . substr($s, 1) . 'e' . $expoStr;
+    }
+
+    /**
+     * Split a positive finite double into its shortest round-trip decimal
+     * digits and exponent: value == 0.<digits> * 10^n, digits having no
+     * leading or trailing zero. This is the (s, k, n) triple of 9.8.1, shared
+     * by ToString(Number), toExponential and toPrecision.
+     *
+     * @return array{0: string, 1: int} [digits, n]
+     */
+    public static function decimalParts(float $m): array
+    {
+        // var_export emits the shortest representation (serialize_precision=-1).
+        $repr = var_export($m, true);
+        if (!preg_match('/^(\d+)(?:\.(\d+))?(?:E([+-]?\d+))?$/i', $repr, $mt)) {
+            return [$repr, 1]; // defensive; unreachable for finite positives
+        }
+        $digits = $mt[1] . ($mt[2] ?? '');
+        $lenFrac = strlen($mt[2] ?? '');
+        $e = (int)($mt[3] ?? 0);
+        $trimmed = rtrim($digits, '0');
+        $removedTrailing = strlen($digits) - strlen($trimmed);
+        $s = ltrim($trimmed, '0');
+        return [$s, $e - $lenFrac + $removedTrailing + strlen($s)];
+    }
+
+    /**
+     * Round a decimal digit string to $keep digits, ties away from zero
+     * (15.7.4.6 picks the larger n on a tie).
+     *
+     * @return array{0: string, 1: int} [digits, exponent adjustment]
+     */
+    public static function roundDigits(string $all, int $keep): array
+    {
+        if (strlen($all) <= $keep) {
+            return [str_pad($all, $keep, '0'), 0];
+        }
+        $head = substr($all, 0, $keep);
+        if ($all[$keep] < '5') {
+            return [$head, 0];
+        }
+        for ($i = $keep - 1; $i >= 0; $i--) {
+            if ($head[$i] === '9') {
+                $head[$i] = '0';
+                continue;
+            }
+            $head[$i] = chr(ord($head[$i]) + 1);
+            return [$head, 0];
+        }
+        return ['1' . substr($head, 0, $keep - 1), 1];
+    }
+
+    /**
+     * The digit string and exponent for exponential notation of a positive
+     * finite double: $f is the fraction-digit count, or null for "as many
+     * digits as needed to represent the value uniquely".
+     *
+     * @return array{0: string, 1: int} [significant digits, exponent]
+     */
+    public static function exponentialParts(float $x, ?int $f): array
+    {
+        if ($x == 0.0) {
+            return [str_repeat('0', ($f ?? 0) + 1), 0];
+        }
+        if ($f === null) {
+            [$digits, $n] = self::decimalParts($x);
+            return [$digits, $n - 1];
+        }
+        // 53 digits is PHP's printf ceiling and far past what a double needs
+        // to decide a tie at any position we round to.
+        $printed = sprintf('%.*e', 40, $x);
+        [$mantissa, $exp] = explode('e', $printed);
+        [$digits, $bump] = self::roundDigits(str_replace('.', '', $mantissa), $f + 1);
+        return [$digits, (int)$exp + $bump];
     }
 
     /** 9.1 ToPrimitive. $hint is 'number', 'string' or 'default'. */

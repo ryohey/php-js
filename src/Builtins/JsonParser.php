@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PhpJs\Builtins;
 
+use PhpJs\Runtime\Conversions;
 use PhpJs\Runtime\JSArray;
 use PhpJs\Runtime\JSObject;
 use PhpJs\Runtime\Realm;
@@ -133,7 +134,7 @@ final class JsonParser
                 return -0.0;
             }
             $asFloat = (float)$lexeme;
-            if ($asFloat >= (float)PHP_INT_MIN && $asFloat <= (float)PHP_INT_MAX) {
+            if ($asFloat >= -Conversions::MAX_EXACT_INT && $asFloat <= Conversions::MAX_EXACT_INT) {
                 return (int)$lexeme;
             }
             return $asFloat;

@@ -55,7 +55,7 @@ final class BooleanBuiltins
         if (is_bool($t)) {
             return $t;
         }
-        if ($t instanceof JSPrimitiveWrapper && is_bool($t->primitiveValue)) {
+        if ($t instanceof JSPrimitiveWrapper && $t->className === 'Boolean') {
             return $t->primitiveValue;
         }
         $vm->throwError('TypeError', 'Boolean.prototype method called on incompatible receiver');

@@ -1059,9 +1059,13 @@ final class Compiler
             $c->emit($node->getValue() ? Op::PUSH_TRUE : Op::PUSH_FALSE);
         } elseif ($node instanceof NumericLiteral) {
             $v = $node->getValue();
-            if (is_int($v)) {
+            // Only literals a double holds exactly may become PHP ints
+            // (Conversions::MAX_EXACT_INT); larger ones must keep the double
+            // they actually denote.
+            $exact = Conversions::MAX_EXACT_INT;
+            if (is_int($v) && $v >= -$exact && $v <= $exact) {
                 $c->emit(Op::PUSH_INT, $v);
-            } elseif (is_float($v) && $v == (int)$v && $v >= -PHP_INT_MAX && $v <= PHP_INT_MAX && $v != 0.0) {
+            } elseif (is_float($v) && $v == floor($v) && abs($v) <= $exact && $v != 0.0) {
                 $c->emit(Op::PUSH_INT, (int)$v);
             } else {
                 $c->emit(Op::PUSH_CONST, $c->constIndex(is_float($v) ? $v : (float)$v));

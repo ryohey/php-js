@@ -141,3 +141,12 @@ built-ins/eval/ direct-eval scope access is not implemented (DESIGN.md §15)
 language/eval-code/ direct-eval scope access is not implemented (DESIGN.md §15)
 language/statements/with/ `with` is not implemented (DESIGN.md §15)
 language/expressions/object/method-definition/ ES6 shorthand methods
+
+# --- ES2015+ Number constants referenced by otherwise-ES5 tests ---
+built-ins/Number/EPSILON.js post-ES5 builtin
+built-ins/Number/MAX_SAFE_INTEGER.js post-ES5 builtin
+built-ins/Number/MIN_SAFE_INTEGER.js post-ES5 builtin
+built-ins/Number/parseInt.js post-ES5 builtin (Number.parseInt)
+built-ins/Number/parseFloat.js post-ES5 builtin (Number.parseFloat)
+built-ins/Number/MAX_VALUE/value.js compares against Number.MAX_SAFE_INTEGER (post-ES5)
+built-ins/Number/MIN_VALUE/value.js compares against Number.EPSILON (post-ES5)
