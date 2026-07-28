@@ -329,10 +329,46 @@ Namespace is `PhpJs\`. Requires PHP 8.2+ (readonly, enums, and the immutable-arr
 
 From M1 onward, the test262 pass rate is measured continuously in CI.
 
+### 12.1 Measured baseline
+
+Against a current tc39/test262 checkout, the ES5.1 subset stands at **94.6%**
+(12031 / 12715 run; `language/` 93.9%, `built-ins/` 95.0%). The whole suite runs
+in about two minutes.
+
+Roughly 22000 further tests are skipped. Three groups, in order of size:
+
+1. Tests whose **own source** uses ES6 syntax (arrow functions, `const`,
+   template literals) even where the semantics under test are ES5. An ES5.1
+   engine cannot run these by construction, so the runner reports them as skips:
+   `CompileError::$unsupportedSyntax` separates "post-ES5 construct" from a
+   genuine early error, and only the latter counts as a failure.
+2. ES6+ features excluded by front-matter tag (`excluded-features.txt`).
+3. Post-ES5 builtins excluded by path (`skip.txt`), which is how methods that
+   carry no feature tag — `Math.trunc`, `Object.assign`, `Array.prototype.find`
+   — are kept out of the denominator.
+
+Two lessons from the first real run are worth recording, because both were
+invisible from unit tests:
+
+- **PHP's own error surface leaks.** `1/0.0` throws `DivisionByZeroError` in
+  PHP 8, so the `-0` sign checks crashed the host on 21 tests. Anything the
+  engine computes with must be checked against PHP 8 semantics, not PHP 5/7
+  habits.
+- **Spec-accurate scans are not runnable.** Once generic array-likes correctly
+  used `ToLength` (up to 2^53-1) instead of `ToUint32`, the spec's `0..len`
+  element walk hung for minutes. Hole-skipping operations now traverse the
+  indices the receiver actually has; with no Proxy in an ES5 realm the skipped
+  indices are unobservable. Expect the same tension anywhere the spec assumes an
+  O(length) loop is free.
+
 ## 15. Risks and Open Questions
 
 - **Dispatch-cost floor**: PHP's `switch(int)` dispatch may simply be too slow. At M1 completion, measure "N× vs QuickJS" on fib/loop microbenchmarks to decide whether to invest in superinstructions and opcode ordering.
-- **Direct `eval`**: the dynamic-scoping fallout is wide. Implement only the scope test262 needs (own-scope references) first, isolated behind the taint flag.
+- **Direct `eval`**: the dynamic-scoping fallout is wide. Currently `eval` is always *indirect* — it compiles and runs in the global scope and cannot inject a binding into the calling function, which is what the remaining `compound-assignment` and `eval-code` failures are. Implementing it means marking the containing function as dynamically scoped and emitting name-based lookups there (§4.5).
+- **`with`**: unimplemented; the compiler rejects it. Same machinery as direct `eval`, so both should land together.
+- **Mapped `arguments`**: the object is materialized but its indices are not aliased to the parameters, so `arguments[0] = x` does not update the parameter in non-strict code.
+- **Promise subclassing**: the combinators always build a base `Promise` instead of reading `this` as the constructor via `NewPromiseCapability`, and `Symbol.species` does not exist in an ES5 realm. This is most of the remaining `built-ins/Promise` gap.
+- **Local time is UTC.** `getTimezoneOffset()` reports 0 and every local getter mirrors its UTC counterpart. Time zone and DST policy has no good answer in a shared-nothing request model; revisit only with a host-supplied zone.
 - **`Function` constructor**: requires shipping Peast + the compiler in the runtime. Accepted as dynamic compilation that bypasses opcache (assumed rare).
 - **Regexp semantic gaps** (§8): managed via the skip list; fix individually as real applications hit them.
 - **Holes in SWC downleveling**: SWC does not transform regexp syntax, and some builtins (`Object.assign`, etc.) are left to polyfills. The input-code preconditions are documented separately as `docs/input-requirements.md`.
