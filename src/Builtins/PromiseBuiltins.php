@@ -222,9 +222,26 @@ final class PromiseBuiltins
         return self::then($vm, $t, [JSUndefined::$undefined, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined)]);
     }
 
+    /**
+     * The static combinators take `this` as the constructor to build with, so
+     * a non-object receiver is a TypeError (25.4.4.5 step 2).
+     */
+    private static function requireConstructorReceiver(Vm $vm, mixed $t, string $who): void
+    {
+        if (!$t instanceof JSObject) {
+            $vm->throwError('TypeError', "Promise.$who called on a non-object");
+        }
+    }
+
     public static function staticResolve(Vm $vm, mixed $t, array $args): mixed
     {
-        $v = (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined);
+        self::requireConstructorReceiver($vm, $t, 'resolve');
+        return self::promiseResolve($vm, \array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined);
+    }
+
+    /** PromiseResolve without the receiver check, for internal use. */
+    private static function promiseResolve(Vm $vm, mixed $v): JSPromise
+    {
         if ($v instanceof JSPromise) {
             return $v;
         }
@@ -235,6 +252,7 @@ final class PromiseBuiltins
 
     public static function staticReject(Vm $vm, mixed $t, array $args): mixed
     {
+        self::requireConstructorReceiver($vm, $t, 'reject');
         $p = new JSPromise($vm->realm->promisePrototype());
         self::rejectPromise($vm, $p, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined));
         return $p;
@@ -242,8 +260,16 @@ final class PromiseBuiltins
 
     public static function all(Vm $vm, mixed $t, array $args): mixed
     {
-        $items = self::iterableToList($vm, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined));
+        self::requireConstructorReceiver($vm, $t, 'all');
         $result = new JSPromise($vm->realm->promisePrototype());
+        // Anything that goes wrong reading the argument rejects the returned
+        // promise instead of throwing synchronously (25.4.4.1 step 6).
+        try {
+            $items = self::iterableToList($vm, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined));
+        } catch (JSThrowSignal $e) {
+            self::rejectPromise($vm, $result, $e->value);
+            return $result;
+        }
         $n = count($items);
         if ($n === 0) {
             self::resolvePromise($vm, $result, $vm->realm->newArray([]));
@@ -255,7 +281,7 @@ final class PromiseBuiltins
         $state->props['values'] = $vm->realm->newArray(array_fill(0, $n, JSUndefined::$undefined));
         [$_, $rejectFn] = self::capabilities($vm, $result);
         foreach ($items as $i => $item) {
-            $p = self::staticResolve($vm, JSUndefined::$undefined, [$item]);
+            $p = self::promiseResolve($vm, $item);
             $onF = $vm->realm->nativeFn('Promise.allElementFn', '', 1, null, [$state, $i, $result]);
             self::then($vm, $p, [$onF, $rejectFn]);
         }
@@ -275,11 +301,17 @@ final class PromiseBuiltins
 
     public static function race(Vm $vm, mixed $t, array $args): mixed
     {
-        $items = self::iterableToList($vm, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined));
+        self::requireConstructorReceiver($vm, $t, 'race');
         $result = new JSPromise($vm->realm->promisePrototype());
+        try {
+            $items = self::iterableToList($vm, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined));
+        } catch (JSThrowSignal $e) {
+            self::rejectPromise($vm, $result, $e->value);
+            return $result;
+        }
         [$resolveFn, $rejectFn] = self::capabilities($vm, $result);
         foreach ($items as $item) {
-            $p = self::staticResolve($vm, JSUndefined::$undefined, [$item]);
+            $p = self::promiseResolve($vm, $item);
             self::then($vm, $p, [$resolveFn, $rejectFn]);
         }
         return $result;

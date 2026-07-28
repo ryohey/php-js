@@ -28,6 +28,7 @@ final class FunctionBuiltins
             'Function.prototype.apply' => [self::class, 'apply'],
             'Function.prototype.bind' => [self::class, 'bind'],
             'Function.prototype.toString' => [self::class, 'toString'],
+            'Function.prototype.restricted' => [self::class, 'restricted'],
         ];
     }
 
@@ -37,6 +38,21 @@ final class FunctionBuiltins
         $r->defineMethod($proto, 'apply', 'Function.prototype.apply', 2);
         $r->defineMethod($proto, 'bind', 'Function.prototype.bind', 1);
         $r->defineMethod($proto, 'toString', 'Function.prototype.toString', 0);
+        // caller/arguments are %ThrowTypeError% accessors: reading either on a
+        // strict function must throw rather than expose the caller.
+        $thrower = $r->nativeFn('Function.prototype.restricted', '', 0);
+        foreach (['caller', 'arguments'] as $name) {
+            $proto->defineOwnAccessor($name, $thrower, $thrower, JSObject::C);
+        }
+    }
+
+    /** %ThrowTypeError%: the poisoned caller/arguments accessor. */
+    public static function restricted(Vm $vm, mixed $t, array $args): mixed
+    {
+        $vm->throwError(
+            'TypeError',
+            "'caller' and 'arguments' may not be accessed on strict mode functions"
+        );
     }
 
     public static function makeConstructor(Realm $r): JSNativeFunction

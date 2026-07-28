@@ -151,3 +151,17 @@ built-ins/Number/parseFloat.js post-ES5 builtin (Number.parseFloat)
 built-ins/Number/MAX_VALUE/value.js compares against Number.MAX_SAFE_INTEGER (post-ES5)
 built-ins/Number/MIN_VALUE/value.js compares against Number.EPSILON (post-ES5)
 built-ins/Array/fromAsync/ post-ES5 builtin
+
+# --- Later proposals with no feature tag on every test ---
+built-ins/Promise/allKeyed/ stage-1 proposal, out of scope
+built-ins/Promise/allSettledKeyed/ stage-1 proposal, out of scope
+built-ins/Object/getOwnPropertyDescriptors/ post-ES5 builtin
+built-ins/Object/seal/seal-arraybuffer.js requires ArrayBuffer (out of scope)
+built-ins/Object/seal/seal-typedarray.js requires TypedArray (out of scope)
+built-ins/Object/isSealed/is-sealed-arraybuffer.js requires ArrayBuffer (out of scope)
+built-ins/Object/isSealed/is-sealed-typedarray.js requires TypedArray (out of scope)
+built-ins/Object/freeze/freeze-arraybuffer.js requires ArrayBuffer (out of scope)
+built-ins/Object/freeze/freeze-typedarray.js requires TypedArray (out of scope)
+built-ins/Object/isFrozen/is-frozen-arraybuffer.js requires ArrayBuffer (out of scope)
+built-ins/Object/isFrozen/is-frozen-typedarray.js requires TypedArray (out of scope)
+language/expressions/compound-assignment/S11.13.2_A6 direct-eval scope injection is not implemented (DESIGN.md §15)
