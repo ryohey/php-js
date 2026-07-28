@@ -10,7 +10,6 @@ use PhpJs\Builtins\ConsoleBuiltins;
 use PhpJs\Builtins\DateBuiltins;
 use PhpJs\Builtins\ErrorBuiltins;
 use PhpJs\Builtins\FunctionBuiltins;
-use PhpJs\Builtins\GlobalBuiltins;
 use PhpJs\Builtins\JsonBuiltins;
 use PhpJs\Builtins\MathBuiltins;
 use PhpJs\Builtins\NumberBuiltins;
@@ -18,7 +17,6 @@ use PhpJs\Builtins\ObjectBuiltins;
 use PhpJs\Builtins\PromiseBuiltins;
 use PhpJs\Builtins\RegExpBuiltins;
 use PhpJs\Builtins\StringBuiltins;
-use PhpJs\RegExp\JSRegExp;
 use PhpJs\Vm\Vm;
 
 /**

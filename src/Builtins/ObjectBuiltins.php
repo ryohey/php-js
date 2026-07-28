@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace PhpJs\Builtins;
 
 use PhpJs\Runtime\Conversions;
-use PhpJs\Runtime\JSArray;
 use PhpJs\Runtime\JSFunctionBase;
 use PhpJs\Runtime\JSNativeFunction;
 use PhpJs\Runtime\JSObject;

@@ -9,7 +9,6 @@ use PhpJs\Runtime\Conversions;
 use PhpJs\Runtime\JSArray;
 use PhpJs\Runtime\JSBoundFunction;
 use PhpJs\Runtime\JSFunction;
-use PhpJs\Runtime\JSFunctionBase;
 use PhpJs\Runtime\JSHole;
 use PhpJs\Runtime\JSNativeFunction;
 use PhpJs\Runtime\JSObject;
@@ -734,7 +733,7 @@ final class Vm
                             } elseif ($func instanceof JSBoundFunction) {
                                 $ret = $this->invoke($func, $thisVal, $args);
                             } else {
-                                $this->throwError('TypeError', $this->callableName($tpl, $pc) . ' is not a function');
+                                $this->throwError('TypeError', TypeOps::typeofOp($func) . ' value is not a function');
                             }
                             $stack[$sp++] = $ret;
                         }
@@ -1102,12 +1101,6 @@ final class Vm
     public function throwValue(mixed $value): never
     {
         throw new JSThrowSignal($value);
-    }
-
-    /** Best-effort callee description for "x is not a function" errors. */
-    private function callableName(array $tpl, int $pc): string
-    {
-        return 'value';
     }
 
     /** Current JS stack description, innermost first (for Error.stack). */
