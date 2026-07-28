@@ -285,23 +285,53 @@ final class RegExpBuiltins
         return $out . substr($s, $cursor);
     }
 
+    /**
+     * 15.5.4.14 step 13 onward. preg_split() cannot express the spec's rules
+     * for zero-width matches, capture insertion and the limit, so the loop is
+     * written out.
+     */
     public static function splitWithRegExp(Vm $vm, string $s, JSRegExp $re, int $limit): JSArray
     {
-        if ($s === '') {
-            $r = @preg_match($re->pcre, $s, $m);
-            return $vm->realm->newArray($r === 1 ? [] : ['']);
-        }
-        $parts = preg_split($re->pcre, $s, -1, PREG_SPLIT_DELIM_CAPTURE);
-        if ($parts === false) {
-            return $vm->realm->newArray([$s]);
-        }
         $out = [];
-        foreach ($parts as $p) {
-            if (count($out) >= $limit) {
+        if ($limit === 0) {
+            return $vm->realm->newArray([]);
+        }
+        $size = strlen($s);
+        if ($size === 0) {
+            // An empty subject yields [] when the separator matches it, [""] otherwise.
+            return $vm->realm->newArray(@preg_match($re->pcre, $s) === 1 ? [] : ['']);
+        }
+        $lastEnd = 0;   // byte offset of the end of the previous match
+        $search = 0;    // byte offset to search from
+        while ($search < $size) {
+            $r = @preg_match($re->pcre, $s, $m, PREG_OFFSET_CAPTURE | PREG_UNMATCHED_AS_NULL, $search);
+            if ($r !== 1) {
                 break;
             }
-            $out[] = $p;
+            $matchStart = $m[0][1];
+            $matchEnd = $matchStart + strlen($m[0][0]);
+            if ($matchEnd === $lastEnd) {
+                // Zero-width match at the previous end: advance and retry.
+                $search = $matchStart + 1;
+                continue;
+            }
+            $out[] = substr($s, $lastEnd, $matchStart - $lastEnd);
+            if (count($out) >= $limit) {
+                return $vm->realm->newArray($out);
+            }
+            foreach ($m as $k => $g) {
+                if (!is_int($k) || $k === 0) {
+                    continue;
+                }
+                $out[] = $g[0] === null ? JSUndefined::$undefined : $g[0];
+                if (count($out) >= $limit) {
+                    return $vm->realm->newArray($out);
+                }
+            }
+            $lastEnd = $matchEnd;
+            $search = $matchEnd > $matchStart ? $matchEnd : $matchStart + 1;
         }
+        $out[] = substr($s, $lastEnd);
         return $vm->realm->newArray($out);
     }
 }

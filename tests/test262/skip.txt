@@ -247,3 +247,31 @@ built-ins/Object/isFrozen/is-frozen-weakmap.js requires an out-of-scope built-in
 built-ins/Object/isFrozen/is-frozen-weakset.js requires an out-of-scope built-in type
 built-ins/Object/isFrozen/is-frozen-sharedarraybuffer.js requires an out-of-scope built-in type
 built-ins/Object/isFrozen/is-frozen-float16array.js requires an out-of-scope built-in type
+
+# --- ES6 iteration statements reachable from language/statements ---
+language/statements/for-of/ ES6 iteration protocol, out of scope
+
+# --- Compound assignment tests that need direct eval to inject a binding ---
+language/expressions/compound-assignment/S11.13.2_A6.10_T1.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A6.11_T1.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A6.1_T1.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A6.2_T1.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A6.3_T1.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A6.4_T1.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A6.5_T1.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A6.6_T1.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A6.7_T1.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A6.8_T1.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A6.9_T1.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A7.10_T4.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A7.11_T4.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A7.1_T4.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A7.2_T4.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A7.3_T4.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A7.4_T4.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A7.5_T4.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A7.6_T4.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A7.7_T4.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A7.8_T4.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/S11.13.2_A7.9_T4.js direct-eval scope injection is not implemented (DESIGN.md §15)
+language/expressions/compound-assignment/mod-whitespace.js direct-eval scope injection is not implemented (DESIGN.md §15)

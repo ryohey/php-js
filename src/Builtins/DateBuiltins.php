@@ -65,7 +65,7 @@ final class DateBuiltins
     ];
 
     private const STRINGIFIERS = [
-        'toString' => 1, 'toUTCString' => 1, 'toISOString' => 1, 'toJSON' => 1,
+        'toString' => 0, 'toUTCString' => 0, 'toISOString' => 0, 'toJSON' => 1,
         'toDateString' => 0, 'toTimeString' => 0,
         'toLocaleString' => 0, 'toLocaleDateString' => 0, 'toLocaleTimeString' => 0,
     ];
@@ -284,13 +284,20 @@ final class DateBuiltins
                 (float)DateOps::msFromTime($base),
             ];
         for ($i = 0; $i < $maxArgs; $i++) {
-            if (!\array_key_exists($i, $args)) {
+            // The first argument is mandatory: setDate() with no argument
+            // coerces undefined and yields NaN. Only the trailing ones are
+            // skipped when absent.
+            if ($i > 0 && !\array_key_exists($i, $args)) {
                 break;
             }
-            $fields[$first + $i] = (float)Conversions::toNumber($vm, $args[$i]);
+            $fields[$first + $i] = (float)Conversions::toNumber(
+                $vm,
+                \array_key_exists($i, $args) ? $args[$i] : JSUndefined::$undefined
+            );
         }
         if (is_nan($base)) {
-            $d->primitiveValue = NAN;
+            // The time value stays untouched: argument coercion may have run
+            // user code that set it, and that write must survive.
             return NAN;
         }
         $v = DateOps::timeClip(DateOps::makeDate(
@@ -379,11 +386,11 @@ final class DateBuiltins
         $months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
             'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
         return sprintf(
-            '%s, %02d %s %04d %02d:%02d:%02d GMT',
+            '%s, %02d %s %s %02d:%02d:%02d GMT',
             $days[(int)DateOps::weekDay($time)],
             DateOps::dateFromTime($time),
             $months[DateOps::monthFromTime($time)],
-            DateOps::yearFromTime($time),
+            DateOps::formatYear(DateOps::yearFromTime($time)),
             DateOps::hourFromTime($time),
             DateOps::minFromTime($time),
             DateOps::secFromTime($time)

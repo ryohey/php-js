@@ -303,6 +303,15 @@ final class DateOps
         return NAN;
     }
 
+    /** Years outside 0..9999 carry an explicit sign and six digits. */
+    public static function formatYear(float $y): string
+    {
+        if ($y >= 0 && $y <= 9999) {
+            return sprintf('%04d', $y);
+        }
+        return sprintf('%+07d', $y);
+    }
+
     private static function monthIndex(string $abbrev): ?int
     {
         $i = array_search($abbrev, ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -313,9 +322,7 @@ final class DateOps
     public static function toIsoString(float $t): string
     {
         $year = self::yearFromTime($t);
-        $yearStr = ($year >= 0 && $year <= 9999)
-            ? sprintf('%04d', $year)
-            : sprintf('%+07d', $year);
+        $yearStr = self::formatYear($year);
         return sprintf(
             '%s-%02d-%02dT%02d:%02d:%02d.%03dZ',
             $yearStr,
@@ -334,11 +341,11 @@ final class DateOps
         $months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
             'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
         return sprintf(
-            '%s %s %02d %04d',
+            '%s %s %02d %s',
             $days[(int)self::weekDay($t)],
             $months[self::monthFromTime($t)],
             self::dateFromTime($t),
-            self::yearFromTime($t)
+            self::formatYear(self::yearFromTime($t))
         );
     }
 
