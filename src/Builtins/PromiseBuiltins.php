@@ -38,6 +38,7 @@ final class PromiseBuiltins
             'Promise.reactionJob' => [self::class, 'reactionJob'],
             'Promise.thenableJob' => [self::class, 'thenableJob'],
             'Promise.allElementFn' => [self::class, 'allElementFn'],
+            'Promise.capabilityExecutor' => [self::class, 'capabilityExecutor'],
         ];
     }
 
@@ -217,9 +218,20 @@ final class PromiseBuiltins
         return $chained;
     }
 
+    /** catch is defined in terms of this.then, which may be overridden. */
     public static function catchMethod(Vm $vm, mixed $t, array $args): mixed
     {
-        return self::then($vm, $t, [JSUndefined::$undefined, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined)]);
+        if (!$t instanceof JSObject) {
+            $vm->throwError('TypeError', 'Promise.prototype.catch called on a non-object');
+        }
+        $then = $t->get('then', $vm);
+        if (!$then instanceof JSFunctionBase) {
+            $vm->throwError('TypeError', 'this.then is not callable');
+        }
+        return $vm->invoke($then, $t, [
+            JSUndefined::$undefined,
+            \array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined,
+        ]);
     }
 
     /**
@@ -236,7 +248,15 @@ final class PromiseBuiltins
     public static function staticResolve(Vm $vm, mixed $t, array $args): mixed
     {
         self::requireConstructorReceiver($vm, $t, 'resolve');
-        return self::promiseResolve($vm, \array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined);
+        $v = \array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined;
+        // An existing promise passes through only when it was built by this
+        // very constructor; otherwise it is re-wrapped through `this`.
+        if ($v instanceof JSObject && $v->get('constructor', $vm) === $t && $v instanceof JSPromise) {
+            return $v;
+        }
+        [$promise, $resolve, $_] = self::newCapability($vm, $t);
+        $vm->invoke($resolve, JSUndefined::$undefined, [$v]);
+        return $promise;
     }
 
     /** PromiseResolve without the receiver check, for internal use. */
@@ -253,68 +273,130 @@ final class PromiseBuiltins
     public static function staticReject(Vm $vm, mixed $t, array $args): mixed
     {
         self::requireConstructorReceiver($vm, $t, 'reject');
-        $p = new JSPromise($vm->realm->promisePrototype());
-        self::rejectPromise($vm, $p, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined));
-        return $p;
+        [$promise, $_, $reject] = self::newCapability($vm, $t);
+        $vm->invoke($reject, JSUndefined::$undefined, [
+            \array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined,
+        ]);
+        return $promise;
+    }
+
+    /**
+     * NewPromiseCapability(C): build the result promise through `this` so a
+     * subclass constructor and its executor are honoured. The executor stores
+     * the pair on a plain JS object, keeping the capability heap-safe.
+     *
+     * @return array{0: mixed, 1: mixed, 2: mixed} [promise, resolve, reject]
+     */
+    private static function newCapability(Vm $vm, mixed $c): array
+    {
+        if (!$c instanceof JSObject) {
+            $vm->throwError('TypeError', 'Promise constructor is not an object');
+        }
+        $holder = $vm->realm->newObject();
+        $executor = $vm->realm->nativeFn('Promise.capabilityExecutor', '', 2, null, $holder);
+        $promise = $vm->construct($c, [$executor]);
+        $resolve = $holder->props['resolve'] ?? JSUndefined::$undefined;
+        $reject = $holder->props['reject'] ?? JSUndefined::$undefined;
+        if (!$resolve instanceof JSFunctionBase || !$reject instanceof JSFunctionBase) {
+            $vm->throwError('TypeError', 'Promise resolve or reject function is not callable');
+        }
+        return [$promise, $resolve, $reject];
+    }
+
+    public static function capabilityExecutor(Vm $vm, mixed $t, array $args, ?JSNativeFunction $fn = null): mixed
+    {
+        $holder = $fn->data;
+        $und = JSUndefined::$undefined;
+        $resolve = $holder->props['resolve'] ?? $und;
+        $reject = $holder->props['reject'] ?? $und;
+        if (!$resolve instanceof JSUndefined || !$reject instanceof JSUndefined) {
+            $vm->throwError('TypeError', 'Promise executor has already been invoked');
+        }
+        $holder->props['resolve'] = \array_key_exists(0, $args) ? $args[0] : $und;
+        $holder->props['reject'] = \array_key_exists(1, $args) ? $args[1] : $und;
+        return $und;
+    }
+
+    /**
+     * Promise.all (25.4.4.1) and Promise.race (25.4.4.3) share everything but
+     * the per-item reaction, so they run through one implementation.
+     */
+    private static function combinator(Vm $vm, mixed $t, array $args, bool $isAll): mixed
+    {
+        [$promise, $resolveCap, $rejectCap] = self::newCapability($vm, $t);
+        try {
+            // C.resolve is read once, before iterating, and must be callable.
+            $promiseResolve = $t->get('resolve', $vm);
+            if (!$promiseResolve instanceof JSFunctionBase) {
+                $vm->throwError('TypeError', 'Promise.resolve is not callable');
+            }
+            $items = self::iterableToList($vm, \array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined);
+
+            if (!$isAll) {
+                foreach ($items as $item) {
+                    $next = $vm->invoke($promiseResolve, $t, [$item]);
+                    self::invokeThen($vm, $next, $resolveCap, $rejectCap);
+                }
+                return $promise;
+            }
+
+            $state = $vm->realm->newObject();
+            // Starts at 1 so the counter cannot reach zero mid-iteration; the
+            // extra count is released once every item has been queued.
+            $state->props['remaining'] = 1;
+            $state->props['values'] = $vm->realm->newArray([]);
+            $state->props['resolve'] = $resolveCap;
+            foreach ($items as $i => $item) {
+                $state->props['values']->elements[$i] = JSUndefined::$undefined;
+                $state->props['values']->length = $i + 1;
+                $next = $vm->invoke($promiseResolve, $t, [$item]);
+                $onFulfilled = $vm->realm->nativeFn('Promise.allElementFn', '', 1, null, [$state, $i]);
+                $state->props['remaining']++;
+                self::invokeThen($vm, $next, $onFulfilled, $rejectCap);
+            }
+            if (--$state->props['remaining'] === 0) {
+                $vm->invoke($resolveCap, JSUndefined::$undefined, [$state->props['values']]);
+            }
+        } catch (JSThrowSignal $e) {
+            $vm->invoke($rejectCap, JSUndefined::$undefined, [$e->value]);
+        }
+        return $promise;
+    }
+
+    private static function invokeThen(Vm $vm, mixed $next, mixed $onFulfilled, mixed $onRejected): void
+    {
+        if (!$next instanceof JSObject) {
+            $vm->throwError('TypeError', 'Promise.resolve did not return an object');
+        }
+        $then = $next->get('then', $vm);
+        if (!$then instanceof JSFunctionBase) {
+            $vm->throwError('TypeError', 'then is not callable');
+        }
+        $vm->invoke($then, $next, [$onFulfilled, $onRejected]);
     }
 
     public static function all(Vm $vm, mixed $t, array $args): mixed
     {
-        self::requireConstructorReceiver($vm, $t, 'all');
-        $result = new JSPromise($vm->realm->promisePrototype());
-        // Anything that goes wrong reading the argument rejects the returned
-        // promise instead of throwing synchronously (25.4.4.1 step 6).
-        try {
-            $items = self::iterableToList($vm, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined));
-        } catch (JSThrowSignal $e) {
-            self::rejectPromise($vm, $result, $e->value);
-            return $result;
-        }
-        $n = count($items);
-        if ($n === 0) {
-            self::resolvePromise($vm, $result, $vm->realm->newArray([]));
-            return $result;
-        }
-        // Shared counter state as a JS-heap-safe array object.
-        $state = $vm->realm->newObject();
-        $state->props['remaining'] = $n;
-        $state->props['values'] = $vm->realm->newArray(array_fill(0, $n, JSUndefined::$undefined));
-        [$_, $rejectFn] = self::capabilities($vm, $result);
-        foreach ($items as $i => $item) {
-            $p = self::promiseResolve($vm, $item);
-            $onF = $vm->realm->nativeFn('Promise.allElementFn', '', 1, null, [$state, $i, $result]);
-            self::then($vm, $p, [$onF, $rejectFn]);
-        }
-        return $result;
+        return self::combinator($vm, $t, $args, true);
     }
 
     public static function allElementFn(Vm $vm, mixed $t, array $args, ?JSNativeFunction $fn = null): mixed
     {
-        [$state, $i, $result] = $fn->data;
-        $values = $state->props['values'];
-        $values->elements[$i] = (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined);
+        [$state, $i] = $fn->data;
+        if ($fn->alreadyCalled) {
+            return JSUndefined::$undefined;
+        }
+        $fn->alreadyCalled = true;
+        $state->props['values']->elements[$i] = \array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined;
         if (--$state->props['remaining'] === 0) {
-            self::resolvePromise($vm, $result, $values);
+            $vm->invoke($state->props['resolve'], JSUndefined::$undefined, [$state->props['values']]);
         }
         return JSUndefined::$undefined;
     }
 
     public static function race(Vm $vm, mixed $t, array $args): mixed
     {
-        self::requireConstructorReceiver($vm, $t, 'race');
-        $result = new JSPromise($vm->realm->promisePrototype());
-        try {
-            $items = self::iterableToList($vm, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined));
-        } catch (JSThrowSignal $e) {
-            self::rejectPromise($vm, $result, $e->value);
-            return $result;
-        }
-        [$resolveFn, $rejectFn] = self::capabilities($vm, $result);
-        foreach ($items as $item) {
-            $p = self::promiseResolve($vm, $item);
-            self::then($vm, $p, [$resolveFn, $rejectFn]);
-        }
-        return $result;
+        return self::combinator($vm, $t, $args, false);
     }
 
     /** ES5 target: only arrays (and array-likes) are accepted as iterables. */

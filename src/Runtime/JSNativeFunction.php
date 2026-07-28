@@ -20,6 +20,8 @@ final class JSNativeFunction extends JSFunctionBase
         /** Separate construct behavior; null means [[Construct]] = [[Call]]. */
         public ?string $ctorId = null,
         public mixed $data = null,
+        /** One-shot guard for spec functions that may only run once. */
+        public bool $alreadyCalled = false,
     ) {
         parent::__construct($proto);
         $this->name = $name;
