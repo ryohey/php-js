@@ -343,12 +343,17 @@ final class ArrayBuiltins
         $start = self::relIndex($vm, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined), $len, 0);
         $end = self::relIndex($vm, (\array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined), $len, $len);
         $result = new JSArray($vm->realm->arrayPrototype());
-        $n = 0;
-        for ($i = $start; $i < $end; $i++, $n++) {
+        $visit = self::visitList($o, $len);
+        $count = $visit === null ? max(0, $end - $start) : count($visit);
+        for ($j = 0; $j < $count; $j++) {
+            $i = $visit === null ? $start + $j : $visit[$j];
+            if ($i < $start || $i >= $end) {
+                continue;
+            }
             $present = false;
             $v = self::getIdx($vm, $o, $i, $present);
             if ($present) {
-                $result->elements[$n] = $v;
+                $result->elements[$i - $start] = $v;
             }
         }
         $result->length = max(0, $end - $start);
@@ -408,12 +413,14 @@ final class ArrayBuiltins
         $sources = array_merge([$o], $args);
         foreach ($sources as $src) {
             if ($src instanceof JSArray) {
-                for ($i = 0; $i < $src->length; $i++) {
-                    if (array_key_exists($i, $src->elements)) {
-                        $result->elements[$n] = $src->elements[$i];
+                // Iterate the elements, not 0..length: a length is a uint32
+                // and the array may hold only a handful of them.
+                foreach ($src->elements as $i => $v) {
+                    if ($i < $src->length) {
+                        $result->elements[$n + $i] = $v;
                     }
-                    $n++;
                 }
+                $n += $src->length;
             } else {
                 $result->elements[$n] = $src;
                 $n++;
