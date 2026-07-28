@@ -71,19 +71,31 @@ final class Compiler
                 $this->unsupported($node, 'Async functions are not supported (ES5 target)');
             }
             $ctx->name = $node->getId() !== null ? $node->getId()->getName() : '';
-            foreach ($node->getParams() as $i => $p) {
-                if ($p->getType() !== 'Identifier') {
-                    $this->unsupported($p, 'Parameter patterns are not supported (ES5 target)');
-                }
-                $name = $p->getName();
-                $ctx->params[] = $name;
-                $ctx->bindings[$name] = new Binding($ctx, $name, 'param', $i);
-            }
             $bodyNode = $node->getBody();
             if ($bodyNode->getType() !== 'BlockStatement') {
                 $this->unsupported($node, 'Expression-bodied functions are not supported (ES5 target)');
             }
             $body = $bodyNode->getBody();
+            // A body directive makes the parameter list strict too, so
+            // strictness has to be known before the parameters are bound.
+            $ctx->strict = $ctx->strict || $this->hasUseStrict($body);
+            if ($ctx->strict && $node->getId() !== null) {
+                $this->checkBindingName($ctx, $node->getId()->getName(), $node);
+            }
+            foreach ($node->getParams() as $i => $p) {
+                if ($p->getType() !== 'Identifier') {
+                    $this->unsupported($p, 'Parameter patterns are not supported (ES5 target)');
+                }
+                $name = $p->getName();
+                if ($ctx->strict) {
+                    $this->checkBindingName($ctx, $name, $p);
+                    if (in_array($name, $ctx->params, true)) {
+                        $this->fail($p, "Duplicate parameter name '$name' not allowed in strict mode");
+                    }
+                }
+                $ctx->params[] = $name;
+                $ctx->bindings[$name] = new Binding($ctx, $name, 'param', $i);
+            }
         }
         $ctx->strict = $ctx->strict || $this->hasUseStrict($body);
 
@@ -142,6 +154,7 @@ final class Compiler
                         $this->unsupported($id, 'Destructuring is not supported (ES5 target)');
                     }
                     $name = $id->getName();
+                    $this->checkBindingName($ctx, $name, $id);
                     if ($ctx->isProgram) {
                         // Program-level vars are global object properties,
                         // not frame slots (visible across scripts).
@@ -155,6 +168,7 @@ final class Compiler
                 break;
             case 'FunctionDeclaration':
                 $name = $node->getId()->getName();
+                $this->checkBindingName($ctx, $name, $node);
                 if ($ctx->isProgram) {
                     if (!in_array($name, $ctx->globalDecls, true)) {
                         $ctx->globalDecls[] = $name;
@@ -346,6 +360,7 @@ final class Compiler
                     if ($param === null || $param->getType() !== 'Identifier') {
                         $this->unsupported($handler, 'Catch parameter patterns are not supported (ES5 target)');
                     }
+                    $this->checkBindingName($ctx, $param->getName(), $param);
                     $b = new Binding($ctx, $param->getName(), 'catch');
                     $ctx->extraBindings[] = $b;
                     $this->catchBind[$handler] = $b;
@@ -363,6 +378,17 @@ final class Compiler
                 // no break (fail throws)
             default:
                 $this->unsupported($node, "Unsupported syntax: $type (ES5 target; downlevel first)");
+        }
+    }
+
+    /**
+     * 'eval' and 'arguments' may not be bound in strict mode (ES5.1 12.2.1,
+     * 13.1). Called for var/function/parameter/catch bindings.
+     */
+    private function checkBindingName(Ctx $ctx, string $name, ?object $node): void
+    {
+        if ($ctx->strict && ($name === 'eval' || $name === 'arguments')) {
+            $this->fail($node, "Binding '$name' is not allowed in strict mode");
         }
     }
 
@@ -533,6 +559,13 @@ final class Compiler
         $labels = $this->pendingLabels;
         $this->pendingLabels = [];
         $type = $node->getType();
+        if ($c->isProgram && isset(self::RESETS_COMPLETION[$type])) {
+            // These statements start with V = undefined, so a preceding
+            // expression statement's value must not leak out of them
+            // (`eval('1; for (k in {}) {}')` is undefined, not 1).
+            $c->emit(Op::PUSH_UNDEF);
+            $c->emit(Op::SET_COMPLETION);
+        }
         switch ($type) {
             case 'ExpressionStatement':
                 $this->genExpr($node->getExpression());
@@ -562,6 +595,8 @@ final class Compiler
                 }
                 return;
             case 'IfStatement':
+                $this->requireStatementBody($node->getConsequent());
+                $this->requireStatementBody($node->getAlternate());
                 $this->genExpr($node->getTest());
                 $jElse = $c->emitJump(Op::JF);
                 $this->genStmt($node->getConsequent());
@@ -575,6 +610,7 @@ final class Compiler
                 }
                 return;
             case 'WhileStatement': {
+                $this->requireStatementBody($node->getBody());
                 $loop = $this->pushLoop($labels, true);
                 $lCond = $c->here();
                 $this->genExpr($node->getTest());
@@ -587,6 +623,7 @@ final class Compiler
                 return;
             }
             case 'DoWhileStatement': {
+                $this->requireStatementBody($node->getBody());
                 $loop = $this->pushLoop($labels, true);
                 $lBody = $c->here();
                 $this->genStmt($node->getBody());
@@ -598,6 +635,7 @@ final class Compiler
                 return;
             }
             case 'ForStatement': {
+                $this->requireStatementBody($node->getBody());
                 $init = $node->getInit();
                 if ($init !== null) {
                     if ($init->getType() === 'VariableDeclaration') {
@@ -629,6 +667,7 @@ final class Compiler
                 return;
             }
             case 'ForInStatement': {
+                $this->requireStatementBody($node->getBody());
                 $this->genExpr($node->getRight());
                 $iterSlot = $c->tempAlloc();
                 $c->emit(Op::FORIN_INIT, $iterSlot);
@@ -743,6 +782,33 @@ final class Compiler
                 // no break (fail throws)
             default:
                 $this->unsupported($node, "Unsupported statement: $type");
+        }
+    }
+
+    /**
+     * Statement types whose completion value starts as undefined rather than
+     * inheriting the previous statement's value.
+     */
+    private const RESETS_COMPLETION = [
+        'WhileStatement' => true,
+        'DoWhileStatement' => true,
+        'ForStatement' => true,
+        'ForInStatement' => true,
+        'IfStatement' => true,
+        'SwitchStatement' => true,
+        'TryStatement' => true,
+    ];
+
+    /**
+     * A FunctionDeclaration is not a Statement, so it cannot be the body of a
+     * loop or an if — not even wrapped in a label.
+     */
+    private function requireStatementBody(?object $node): void
+    {
+        for ($n = $node; $n !== null && $n->getType() === 'LabeledStatement'; $n = $n->getBody()) {
+        }
+        if ($n !== null && $n->getType() === 'FunctionDeclaration') {
+            $this->fail($n, 'Function declarations cannot appear in statement position');
         }
     }
 
@@ -1160,6 +1226,9 @@ final class Compiler
         $arg = self::unwrapParens($node->getArgument());
         $mathOp = $isAdd ? Op::ADD : Op::SUB;
         if ($arg->getType() === 'Identifier') {
+            if ($c->strict) {
+                $this->checkAssignmentTarget($arg->getName(), $arg);
+            }
             $this->emitLoadName($arg->getName());
             $c->emit(Op::TONUM);
             if ($prefix) {
@@ -1219,6 +1288,9 @@ final class Compiler
         if ($left->getType() !== 'Identifier' && $left->getType() !== 'MemberExpression') {
             $this->unsupported($left, 'Destructuring assignment is not supported (ES5 target)');
         }
+        if ($left->getType() === 'Identifier' && $c->strict) {
+            $this->checkAssignmentTarget($left->getName(), $left);
+        }
         if ($op === '=') {
             if ($left->getType() === 'Identifier') {
                 $this->genExpr($right);
@@ -1255,6 +1327,14 @@ final class Compiler
             $this->genExpr($right);
             $c->emit($binOp);
             $c->emit(Op::SET_PROP, $kidx);
+        }
+    }
+
+    /** Strict mode forbids assigning to 'eval' and 'arguments' (ES5.1 11.13.1). */
+    private function checkAssignmentTarget(string $name, ?object $node): void
+    {
+        if ($name === 'eval' || $name === 'arguments') {
+            $this->fail($node, "Cannot assign to '$name' in strict mode");
         }
     }
 
