@@ -46,6 +46,8 @@ final class Runner
     public function __construct(
         private readonly string $test262Dir,
         private readonly bool $verbose = false,
+        /** Per-test wall-clock limit; a mis-executed test can loop forever. */
+        private readonly float $timeLimit = 5.0,
     ) {
     }
 
@@ -204,6 +206,7 @@ final class Runner
             JSObject::W | JSObject::C
         );
 
+        $engine->vm->setTimeLimit($this->timeLimit);
         $directive = $mode === 'strict' ? "\"use strict\";\n" : '';
         if ($mode !== 'raw') {
             // The harness runs as its own program. Program-level declarations

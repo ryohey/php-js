@@ -43,6 +43,8 @@ final class Vm
 
     private const MAX_FRAMES = 10000;
     private const MAX_REENTRY = 400;
+    /** How often the dispatch loop checks the wall clock against the deadline. */
+    private const DEADLINE_CHECK_INTERVAL = 100000;
 
     /** @var array<int, mixed> shared operand stack (locals live at frame bases) */
     public array $stack = [];
@@ -51,6 +53,21 @@ final class Vm
     public array $frames = [];
     public mixed $completion;
     private int $reentry = 0;
+    /**
+     * Wall-clock limit for JS execution, or null for no limit. A runaway loop
+     * in guest code must not hang the host request, and PHP's own time limit
+     * cannot unwind the VM cleanly. Checked every
+     * DEADLINE_CHECK_INTERVAL instructions so the hot path stays untouched.
+     */
+    private ?float $deadline = null;
+    private int $ticksToDeadlineCheck = self::DEADLINE_CHECK_INTERVAL;
+
+    /** Abort execution if JS runs for more than $seconds. Null clears the limit. */
+    public function setTimeLimit(?float $seconds): void
+    {
+        $this->deadline = $seconds === null ? null : microtime(true) + $seconds;
+        $this->ticksToDeadlineCheck = self::DEADLINE_CHECK_INTERVAL;
+    }
 
     public function __construct(public Realm $realm)
     {
@@ -191,6 +208,13 @@ final class Vm
         for (;;) {
             try {
                 $this->sp = $sp; // keep reentrant helpers safe (see DESIGN.md §4.3)
+                if (--$this->ticksToDeadlineCheck <= 0) {
+                    $this->ticksToDeadlineCheck = self::DEADLINE_CHECK_INTERVAL;
+                    if ($this->deadline !== null && microtime(true) > $this->deadline) {
+                        $this->deadline = null; // let the unwind itself complete
+                        $this->throwError('RangeError', 'Script execution timed out');
+                    }
+                }
                 $op = $code[$pc++];
                 switch ($op) {
                     case Op::PUSH_CONST:
