@@ -74,6 +74,12 @@ jobs:
           composer install --no-interaction --no-progress
           vendor/bin/phpunit
 
+      - name: php-transpile
+        working-directory: packages/php-transpile
+        run: |
+          composer install --no-interaction --no-progress
+          vendor/bin/phpunit
+
       - name: React SSR benchmark
         working-directory: packages/react-ssr-bench
         run: |

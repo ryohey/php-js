@@ -145,6 +145,8 @@ final class Ctx
             'children' => $this->children,
             'lines' => $this->lines,
             'flags' => 0,
+            // Set by Compiler's per-function hook; null for ordinary bytecode.
+            'nativeId' => null,
         ];
     }
 }

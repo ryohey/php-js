@@ -111,6 +111,14 @@ final class Vm
         if (!$fn instanceof JSFunction) {
             $this->throwError('TypeError', Conversions::toString($this, TypeOps::typeofOp($fn)) . ' is not a function');
         }
+        if ($fn->nativeId !== null) {
+            return (BuiltinRegistry::get($fn->nativeId))(
+                $this,
+                $ctorObj ?? ($fn->template['strict'] ? $thisVal : $this->coerceThis($thisVal)),
+                $args,
+                $fn
+            );
+        }
         if (++$this->reentry > self::MAX_REENTRY) {
             $this->reentry--;
             $this->throwError('RangeError', 'Maximum call stack size exceeded');
@@ -763,6 +771,23 @@ final class Vm
                         $funcPos = $sp - $argc - 2;
                         $func = $stack[$funcPos];
                         if ($func instanceof JSFunction) {
+                            if ($func->nativeId !== null) {
+                                // Ahead-of-time compiled body: an ordinary
+                                // native call, no frame (docs/aot-php.md §3).
+                                $args = [];
+                                for ($i = 0; $i < $argc; $i++) {
+                                    $args[] = $stack[$funcPos + 2 + $i];
+                                }
+                                $thisVal = $stack[$funcPos + 1];
+                                if (!$func->template['strict']) {
+                                    $thisVal = $this->coerceThis($thisVal);
+                                }
+                                $sp = $funcPos;
+                                $this->sp = $sp;
+                                $frame[self::F_PC] = $pc;
+                                $stack[$sp++] = (BuiltinRegistry::get($func->nativeId))($this, $thisVal, $args, $func);
+                                break;
+                            }
                             if ($fi + 1 >= self::MAX_FRAMES) {
                                 $this->throwError('RangeError', 'Maximum call stack size exceeded');
                             }
@@ -828,7 +853,7 @@ final class Vm
                         $argc = $code[$pc++];
                         $ctorPos = $sp - $argc - 1;
                         $ctor = $stack[$ctorPos];
-                        if ($ctor instanceof JSFunction) { // NEW_OP fast path
+                        if ($ctor instanceof JSFunction && $ctor->nativeId === null) { // NEW_OP fast path
                             if ($fi + 1 >= self::MAX_FRAMES) {
                                 $this->throwError('RangeError', 'Maximum call stack size exceeded');
                             }

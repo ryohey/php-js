@@ -1,0 +1,46 @@
+{
+  "name": "ryohey/php-js-transpile",
+  "description": "Build-time compiler from JavaScript functions to PHP, for the php-js runtime",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": ">=8.2",
+    "ryohey/php-js": "dev-main",
+    "nikic/php-parser": "^5.0",
+    "ryohey/php-js-node-compat": "dev-main"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^11.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "PhpJs\\Transpile\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "PhpJs\\Transpile\\Tests\\": "tests/"
+    }
+  },
+  "repositories": [
+    {
+      "type": "path",
+      "url": "../..",
+      "options": {
+        "symlink": true
+      }
+    },
+    {
+      "type": "path",
+      "url": "../node-compat",
+      "options": {
+        "symlink": true
+      }
+    }
+  ],
+  "minimum-stability": "dev",
+  "prefer-stable": true,
+  "bin": [
+    "bin/phpjs-transpile"
+  ]
+}

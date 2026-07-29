@@ -1,0 +1,82 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+foreach ([__DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../../vendor/autoload.php'] as $autoload) {
+    if (file_exists($autoload)) {
+        require $autoload;
+        break;
+    }
+}
+
+use PhpJs\Transpile\Artifact;
+
+$args = $argv;
+array_shift($args);
+$out = null;
+$files = [];
+$verbose = false;
+for ($i = 0; $i < count($args); $i++) {
+    switch ($args[$i]) {
+        case '-o':
+            $out = $args[++$i];
+            break;
+        case '-v':
+            $verbose = true;
+            break;
+        case '--help':
+            fwrite(STDOUT, <<<TXT
+            Usage: phpjs-transpile [-o DIR] [-v] <file.js> [...]
+
+            Compiles the functions of each JS file to PHP ahead of time and
+            reports what it could not convert. With -o, writes one generated
+            PHP file per input, named by content hash; without it, prints a
+            summary only.
+
+            The generated PHP is optional at run time: the bytecode template
+            works with or without it. See docs/aot-php.md.
+
+            TXT);
+            exit(0);
+        default:
+            $files[] = $args[$i];
+    }
+}
+if ($files === []) {
+    fwrite(STDERR, "No input files. Try --help.\n");
+    exit(2);
+}
+
+$totalSeen = 0;
+$totalConverted = 0;
+$reasons = [];
+foreach ($files as $file) {
+    if (!is_file($file)) {
+        fwrite(STDERR, "Not a file: $file\n");
+        exit(1);
+    }
+    $source = file_get_contents($file);
+    $artifact = Artifact::build($source, basename($file));
+    $totalSeen += $artifact->seen;
+    $totalConverted += $artifact->converted;
+    foreach ($artifact->refused as $r) {
+        $reasons[$r['reason']] = ($reasons[$r['reason']] ?? 0) + 1;
+    }
+    $where = '';
+    if ($out !== null && $artifact->converted > 0) {
+        $where = ' -> ' . $artifact->writePhp($out, preg_replace('/\W+/', '-', basename($file)));
+    }
+    printf("%-50s %4d / %-4d functions%s\n", basename($file), $artifact->converted, $artifact->seen, $where);
+    if ($verbose) {
+        foreach ($artifact->refused as $r) {
+            printf("    %s: %s\n", $r['id'], $r['reason']);
+        }
+    }
+}
+
+arsort($reasons);
+printf("\ntotal: %d / %d functions compiled (%.0f%%)\n", $totalConverted, $totalSeen, $totalSeen > 0 ? 100 * $totalConverted / $totalSeen : 0);
+foreach (array_slice($reasons, 0, 12, true) as $reason => $count) {
+    printf("  %4dx  %s\n", $count, $reason);
+}

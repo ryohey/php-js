@@ -97,10 +97,13 @@ on it:
 - [`packages/react-ssr-bench`](packages/react-ssr-bench) — renders a React app
   server-side from React's own published CommonJS build, asserts the HTML is
   byte-identical to Node, and reports boot and render separately.
+- [`packages/php-transpile`](packages/php-transpile) — build-time compiler from
+  JavaScript functions to PHP. Converts most of React to PHP with unchanged
+  output; the bytecode stays as the fallback.
 
 ## Performance
 
-React SSR runs at roughly 50-70x Node 22 for byte-identical output. Two things
+React SSR runs at roughly 40x Node 22 for byte-identical output. Three things
 are worth knowing before measuring anything yourself:
 
 - **Turn PHP's tracing JIT on** (`-d opcache.jit=tracing
@@ -108,9 +111,12 @@ are worth knowing before measuring anything yourself:
   default.
 - **Precompile.** Boot is dominated by compiling JS, which `phpjs compile` plus
   a warm opcache removes entirely.
+- **Compile the hot library ahead of time.** `php-transpile` turns most of
+  React into PHP and is worth a further ~17% on a render.
 
 `packages/react-ssr-bench/README.md` has the numbers and a per-opcode
-breakdown of where the remaining time goes.
+breakdown of where the remaining time goes; `docs/aot-php.md` covers the
+ahead-of-time PHP work and what it is measured to be worth.
 
 ## Development
 

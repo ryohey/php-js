@@ -33,6 +33,18 @@ final class ModuleLoader
 
     public int $compileCount = 0;
     public float $compileSeconds = 0.0;
+    /**
+     * Optional per-module compile hook, passed straight to `Compiler::compile`
+     * as its per-function callback. The ahead-of-time PHP compiler
+     * (packages/php-transpile, docs/aot-php.md) installs one here to claim the
+     * functions it can compile; nothing else uses it, and with none installed
+     * the loader behaves exactly as before.
+     *
+     * `fn(string $path): ?callable` — given a module path, return the hook for
+     * that module, or null to compile it as ordinary bytecode.
+     * @var null|callable(string): ?callable
+     */
+    public $onCompileModule = null;
 
     public function __construct(
         private readonly NodeHost $host,
@@ -191,7 +203,8 @@ final class ModuleLoader
         $wrapped = "(function (exports, require, module, __filename, __dirname) {"
             . $source . "\n})";
         $started = microtime(true);
-        $template = Compiler::compile($wrapped);
+        $hook = $this->onCompileModule === null ? null : ($this->onCompileModule)($path);
+        $template = Compiler::compile($wrapped, $hook);
         $this->compileSeconds += microtime(true) - $started;
         $this->compileCount++;
         return $this->templates[$path] = $template;

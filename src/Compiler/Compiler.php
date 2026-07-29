@@ -33,6 +33,15 @@ final class Compiler
     private Ctx $cur;
     /** @var list<string> labels waiting to attach to the next statement */
     private array $pendingLabels = [];
+    /**
+     * Optional per-function hook: `fn(object $node, Ctx $ctx, bool $isProgram): ?string`.
+     * Returning a native function ID stamps it on the template as `nativeId`,
+     * which makes NEW_FUNC instantiate that native instead of a bytecode
+     * function when the ID is registered at run time (docs/aot-php.md §3).
+     * The bytecode is still emitted either way, so a template compiled with a
+     * hook runs unchanged on a runtime that has no such native.
+     */
+    private $onFunction = null;
 
     private function __construct()
     {
@@ -40,10 +49,14 @@ final class Compiler
         $this->catchBind = new \SplObjectStorage();
     }
 
-    /** @return array<string, mixed> program template */
-    public static function compile(string $source): array
+    /**
+     * @param null|callable(object, Ctx, bool): ?string $onFunction
+     * @return array<string, mixed> program template
+     */
+    public static function compile(string $source, ?callable $onFunction = null): array
     {
         $c = new self();
+        $c->onFunction = $onFunction;
         try {
             $ast = Peast::latest($source, ['sourceType' => 'script'])->parse();
         } catch (\Throwable $e) {
@@ -553,7 +566,14 @@ final class Compiler
             $this->cur = $prevCur;
         }
         $this->pendingLabels = $prevLabels;
-        return Peephole::run($ctx->toTemplate());
+        $tpl = $ctx->toTemplate();
+        if ($this->onFunction !== null) {
+            $nativeId = ($this->onFunction)($node, $ctx, $isProgram);
+            if ($nativeId !== null) {
+                $tpl['nativeId'] = $nativeId;
+            }
+        }
+        return Peephole::run($tpl);
     }
 
     /** Compile a nested function into the current template's children; returns its index. */

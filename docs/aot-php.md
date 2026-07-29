@@ -1,14 +1,16 @@
 # Ahead-of-time PHP for the hot path
 
-Status: **phase 0 and 0.5 done, transpiler not started.** This adapts an
+Status: **phases 0, 0.5 and 1 done.** This adapts an
 externally drafted "hot-path transpilation" strategy to what this runtime
 actually is and what it actually measures. Read DESIGN.md first; §2
 (compilation pipeline), §5 (object model) and §11 (shared-nothing / opcache)
 constrain most of what follows.
 
 Where it stands: native library substitution took React 19 down 30% (§6 phase
-0), and the transpiler has been priced at **N ≈ 18x** on a representative
-React internal (§8), which is the go signal for building it.
+0). The transpiler now exists (`packages/php-transpile`), compiles **219 of
+291** React functions to PHP with byte-identical output, and takes another
+**16.6%** off a render. It does *not* hit the speed the hand-written pricing
+experiment predicted — §9 has the honest accounting and what it means.
 
 The goal is a Next.js-SSG-equivalent: render React trees to static HTML at build
 time, in PHP. Build time only, closed input, no untrusted JS.
@@ -286,27 +288,57 @@ building anything. **N ≈ 18x** with conservative `[[Set]]` semantics, ~40x if
 the emitter proves the write target is a fresh object (§8). The end-to-end
 render moved 12.8%, matching the 12.6% the per-call numbers predict.
 
-**Phase 1 — one transpiled function, end to end.**
-Target `createElement` — no longer the smallest possible target, but the one
-whose hand-written answer already exists to diff against, which is worth more
-than simplicity here. Build the minimum pipeline: Peast AST → `Compiler`
-analysis → php-parser AST → file → `BuiltinRegistry` entry → `nativeId` on the
-template → `JSTranspiledFunction`. Nothing general: one function, whatever it
-takes.
-*Exit:* the pipeline runs unattended, output is byte-identical, and the
-generated PHP is within ~2x of the hand-written native. That last check is the
-point of picking `createElement`: it turns "does the emitter work" into a
-number. Emit conservative `[[Set]]` first; the escape analysis is phase 2 or
-later.
+**Phase 1 — the emitter, end to end. → DONE, with one criterion missed.**
+`packages/php-transpile`: Peast AST → the bytecode compiler's own scope
+analysis → php-parser AST → PHP → `BuiltinRegistry`. It turned out to be no
+harder to compile *every* function a module has than to select one, so it
+does that and refuses what it cannot handle.
 
-**Phase 2 — the ranked list.**
-Work down the profile: `renderElement`, `pushStartGenericElement`,
-`flushSubtree`, `pushStartInstance`, `retryNode`. Extend the emitter only as
-far as each target requires, and re-measure after every one. Expect targets to
-be rejected as unconvertible; record which construct rejected them, because
-that list is the real specification for the emitter.
-*Exit:* top-10 functions converted or explicitly rejected, with a measured
-number for each.
+*Achieved:* runs unattended over React 19 (219/291 functions, 75% by the CLI's
+count over the two source files), renders byte-identically to the interpreted
+run for both render methods, and takes **16.6% off a render** (7/7 paired).
+test262 unchanged, all suites green.
+
+*Missed:* generated PHP is **3.5-8x the cost of the hand-written native**, not
+the ~2x the exit criterion asked for. §9 explains why, and it is not a
+fixable oversight — a substantial part is work the hand-written version was
+entitled to skip and the emitter is not.
+
+Two design decisions worth carrying forward:
+
+- A transpiled function stays a `JSFunction` and gains a `nativeId`; it is not
+  swapped for a `JSNativeFunction`. The first attempt did swap it, and lost
+  `.prototype`, `[[Construct]]` and `instanceof` — `function A() {}` stopped
+  being usable as a constructor. Keeping the JSFunction means an ahead-of-time
+  compiled function is not distinguishable from the one it replaced, which is
+  the whole contract.
+- The template still carries its bytecode, and `JSFunction` only takes the
+  native path when that ID is actually registered. So the generated PHP is
+  optional at run time: ship it, or don't, and the program behaves the same.
+
+**Phase 2 — close the refusals, then the fixed overhead.**
+The emitter refuses 72 of React's 291 functions, and the reasons are now
+measured rather than guessed:
+
+| Refusal | Count |
+|---|---|
+| `switch` statement | 28 |
+| function's own locals are captured (needs an environment record) | 23 |
+| `try` statement | 15 |
+| nested function expression | 3 |
+| `typeof` on a possibly-undeclared global | 2 |
+| labelled statement | 1 |
+
+`switch` and `try` are ordinary emitter work. The environment-record case is
+the structural one: a function whose locals are captured must allocate a
+`JSEnv` and have its nested functions close over it, which means emitting
+nested functions too — that is the same problem as phase 4's islands, arriving
+from a different direction.
+*Exit:* refusals below ~10% of functions, with the remainder characterised.
+
+Then the fixed overhead from §9: every operator is a static call today. Fusing
+common shapes (a comparison feeding an `if`, a property read feeding a call)
+is the same idea as the bytecode peephole pass and should transfer.
 
 **Phase 3 — preload wiring.**
 `opcache.preload` for the generated set, `opcache_compile_file()` warmup as a
@@ -360,7 +392,7 @@ accumulates `hrtime` deltas per template at the top of the dispatch loop. It is
 not committed — a per-instruction hook costs a few percent and does not belong
 in the loop. See §2 for the calibration check that makes its output usable.
 
-## 8. Pricing the transpiler: N is about 18x
+## 8. Pricing the transpiler: 18x hand-written (but see §9)
 
 §7 left one number unmeasured, and it is the number the whole decision turns
 on: how much faster is hand-written PHP than the interpreter for an
@@ -400,11 +432,16 @@ profile, the per-call microbenchmark and the end-to-end render all agree.
 So the answer to §7's question is **build it**. 18x conservative is far above
 the 8x that would justify the work and nowhere near the 2x that would kill it.
 
+*(Read §9 next. The emitter, once built, reached 3-6x rather than 18x, and the
+reason is visible only in hindsight: this hand-written implementation skipped
+work a faithful emitter has to keep. The decision still stands — 3-6x is worth
+having — but the number in this section is not the one to plan with.)*
+
 Projecting the top 10 functions (71% of the render) at a conservative N=18
-gives `1 / (0.29 + 0.71/18)` ≈ **3.0x** on top of what phase 0 already did —
-React 19 at roughly 24 ms, about 11x Node instead of 44x. The residual is then
-almost entirely the 29% left interpreted, which is where the argument for
-subtree islands (phase 4) would finally come from.
+gives `1 / (0.29 + 0.71/18)` ≈ **3.0x** on top of what phase 0 already did.
+§9 revises that to ~2.1x with the emitter's real multiplier. The residual is
+then almost entirely the fraction left interpreted, which is where the argument
+for subtree islands (phase 4) would finally come from.
 
 One aside worth keeping: materializing `arguments` costs about **2.6 µs per
 call** on its own, and React's `createElement` touches it on every call. The
@@ -415,14 +452,74 @@ only ~6% of `createElement`'s 40 µs; the bulk is the `for-in` over the config
 (which walks the prototype chain to build its key list), the
 `hasOwnProperty.call` native round-trip per property, and the element literal.
 
-## 9. What this can and cannot achieve
+## 9. What the emitter actually costs, and why the pricing was optimistic
 
-With N measured at 18x (§8) and the top 10 functions covering 71% of a render,
-`1 / (0.29 + 0.71/18)` puts the transpiler at about **3x** on top of phase 0 —
-React 19 near 24 ms against Node's 2.09 ms, roughly 11x Node instead of the 62x
-it started at. Counting phase 0, that is ~5x end to end from where this began.
-Worth doing for a build-time renderer; not parity, and nobody should plan as if
-it were.
+Phase 1's exit criterion was "generated PHP within ~2x of the hand-written
+native". It came out at **3.5-8x**. Per call, on React 19's `createElement`:
+
+| Call shape | bytecode | generated | hand-written | gen. vs bytecode | gen. vs hand |
+|---|---|---|---|---|---|
+| 1 prop, 1 child | 44.6 µs | 14.5 µs | 2.62 µs | 3.1x | 5.5x |
+| 2 props, 1 child | 55.6 µs | 18.2 µs | 2.32 µs | 3.0x | 7.8x |
+| 1 prop, 2 children | 65.0 µs | 24.9 µs | 4.55 µs | 2.6x | 5.5x |
+| no props, 1 child | 23.9 µs | 4.09 µs | 1.14 µs | 5.8x | 3.6x |
+
+Splitting that by where the cost lands is the useful part. With no properties
+to copy, generated is ~4x the hand-written cost — that is the emitter's fixed
+overhead. The marginal cost *per copied property* is about 7.0 µs generated
+against 0.6 µs hand-written, roughly 12x.
+
+That per-property gap is not sloppiness. React's copy loop is
+
+```js
+for (propName in config)
+  hasOwnProperty.call(config, propName) && ... && (props[propName] = config[propName]);
+```
+
+The hand-written native iterates `ownEnumerableKeys()` and simply drops the
+`hasOwnProperty.call`, because a human knows own-enumerable-keys already
+satisfies it. The emitter cannot: it would have to prove that `hasOwnProperty`
+is still `Object.prototype.hasOwnProperty` and that `.call` is still
+`Function.prototype.call`. So it emits both invokes, per property, faithfully.
+
+**So the §8 pricing of N ≈ 18x was optimistic, and now we know the mechanism:
+a hand-written implementation is allowed to elide work that a faithful emitter
+must keep.** The honest multiplier for generated code is **3-6x**, and the
+gap between 3-6x and 18x is the value of the assumptions a human makes without
+noticing.
+
+Two consequences for what comes next:
+
+- The remaining fixed overhead is worth attacking (the emitter still routes
+  every operator through a static call), but the per-property gap needs
+  *identity assumptions about builtins* — "this really is
+  `Object.prototype.hasOwnProperty`" — which is a different and much larger
+  design question than anything in §3. It is speculation with a guard, which is
+  exactly what §1 rejected for this use case. Whether an SSG build's closed
+  input makes it provable rather than speculative is the interesting question,
+  and it is not answered here.
+- Revised projection: at N=4 across converted code the whole-render ceiling is
+  `1 / (0.29 + 0.71/4)` ≈ **2.1x**, not 3x. The measured 16.6% on one render is
+  consistent with that, since only part of the render is converted.
+
+Two cheap emitter improvements were tried and are in: results already known to
+be PHP bools skip `Conversions::toBoolean` (including across the temporaries
+that `&&` chains create), and property reads go through an `Ops::getProp` fast
+path. Together they were worth almost nothing on `createElement` — which is how
+the property-copy loop was identified as the real cost.
+
+## 10. What this can and cannot achieve
+
+The transpiler's real multiplier is 3-6x on converted code (§9), not the 18x
+the hand-written pricing suggested, which puts a fully converted render at
+about **2x** on top of phase 0 rather than 3x. Measured so far: 16.6% from
+converting React alone. Counting phase 0, that is roughly **1.8x end to end**
+from where this began, with maybe 2.5-3x reachable if phase 2 clears the
+switch/try refusals.
+
+Node is 2.09 ms and React 19 on this runtime is now ~80 ms. Nothing in this
+plan closes a 38x gap; it makes a build-time renderer meaningfully faster, and
+that is the honest scope.
 
 The binding constraint at that point is no longer the converted code but the
 **29% left interpreted** — which is what would finally justify subtree islands
