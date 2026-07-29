@@ -120,6 +120,19 @@ final class Op
 
     public const NOP = 82;
 
+    /**
+     * Superinstructions. Each collapses an adjacent pair that dominates real
+     * workloads (see Compiler\Peephole for the pattern table and the measured
+     * frequencies). They are pure fusions: the fused opcode does exactly what
+     * the two it replaces did, in the same order, so nothing observable
+     * changes and the pass can be turned off without affecting semantics.
+     */
+    public const STORE_LOCAL = 83;    // n    SET_LOCAL + POP
+    public const GET_LOCAL_PROP = 84; // n k  GET_LOCAL + GET_PROP
+    public const TYPEOF_LOCAL = 85;   // n    GET_LOCAL + TYPEOF
+    public const JSEQ = 86;           // a    SEQ + JT
+    public const JSNEQ = 87;          // a    SEQ + JF
+
     /** Operand kind string per opcode (one char per operand). */
     public const OPERANDS = [
         self::PUSH_CONST => 'k', self::PUSH_INT => 'i',
@@ -153,6 +166,9 @@ final class Op
         self::FORIN_INIT => 't', self::FORIN_NEXT => 'ta',
         self::INC_LOCAL => 'n', self::DEC_LOCAL => 'n',
         self::NOP => '',
+        self::STORE_LOCAL => 'n', self::GET_LOCAL_PROP => 'nk',
+        self::TYPEOF_LOCAL => 'n',
+        self::JSEQ => 'a', self::JSNEQ => 'a',
     ];
 
     public static function name(int $op): string

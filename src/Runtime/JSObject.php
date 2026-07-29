@@ -32,6 +32,19 @@ class JSObject
     public string $className = 'Object';
     /** Provenance ID for realm snapshots (unused until snapshots land). */
     public ?string $nativeId = null;
+    /**
+     * True when an own-property read is fully described by $props and $descs.
+     * Exotic objects that compute own properties from somewhere else — array
+     * indices, string code units, mapped arguments — clear this, because for
+     * them a $props entry can be stale or absent while the property exists.
+     *
+     * It exists so the prototype walk in get() can take a plain array lookup
+     * instead of a virtual call per level; nothing else may skip getOwn().
+     * Lazily materialized properties (JSFunction's 'prototype', the globals)
+     * do NOT clear it: an unmaterialized key is simply missing from $props,
+     * so the fast path falls through to ensureOwn() on its own.
+     */
+    public bool $ownPropsArePlain = true;
 
     public function __construct(?JSObject $proto = null)
     {
@@ -87,10 +100,17 @@ class JSObject
 
     public function get(string $key, Vm $vm, mixed $receiver = null): mixed
     {
-        $receiver ??= $this;
         for ($o = $this; $o !== null; $o = $o->proto) {
+            // Fast path: an already-materialized data property. Accessors keep
+            // a null placeholder in $props (see defineOwnAccessor) and lazily
+            // built properties are absent until ensureOwn runs, so a non-null
+            // hit here is always a plain value. This is the whole cost of a
+            // method lookup, which walks two or three prototypes to find one.
+            if ($o->ownPropsArePlain && null !== ($v = $o->props[$key] ?? null)) {
+                return $v;
+            }
             $found = false;
-            $v = $o->getOwn($key, $vm, $receiver, $found);
+            $v = $o->getOwn($key, $vm, $receiver ??= $this, $found);
             if ($found) {
                 return $v;
             }

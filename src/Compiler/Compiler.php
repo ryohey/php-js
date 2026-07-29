@@ -553,7 +553,7 @@ final class Compiler
             $this->cur = $prevCur;
         }
         $this->pendingLabels = $prevLabels;
-        return $ctx->toTemplate();
+        return Peephole::run($ctx->toTemplate());
     }
 
     /** Compile a nested function into the current template's children; returns its index. */

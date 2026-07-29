@@ -25,6 +25,9 @@ final class JSArray extends JSObject
     {
         parent::__construct($proto);
         $this->className = 'Array';
+        // Indices live in $elements and 'length' is a field, so $props alone
+        // does not describe this object's own properties.
+        $this->ownPropsArePlain = false;
     }
 
     /** Canonical array index for a property key, or null if not an index. */

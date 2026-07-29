@@ -273,6 +273,25 @@ final class Vm
                     case Op::SET_LOCAL:
                         $stack[$base + $code[$pc++]] = $stack[$sp - 1];
                         break;
+                    case Op::STORE_LOCAL:
+                        $stack[$base + $code[$pc++]] = $stack[--$sp];
+                        break;
+                    case Op::TYPEOF_LOCAL:
+                        $stack[$sp++] = TypeOps::typeofOp($stack[$base + $code[$pc++]]);
+                        break;
+                    case Op::GET_LOCAL_PROP: {
+                        $obj = $stack[$base + $code[$pc++]];
+                        $key = $consts[$code[$pc++]];
+                        if ($obj instanceof JSObject && null !== ($v = $obj->props[$key] ?? null)) {
+                            $stack[$sp++] = $v;
+                        } elseif ($obj instanceof JSArray && $key === 'length') {
+                            $stack[$sp++] = $obj->length;
+                        } else {
+                            $this->sp = $sp;
+                            $stack[$sp++] = $this->getMember($obj, $key);
+                        }
+                        break;
+                    }
                     case Op::GET_ENV: {
                         $d = $code[$pc++];
                         $e = $env;
@@ -602,6 +621,28 @@ final class Vm
                         $stack[$sp - 1] = (is_int($a) || is_float($a))
                             ? ((is_int($b) || is_float($b)) && $a == $b)
                             : $a === $b;
+                        break;
+                    }
+                    case Op::JSEQ: {
+                        $t = $code[$pc++];
+                        $b = $stack[--$sp];
+                        $a = $stack[--$sp];
+                        if ((is_int($a) || is_float($a))
+                            ? ((is_int($b) || is_float($b)) && $a == $b)
+                            : $a === $b) {
+                            $pc = $t;
+                        }
+                        break;
+                    }
+                    case Op::JSNEQ: {
+                        $t = $code[$pc++];
+                        $b = $stack[--$sp];
+                        $a = $stack[--$sp];
+                        if (!((is_int($a) || is_float($a))
+                            ? ((is_int($b) || is_float($b)) && $a == $b)
+                            : $a === $b)) {
+                            $pc = $t;
+                        }
                         break;
                     }
                     case Op::SNEQ: {

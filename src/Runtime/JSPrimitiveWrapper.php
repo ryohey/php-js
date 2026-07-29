@@ -16,6 +16,8 @@ final class JSPrimitiveWrapper extends JSObject
     ) {
         parent::__construct($proto);
         $this->className = $className;
+        // String wrappers expose indices and 'length' from the primitive.
+        $this->ownPropsArePlain = $className !== 'String';
     }
 
     public function hasOwn(string $key): bool

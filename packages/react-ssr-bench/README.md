@@ -12,10 +12,14 @@ give the performance question a number instead of an opinion.
 ```console
 $ npm install                    # fetches react + react-dom into node_modules
 $ composer install
-$ php bin/react-ssr-bench --items 20 --iterations 50 --compare-node
-boot: 127.2 ms (7 modules, 114.1 ms compiling), react 17.0.2
+$ php bin/react-ssr-bench --items 20 --iterations 25 --compare-node
+boot: 172.5 ms (7 modules, 155.9 ms compiling), react 17.0.2
 compare: byte-identical to Node (5492 bytes)
-render: 80.11 ms each (12.5/s over 10 iterations), 5492 bytes of HTML
+render: 88.19 ms each (11.3/s over 25 iterations), 5492 bytes of HTML
+
+$ php -d opcache.enable_cli=1 -d opcache.jit_buffer_size=64M \
+      -d opcache.jit=tracing bin/react-ssr-bench --items 20 --iterations 25
+render: 70.84 ms each (14.1/s over 25 iterations), 5492 bytes of HTML
 ```
 
 | Flag | Meaning |
@@ -32,22 +36,40 @@ runs the same comparison under PHPUnit.
 
 ## Where it stands
 
-Measured on this machine (PHP 8.4, no opcache preload), `renderToStaticMarkup`:
+`renderToStaticMarkup`, PHP 8.4.19 vs Node 22.22.2, all measured in one
+sitting so the columns are comparable:
 
-| Rows | php-js | Node 22 | ratio |
-|---|---|---|---|
-| 20 | 76.6 ms | 1.36 ms | 56x |
-| 100 | 391 ms | 5.25 ms | 75x |
+| Rows | php-js | php-js + JIT | Node 22 | ratio (JIT) |
+|---|---|---|---|---|
+| 20 | 88.2 ms | 70.8 ms | 1.34 ms | 53x |
+| 100 | 442 ms | 368 ms | 5.14 ms | 72x |
 
-Output is byte-identical in both cases. Boot is a further ~127 ms, of which
-~114 ms is compiling React — a cost the bytecode-file path removes entirely.
+Output is byte-identical in every case. Boot is a further ~170 ms, of which
+~156 ms is compiling React — a cost the bytecode-file path removes entirely.
 
-The gap is dispatch, not the builtins: one render makes about 4000 native calls
-in total, so essentially all of the time is the `while/switch` loop executing
-bytecode at roughly 3M instructions per second. That is the risk DESIGN.md §15
-named, now with a number attached. Closing it means fewer instructions per
-operation (superinstructions, fused compare-and-branch) rather than a faster
-instruction.
+Absolute numbers move by 20% or more between machines, so treat the ratio as
+the number and re-measure the rest locally. Comparing two versions of the
+runtime needs interleaved paired runs; a batch of "before" followed by a batch
+of "after" will happily report a 5% change that is entirely drift.
+
+**Turn the JIT on.** `-d opcache.jit=tracing -d opcache.jit_buffer_size=64M`
+is worth ~20% here and costs nothing but configuration. It is off by default
+in PHP, which makes it the cheapest thing on this list.
+
+### Where the time goes
+
+Not where it looked. One render executes ~188k bytecode instructions and makes
+only ~4000 native calls, so it is interpretation rather than the builtins — but
+it is not raw dispatch either. Fusing the four hottest opcode pairs
+(DESIGN.md §2.4) removed 13% of the instructions and bought about 4% of the
+time, because the instructions it removes are the cheap ones. A per-opcode
+profile puts a third of the render in `CALL`, `GET_METHOD` and property
+lookups, each around ten times the cost of a cheap opcode. `CALL` is the
+largest single item at 15% of the time for 3.9% of the instructions.
+
+The corollary is that plausible micro-optimizations lose about as often as they
+win: replacing the current frame's PHP reference with indexed writes measured
+slower, and so did fusing `GET_LOCAL`+`CALL`. Measure one at a time.
 
 ## Reading the numbers
 

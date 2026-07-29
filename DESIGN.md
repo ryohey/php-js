@@ -75,6 +75,28 @@ Composed exclusively of `var_export`-able plain arrays (**a precondition for the
 
 `code` is a flat array of ints for both opcodes and immediate operands. Strings and floats are referenced by index into `consts`. Operand counts are fixed per opcode; a disassembler/verifier exists from day one.
 
+### 2.4 Peephole pass (superinstructions)
+
+Codegen emits one instruction per operation, and a final pass (`Compiler\Peephole`) fuses adjacent pairs into single opcodes. This is the only optimization pass in the pipeline, and it exists because dispatch is a fixed per-opcode cost — a switch jump, an operand fetch, a loop-back — that is worth paying once instead of twice.
+
+The pattern table is short on purpose and is chosen from measurement, not intuition: a dynamic opcode-pair histogram over a React server-side render (`packages/react-ssr-bench`, the largest real workload the runtime has). Pairs currently fused, with each pair's share of all instructions executed in one render:
+
+| Pair | Fused | Share | Why it is common |
+|---|---|---|---|
+| `SET_LOCAL n` + `POP` | `STORE_LOCAL n` | 5.9% | `SET_LOCAL` leaves its value on the stack for the expression case; the statement case pops it straight back |
+| `GET_LOCAL n` + `GET_PROP k` | `GET_LOCAL_PROP n k` | 4.3% | `x.y` |
+| `SEQ` + `JT`/`JF` | `JSEQ`/`JSNEQ` | 3.1% | `if (a === b)`, `switch`, and the `x === undefined` guards a minified bundle is made of |
+| `GET_LOCAL n` + `TYPEOF` | `TYPEOF_LOCAL n` | 1.3% | `typeof x` |
+
+Together these remove about 13% of the instructions executed in a render.
+
+Two rules keep the pass honest:
+
+- **Fusion must be unobservable.** A fused opcode does exactly what the two it replaced did, in the same order. `Peephole::$enabled` turns the pass off, and the test suite runs the same programs both ways and compares results, including stack traces.
+- **Nothing may jump between the halves.** A pair is rejected when the second instruction is a jump target. Surviving targets — and the `lines` table, which lookup resolves last-match-wins — are rewritten to their new addresses. If the code stream cannot be decoded, the pass returns it untouched rather than guessing.
+
+`GET_LOCAL` + `CALL` is another 2.2% and was tried, but the only cheap way to express it is a `case` that falls through into `CALL`, which measured slower under PHP's tracing JIT than not fusing at all. Duplicating the whole `CALL` body to avoid the fall-through is not worth 2.2%.
+
 ## 3. Value Representation
 
 No boxing. Mapping between JS and PHP values:
@@ -177,7 +199,7 @@ class JSObject {
 
 - Ordinary data properties (writable/enumerable/configurable all true) are stored as raw values in `$props`. Only when `defineProperty` specifies other attributes or accessors does an entry appear in `$descs`. **Gets take a fast path that skips descriptor checks entirely when `$descs === null`.**
 - Fast-path get: `$obj->props[$k] ?? <miss handling>`. Because `??` misfires only when the stored value is JS `null` (= PHP null), the miss route starts with an `array_key_exists` correction (we accept that only null-storing cases are slower).
-- The prototype chain is walked through plain PHP object references.
+- The prototype chain is walked through plain PHP object references. `JSObject::get` takes the same `$props[$k] ?? …` shortcut at *every* level rather than calling `getOwn` per level, because a method lookup walks two or three prototypes before it hits anything and the virtual call dominates otherwise. Objects whose own properties are not fully described by `$props` — array indices, string wrapper code units, mapped `arguments` — clear `ownPropsArePlain`, which forces the general path for them. Lazily materialized properties do not need the flag: an unmaterialized key is simply absent from `$props`, so the shortcut misses and falls through to `ensureOwn` on its own.
 - Property keys are strings only (ES5, no Symbol). PHP arrays canonicalize numeric-string keys to ints; this is harmless because JS also identifies `"0"` with `0`, but key enumeration inserts a `(string)` normalization.
 
 ### 5.2 Exotic objects
@@ -363,7 +385,19 @@ invisible from unit tests:
 
 ## 15. Risks and Open Questions
 
-- **Dispatch-cost floor**: measured. The loop runs about **3M instructions/second**, which puts React server-side rendering at **56-75x Node 22** for identical output (see `packages/react-ssr-bench`). Native builtins are not the problem — a full render makes only ~4000 native calls — so the cost is the dispatch loop itself, and the lever is *fewer instructions per operation*, not a faster instruction. Two cheap wins are already in: the stack pointer and the deadline counter left the per-instruction path (~13% together), and statement-position `++`/`--` on a local became one `INC_LOCAL` instead of eight instructions. The next candidates are a fused compare-and-branch for loop conditions and `GET_LOCAL`+`ADD` style pairs; both are additive and can be measured one at a time.
+- **Interpretation-cost floor**: measured, and the earlier reading of it was wrong. React server-side rendering runs at **50-70x Node 22** for identical output (see `packages/react-ssr-bench`). What is *not* true is that raw dispatch dominates. The superinstruction pass (§2.4) removed 13% of the instructions executed in a render and bought only about 4% of the wall time, because the instructions it removes (`POP`, `GET_LOCAL`, `TYPEOF`, a taken branch) are the cheapest ones. A per-opcode time profile puts the cost elsewhere:
+
+  | Opcode | Share of instructions | Share of time |
+  |---|---|---|
+  | `CALL` | 3.9% | 15.4% |
+  | `GET_METHOD` | 2.2% | 7.3% |
+  | `GET_PROP` + `GET_LOCAL_PROP` | 7.6% | 10.8% |
+  | `RETURN` | 2.1% | 3.9% |
+  | everything else | 84.2% | 62.6% |
+
+  So roughly a third of a render is spent in calls and property lookups, at around ten times the cost of a cheap opcode. Trimming the prototype walk (§5.1) is the one that has paid so far. `CALL` is the largest remaining item and the least explored: a JS call costs about 1.4µs above the dispatch floor, spent on the frame array, the environment record, and the locals-init loop. Note that the obvious-looking cleanups are not free wins — replacing the current frame's PHP reference with indexed writes measured *slower*, as did fusing `GET_LOCAL`+`CALL`. Measure each one; several plausible ones lose.
+
+- **Enable PHP's tracing JIT.** `opcache.jit=tracing` is worth about 20% on a render and costs nothing but configuration — a bigger lever than anything the interpreter has given up so far. It is off by default in PHP, so hosts have to opt in; the benchmark reports both.
 - **Direct `eval`**: the dynamic-scoping fallout is wide. `eval` now inherits the caller's strict mode, which is what most strict-mode early-error tests observe, but it still compiles and runs in the global scope and cannot inject a binding into the calling function — the remaining `compound-assignment` and `eval-code` failures. Implementing it means marking the containing function as dynamically scoped and emitting name-based lookups there (§4.5). Inheriting strictness is also technically wrong for *indirect* eval, which the spec keeps sloppy; that trade is deliberate until direct eval is distinguished at the call site.
 - **`with`**: unimplemented; the compiler rejects it. Same machinery as direct `eval`, so both should land together.
 - **`@@species`**: `ArraySpeciesCreate` and the Promise combinators honour the constructor lookup and its observable errors, but always produce a base Array/Promise — an ES5 realm has no Symbols to key the species hook on.

@@ -30,6 +30,9 @@ final class JSArgumentsObject extends JSObject
     ) {
         parent::__construct($proto);
         $this->className = 'Arguments';
+        // A mapped index reads through the environment slot, which the
+        // matching $props entry can lag behind after a parameter assignment.
+        $this->ownPropsArePlain = false;
     }
 
     private function slotFor(string $key): ?int

@@ -36,7 +36,8 @@ The whole suite takes about two minutes.
 The core language works end to end:
 
 - **Compiler**: Peast (ESTree) → scope analysis (closure capture, strict-mode
-  early errors) → stack bytecode
+  early errors) → stack bytecode → a peephole pass that fuses the opcode pairs
+  a real workload actually executes
 - **VM**: single `while/switch` dispatch loop, own frame stack (JS calls never
   consume the PHP call stack), in-VM exception handling, wall-clock execution
   limit
@@ -84,6 +85,32 @@ $engine->vm->setTimeLimit(1.0);                  // guard against runaway guest 
 $tpl = require 'app.phpjs.php';                  // precompiled, opcache-resident
 $engine->runTemplate($tpl);
 ```
+
+## Packages
+
+Host concerns live outside the core, in separate composer packages that depend
+on it:
+
+- [`packages/node-compat`](packages/node-compat) — CommonJS module loading,
+  a read-only filesystem confined to a root, `process`, virtual-clock timers,
+  and ES2015+ *library* polyfills (the syntax stays ES5).
+- [`packages/react-ssr-bench`](packages/react-ssr-bench) — renders a React app
+  server-side from React's own published CommonJS build, asserts the HTML is
+  byte-identical to Node, and reports boot and render separately.
+
+## Performance
+
+React SSR runs at roughly 50-70x Node 22 for byte-identical output. Two things
+are worth knowing before measuring anything yourself:
+
+- **Turn PHP's tracing JIT on** (`-d opcache.jit=tracing
+  -d opcache.jit_buffer_size=64M`). It is worth about 20% and is off by
+  default.
+- **Precompile.** Boot is dominated by compiling JS, which `phpjs compile` plus
+  a warm opcache removes entirely.
+
+`packages/react-ssr-bench/README.md` has the numbers and a per-opcode
+breakdown of where the remaining time goes.
 
 ## Development
 
