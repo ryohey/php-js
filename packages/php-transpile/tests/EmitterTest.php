@@ -28,6 +28,18 @@ final class EmitterTest extends EquivalenceTestCase
         yield 'bitwise not' => [-6, 'function f(x) { return ~x; } f(5)'];
 
         yield 'strict equality is not loose' => [false, 'function f() { return 1 === "1"; } f()'];
+        // `===` against a string, boolean, null or undefined literal compiles
+        // to PHP's own `===`. Against a *number* it must not: JS says
+        // `1 === 1.0` and PHP does not, and this runtime really can hold both.
+        yield 'int and float are the same number' => [true, 'function f(x) { return x === 1; } f(1.0)'];
+        yield 'float literal against an int' => [true, 'function f(x) { return x === 1.0; } f(1)'];
+        yield 'string identity' => [true, 'function f(x) { return x === "a"; } f("a")'];
+        yield 'string against a number' => [false, 'function f(x) { return x === "1"; } f(1)'];
+        yield 'undefined identity' => [true, 'function f(x) { return x === undefined; } f()'];
+        yield 'null is not undefined' => [false, 'function f(x) { return x === undefined; } f(null)'];
+        yield 'undefined is not null' => [false, 'function f(x) { return x === null; } f()'];
+        yield 'boolean identity' => [false, 'function f(x) { return x === true; } f(1)'];
+        yield 'object is never identical to a string' => [false, 'function f(x) { return x === "[object Object]"; } f({})'];
         yield 'loose equality coerces' => [true, 'function f() { return 1 == "1"; } f()'];
         yield 'NaN is not itself' => [false, 'function f(x) { return x === x; } f(NaN)'];
         yield 'comparison on strings' => [true, 'function f() { return "a" < "b"; } f()'];

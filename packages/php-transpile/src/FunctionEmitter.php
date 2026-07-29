@@ -418,18 +418,115 @@ final class FunctionEmitter
         $this->stmts[] = $this->assign($keys, $this->staticCall('Ops', 'forInKeys', [$this->var('vm'), $obj]));
         $k = $this->temp();
 
+        // `for (k in o) { if (hasOwnProperty.call(o, k)) ... }` is the standard
+        // way to skip inherited keys, and its guard already covers what the
+        // liveness check is for: a property deleted mid-iteration fails
+        // hasOwnProperty too. Emitting both means two lookups per key, one of
+        // them a prototype walk.
+        $guarded = $this->bodyOpensWithOwnGuard($node, $target->getName());
+
         $this->loopDepth++;
-        $body = $this->block(function () use ($node, $target, $obj, $k) {
-            // A property deleted mid-iteration is skipped, as in the VM.
-            $this->stmts[] = new Stmt\If_(
-                new Expr\BooleanNot($this->staticCall('Ops', 'forInLive', [$obj, $k])),
-                ['stmts' => [new Stmt\Continue_()]]
-            );
+        $body = $this->block(function () use ($node, $target, $obj, $k, $guarded) {
+            if (!$guarded) {
+                // A property deleted mid-iteration is skipped, as in the VM.
+                $this->stmts[] = new Stmt\If_(
+                    new Expr\BooleanNot($this->staticCall('Ops', 'forInLive', [$obj, $k])),
+                    ['stmts' => [new Stmt\Continue_()]]
+                );
+            }
             $this->stmts[] = new Stmt\Expression($this->store($target->getName(), $k));
             $this->stmt($node->getBody());
         });
         $this->loopDepth--;
         $this->stmts[] = new Stmt\Foreach_($keys, $k, ['stmts' => $body]);
+    }
+
+    /**
+     * Whether the loop body's first condition is
+     * `hasOwnProperty.call(<the object being iterated>, <the loop variable>)`,
+     * with the binding proved to be the builtin.
+     */
+    private function bodyOpensWithOwnGuard(object $node, string $keyName): bool
+    {
+        if (!$this->assume->standardBuiltins || $this->facts === null) {
+            return false;
+        }
+        $objName = self::plainName($node->getRight());
+        if ($objName === null) {
+            return false;
+        }
+        $cond = self::leadingCondition($node->getBody());
+        if ($cond === null || $cond->getType() !== 'CallExpression') {
+            return false;
+        }
+        $callee = $cond->getCallee();
+        if ($callee->getType() !== 'MemberExpression' || $callee->getComputed()
+            || $callee->getProperty()->getType() !== 'Identifier'
+            || $callee->getProperty()->getName() !== 'call') {
+            return false;
+        }
+        $recv = $callee->getObject();
+        while ($recv->getType() === 'ParenthesizedExpression') {
+            $recv = $recv->getExpression();
+        }
+        if ($recv->getType() !== 'Identifier'
+            || !isset($this->facts->hasOwnPropertyBindings[$recv->getName()])) {
+            return false;
+        }
+        $args = $cond->getArguments();
+        return count($args) === 2
+            && self::plainName($args[0]) === $objName
+            && self::plainName($args[1]) === $keyName;
+    }
+
+    /** The identifier an expression ultimately names, ignoring parens and commas. */
+    private static function plainName(object $node): ?string
+    {
+        for (;;) {
+            $type = $node->getType();
+            if ($type === 'ParenthesizedExpression') {
+                $node = $node->getExpression();
+            } elseif ($type === 'SequenceExpression') {
+                $parts = $node->getExpressions();
+                $node = $parts[count($parts) - 1];
+            } else {
+                break;
+            }
+        }
+        return $node->getType() === 'Identifier' ? $node->getName() : null;
+    }
+
+    /** The first thing a loop body tests, through blocks, ifs and `&&` chains. */
+    private static function leadingCondition(object $body): ?object
+    {
+        for (;;) {
+            $type = $body->getType();
+            if ($type === 'BlockStatement') {
+                $stmts = $body->getBody();
+                if ($stmts === []) {
+                    return null;
+                }
+                $body = $stmts[0];
+            } elseif ($type === 'IfStatement') {
+                $body = $body->getTest();
+                break;
+            } elseif ($type === 'ExpressionStatement') {
+                $body = $body->getExpression();
+                break;
+            } else {
+                return null;
+            }
+        }
+        for (;;) {
+            $type = $body->getType();
+            if ($type === 'ParenthesizedExpression') {
+                $body = $body->getExpression();
+            } elseif ($type === 'LogicalExpression' && $body->getOperator() === '&&') {
+                $body = $body->getLeft();
+            } else {
+                return $body;
+            }
+        }
     }
 
     private function breakUnless(object $test): void
@@ -756,6 +853,38 @@ final class FunctionEmitter
         };
     }
 
+    /**
+     * Whether `===` on these operands is exactly PHP's `===`.
+     *
+     * True when either side is a string, boolean, null or `undefined` literal:
+     * for those, PHP identity and JS strict equality agree on every possible
+     * value of the other side. Numbers are excluded, and that exclusion is the
+     * whole point of the check — JS says `1 === 1.0`, PHP says otherwise, and
+     * this runtime stores an exact integer as an int (DESIGN.md §3.1), so the
+     * two really can meet.
+     */
+    private function identitySafeOperand(object $node): bool
+    {
+        while ($node->getType() === 'ParenthesizedExpression') {
+            $node = $node->getExpression();
+        }
+        if ($node->getType() === 'Identifier') {
+            return $node->getName() === 'undefined' && !isset($this->ctx->bindings['undefined']);
+        }
+        if ($node->getType() !== 'Literal') {
+            return false;
+        }
+        return $node instanceof StringLiteral
+            || $node instanceof BooleanLiteral
+            || $node instanceof NullLiteral;
+    }
+
+    private function identitySafe(object $binary): bool
+    {
+        return $this->identitySafeOperand($binary->getLeft())
+            || $this->identitySafeOperand($binary->getRight());
+    }
+
     /** `void x` discards x; when x cannot have side effects, discard it here. */
     private function voidOf(object $argNode, Expr $a): Expr
     {
@@ -783,8 +912,12 @@ final class FunctionEmitter
             '>=' => $this->bool($this->staticCall('Ops', 'ge', [$vm, $l, $r])),
             '==' => $this->bool($this->staticCall('TypeOps', 'looseEquals', [$vm, $l, $r])),
             '!=' => $this->bool(new Expr\BooleanNot($this->staticCall('TypeOps', 'looseEquals', [$vm, $l, $r]))),
-            '===' => $this->bool($this->staticCall('TypeOps', 'strictEquals', [$l, $r])),
-            '!==' => $this->bool(new Expr\BooleanNot($this->staticCall('TypeOps', 'strictEquals', [$l, $r]))),
+            '===' => $this->bool($this->identitySafe($node)
+                ? new Expr\BinaryOp\Identical($l, $r)
+                : $this->staticCall('TypeOps', 'strictEquals', [$l, $r])),
+            '!==' => $this->bool($this->identitySafe($node)
+                ? new Expr\BinaryOp\NotIdentical($l, $r)
+                : new Expr\BooleanNot($this->staticCall('TypeOps', 'strictEquals', [$l, $r]))),
             'instanceof' => $this->bool($this->staticCall('TypeOps', 'instanceofOp', [$vm, $l, $r])),
             'in' => $this->bool($this->staticCall('TypeOps', 'inOp', [$vm, $l, $r])),
             '&', '|', '^', '<<', '>>', '>>>' => $this->staticCall(

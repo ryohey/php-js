@@ -157,6 +157,58 @@ final class AssumptionsTest extends TestCase
         $this->assertStringNotContainsString('Ops::putOwn', $php);
     }
 
+    // ---- the hasOwnProperty guard subsumes the liveness check --------------
+
+    private const GUARDED_LOOP = <<<'JS'
+        var hasOwnProperty = Object.prototype.hasOwnProperty;
+        function copy(src) { var out = {}; for (var k in src) { if (hasOwnProperty.call(src, k)) { out[k] = src[k]; } } return out; }
+        exports.copy = copy;
+        JS;
+
+    public function testTheLivenessCheckIsDroppedUnderAnOwnGuard(): void
+    {
+        $php = $this->emit(self::GUARDED_LOOP, 'copy', Assumptions::closedBuild());
+        $this->assertStringContainsString('Ops::hasOwn', $php);
+        $this->assertStringNotContainsString('forInLive', $php);
+    }
+
+    public function testTheLivenessCheckStaysByDefault(): void
+    {
+        $php = $this->emit(self::GUARDED_LOOP, 'copy', Assumptions::none());
+        $this->assertStringContainsString('forInLive', $php);
+    }
+
+    /** @return iterable<string, array{0: string}> */
+    public static function unguardedLoops(): iterable
+    {
+        yield 'the guard is on a different object' => [<<<'JS'
+            var hasOwnProperty = Object.prototype.hasOwnProperty;
+            function copy(src, other) { var out = {}; for (var k in src) { if (hasOwnProperty.call(other, k)) { out[k] = src[k]; } } return out; }
+            exports.copy = copy;
+            JS];
+        yield 'the guard is on a different key' => [<<<'JS'
+            var hasOwnProperty = Object.prototype.hasOwnProperty;
+            function copy(src, j) { var out = {}; for (var k in src) { if (hasOwnProperty.call(src, j)) { out[k] = src[k]; } } return out; }
+            exports.copy = copy;
+            JS];
+        yield 'the guard is not the first thing tested' => [<<<'JS'
+            var hasOwnProperty = Object.prototype.hasOwnProperty;
+            function copy(src) { var out = {}; for (var k in src) { if (k !== "x" && hasOwnProperty.call(src, k)) { out[k] = src[k]; } } return out; }
+            exports.copy = copy;
+            JS];
+        yield 'there is no guard at all' => [<<<'JS'
+            function copy(src) { var out = {}; for (var k in src) { out[k] = src[k]; } return out; }
+            exports.copy = copy;
+            JS];
+    }
+
+    #[DataProvider('unguardedLoops')]
+    public function testTheLivenessCheckStaysWithoutAMatchingGuard(string $module): void
+    {
+        $php = $this->emit($module, 'copy', Assumptions::closedBuild());
+        $this->assertStringContainsString('forInLive', $php);
+    }
+
     // ---- behaviour ---------------------------------------------------------
 
     /** @return iterable<string, array{0: mixed, 1: string}> */
@@ -190,6 +242,19 @@ final class AssumptionsTest extends TestCase
             'v',
             'function copy(src) { var out = {}; for (var k in src) { out[k] = src[k]; } return out; }'
             . 'exports.result = copy({ "0": "v" })["0"];',
+        ];
+        yield 'a guarded loop still skips inherited keys' => [
+            'own',
+            'var hasOwnProperty = Object.prototype.hasOwnProperty;'
+            . 'function A() {} A.prototype.inherited = 1;'
+            . 'function copy(src) { var ks = []; for (var k in src) { if (hasOwnProperty.call(src, k)) { ks.push(k); } } return ks.join(","); }'
+            . 'var o = new A(); o.own = 1; exports.result = copy(o);',
+        ];
+        yield 'a guarded loop still skips a key deleted mid-iteration' => [
+            'a',
+            'var hasOwnProperty = Object.prototype.hasOwnProperty;'
+            . 'function copy(src) { var ks = []; for (var k in src) { if (hasOwnProperty.call(src, k)) { ks.push(k); delete src.b; } } return ks.join(","); }'
+            . 'exports.result = copy({ a: 1, b: 2 });',
         ];
         yield 'a fresh-object store handles a null value' => [
             true,
