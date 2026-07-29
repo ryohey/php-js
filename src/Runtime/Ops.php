@@ -200,6 +200,29 @@ final class Ops
         return $vm->getMember($obj, $key);
     }
 
+    /**
+     * `Object.prototype.hasOwnProperty.call(obj, key)` without the two native
+     * invokes it normally costs (through Function.prototype.call, then through
+     * hasOwnProperty). Ahead-of-time compiled code emits this only when the
+     * build has proved the binding really is that builtin.
+     */
+    public static function hasOwn(Vm $vm, mixed $obj, mixed $key): bool
+    {
+        $k = is_string($key) ? $key : Conversions::toString($vm, $key);
+        $o = $obj instanceof JSObject ? $obj : Conversions::toObject($vm, $obj);
+        return $o->hasOwn($k);
+    }
+
+    /**
+     * A property write to an object the compiler proved is a fresh plain
+     * object: no prototype-chain setter can intercept it and no accessor can
+     * shadow it, so it is a store rather than a [[Set]] walk.
+     */
+    public static function putOwn(Vm $vm, JSObject $obj, mixed $key, mixed $value): void
+    {
+        $obj->props[is_string($key) ? $key : Conversions::toString($vm, $key)] = $value;
+    }
+
     /** Read the nth argument, where a missing one is `undefined` (never PHP null). */
     public static function arg(array $args, int $i): mixed
     {

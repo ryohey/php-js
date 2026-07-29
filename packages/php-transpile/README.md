@@ -66,10 +66,38 @@ Native IDs are derived from each module's contents, so the two agree, and an
 upgraded dependency stops matching its stale natives rather than binding them
 to the wrong functions.
 
-**Read [docs/aot-php.md §11](../../docs/aot-php.md) before deploying this.**
-PHP's tracing JIT speeds up the interpreter's dispatch loop by about as much as
-this package speeds up React, so the two are largely substitutes: 17% without
-the JIT, 4% with it.
+## Closed-build assumptions
+
+By default the emitter assumes nothing, and a literal translation is worth
+about 17% on a render — but only 4% once PHP's tracing JIT is on, because the
+JIT speeds up the interpreter's dispatch loop by roughly as much.
+
+`Assumptions::closedBuild()` changes that. It permits two specializations that
+are sound when the library is pinned and compiled at deploy time:
+
+```php
+$aot = NodeIntegration::forBuild($accept, Assumptions::closedBuild());
+// ...and the run side must pass the same value:
+$aot = NodeIntegration::forRun($accept, Assumptions::closedBuild());
+```
+
+- `hasOwnProperty.call(o, k)` becomes a direct own-property test, when the
+  module proves the binding was assigned `Object.prototype.hasOwnProperty`
+  exactly once and never reassigned.
+- A write to a local proven to hold a fresh object literal, before it escapes,
+  becomes a store instead of a `[[Set]]` walk.
+
+Neither is a name match or a hardcoded pattern for one library: both are proofs
+over the module being compiled, and both refuse when the proof fails. With
+them the numbers become **19% without the JIT and 14% with it** — the JIT and
+this package stop being substitutes, because what these delete is work the
+program does rather than overhead in how it is run.
+
+Assumptions are hashed into the native IDs, so a run configured differently
+from its build matches nothing and falls back to bytecode rather than running
+code whose premises do not hold.
+
+See [docs/aot-php.md §10-§11](../../docs/aot-php.md).
 
 ## Coverage
 
@@ -107,6 +135,6 @@ speculation, no escape analysis, no assumption that a write target is a fresh
 object, no assumption that `hasOwnProperty` is still the builtin.
 
 That costs 3.5-8x against hand-written PHP for the same function
-(docs/aot-php.md §9), and it is the right default: every specialization beyond
-this needs its own justification, and for a build-time renderer correctness is
-worth more than the last 2x.
+(docs/aot-php.md §9); the closed-build assumptions above bring it to 3.5x. It
+is the right default: every specialization beyond this needs its own
+justification, and correctness is worth more than the last 2x.

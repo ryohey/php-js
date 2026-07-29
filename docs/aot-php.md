@@ -1,17 +1,18 @@
 # Ahead-of-time PHP for the hot path
 
-Status: **phases 0, 0.5 and 1 done.** This adapts an
+Status: **phases 0, 0.5, 1, 1.5 and 3 done.** This adapts an
 externally drafted "hot-path transpilation" strategy to what this runtime
-actually is and what it actually measures. Read DESIGN.md first; §2
+actually is and what it actually measures. Read DESIGN.md first; its §2
 (compilation pipeline), §5 (object model) and §11 (shared-nothing / opcache)
-constrain most of what follows.
+constrain most of what follows. Section numbers below are this document's.
 
 Where it stands: native library substitution took React 19 down 30% (§6 phase
 0). The transpiler now exists (`packages/php-transpile`), compiles **219 of
-291** React functions to PHP with byte-identical output, and takes another
-**16.7%** off a render without PHP's JIT — but only **4.2%** with it. It does
-not hit the speed the hand-written pricing predicted (§9), and the JIT result
-(§11) questions how much further it is worth pushing.
+291** React functions to PHP with byte-identical output, and — once the build
+is allowed to prove things about a pinned library (§10) — takes another
+**18.9%** off a render, or **14.0%** on top of PHP's tracing JIT. A literal
+translation that assumes nothing manages 16.7% and 4.2%: the difference between
+those two rows is the whole argument, and it is in §9-§11.
 
 The goal is a Next.js-SSG-equivalent: render React trees to static HTML at build
 time, in PHP. Build time only, closed input, no untrusted JS.
@@ -318,6 +319,11 @@ Two design decisions worth carrying forward:
   native path when that ID is actually registered. So the generated PHP is
   optional at run time: ship it, or don't, and the program behaves the same.
 
+**Phase 1.5 — specialize what a closed build can prove. → DONE.**
+See §10. Two specializations, both gated behind an explicit `Assumptions` flag
+that is off by default. Worth −3.6% on top of the literal build without the
+JIT, and much more with it (§11).
+
 **Phase 2 — close the refusals, then the fixed overhead.**
 The emitter refuses 72 of React's 291 functions, and the reasons are now
 measured rather than guessed:
@@ -489,31 +495,80 @@ satisfies it. The emitter cannot: it would have to prove that `hasOwnProperty`
 is still `Object.prototype.hasOwnProperty` and that `.call` is still
 `Function.prototype.call`. So it emits both invokes, per property, faithfully.
 
-**So the §8 pricing of N ≈ 18x was optimistic, and now we know the mechanism:
-a hand-written implementation is allowed to elide work that a faithful emitter
-must keep.** The honest multiplier for generated code is **3-6x**, and the
-gap between 3-6x and 18x is the value of the assumptions a human makes without
+**So the §8 pricing of N ≈ 18x was optimistic, and the mechanism is now clear:
+a hand-written implementation is allowed to elide work that a literal emitter
+must keep.** For a literal translation the honest multiplier is **3-6x**, and
+the gap up to 18x is the value of the assumptions a human makes without
 noticing.
 
-Two consequences for what comes next:
-
-- The remaining fixed overhead is worth attacking (the emitter still routes
-  every operator through a static call), but the per-property gap needs
-  *identity assumptions about builtins* — "this really is
-  `Object.prototype.hasOwnProperty`" — which is a different and much larger
-  design question than anything in §3. It is speculation with a guard, which is
-  exactly what §1 rejected for this use case. Whether an SSG build's closed
-  input makes it provable rather than speculative is the interesting question,
-  and it is not answered here.
-- Revised projection: at N=4 across converted code the whole-render ceiling is
-  `1 / (0.29 + 0.71/4)` ≈ **2.1x**, not 3x. The measured 16.6% on one render is
-  consistent with that, since only part of the render is converted.
+The useful follow-up is that those assumptions are not all unprovable —
+§10 recovers a good part of that gap by proving them instead. With them,
+`createElement` drops from 14.1 µs to **8.6 µs**, or from 5.5x to 3.5x the
+hand-written cost.
 
 Two cheap emitter improvements were tried and are in: results already known to
 be PHP bools skip `Conversions::toBoolean` (including across the temporaries
 that `&&` chains create), and property reads go through an `Ops::getProp` fast
 path. Together they were worth almost nothing on `createElement` — which is how
 the property-copy loop was identified as the real cost.
+
+## 10. What a closed build is allowed to assume
+
+§9 identified the emitter's biggest cost as work a human would skip and a
+literal translation may not. The premise that makes it skippable is that **the
+library is fixed at build time**: a pinned React version, compiled at deploy,
+in a realm with no untrusted code. Under that premise some of those "may not"s
+become provable.
+
+Two are implemented, both behind `Assumptions`, both **off by default**,
+because the emitter's contract is that compiling changes nothing observable and
+each of these spends a little of that.
+
+**`hasOwnProperty.call(o, k)` → a direct own-property test.** React writes
+`var hasOwnProperty = Object.prototype.hasOwnProperty` once at module scope and
+calls it 26 times. `ModuleFacts` scans the module and accepts the binding only
+if it is assigned that expression **exactly once and never assigned again
+anywhere in the module** — a mechanical proof over the module text, not a name
+match. The emitter additionally requires the call site to resolve to *that*
+module binding, so a local of the same name is not affected. What remains
+assumed is only that `Object.prototype.hasOwnProperty` was still itself when
+the module loaded, which is what the closed build buys.
+
+This deletes two native invokes per property (through
+`Function.prototype.call`, then through the builtin) — the single largest item
+in §9's accounting.
+
+**Writes to a proven-fresh object → a store instead of a `[[Set]]` walk.** A
+local whose every assignment is an object literal, written before it first
+escapes, cannot have an accessor in the way. "Escapes" is deliberately blunt —
+any mention other than reading or writing through it counts — and the check
+compares against the *first* escape offset, which is what makes it sound inside
+loops: a loop body that both escapes and writes has the escape at the lower
+offset, so the specialization simply does not apply there.
+
+Measured, on `createElement`:
+
+| | per call | vs hand-written |
+|---|---|---|
+| bytecode | 46.3 µs | — |
+| generated, literal | 14.1 µs | 5.5x |
+| generated, closed build | **8.6 µs** | **3.5x** |
+| hand-written PHP | 2.4 µs | 1x |
+
+Whole render: −3.6% on top of the literal build without the JIT, and enough to
+turn the JIT result around entirely (§11).
+
+The tests carry more negative cases than positive ones on purpose. A
+specialization that fails to fire is a performance bug; one that fires when its
+proof does not hold is a correctness bug. So `AssumptionsTest` checks that
+nothing is specialized when the binding is reassigned later in the module, when
+it never was the builtin, when a local shadows it, when the object escapes
+before the write, when the local is not always an object literal, and when the
+escape is inside the same loop as the write.
+
+**Assumptions are part of the artifact's identity.** They are hashed into the
+native IDs, so a run configured differently from its build matches nothing and
+falls back to bytecode rather than running code whose premises do not hold.
 
 ## 11. opcache, and what the JIT does to the whole argument
 
@@ -528,41 +583,47 @@ deployable one; `eval` stays as a convenience for tests.
 **Render — unchanged.** 74.5 ms (eval) vs 74.8 ms (file). Once compiled,
 opcodes are opcodes.
 
-**And then the JIT eats most of the win.** Paired runs, 9 pairs each,
-React 19 / 20 rows:
+**And then the JIT nearly ate the win — until the build was allowed to
+assume things.** Paired runs, React 19 / 20 rows:
 
-| | bytecode | AOT (file) | AOT gain |
+| | bytecode | AOT, literal | AOT, closed build |
 |---|---|---|---|
-| opcache, no JIT | 86.9 ms | 71.4 ms | **−16.7%** (9/9) |
-| opcache + tracing JIT | 71.1 ms | 66.9 ms | **−4.2%** (8/9) |
+| opcache, no JIT | 88.3 ms | 71.4 ms (−16.7%) | 72.4 ms (**−18.9%**) |
+| opcache + tracing JIT | 75.9 ms | 66.9 ms (−4.2%) | 64.8 ms (**−14.0%**) |
 
-The dispatch loop is a hot, type-stable `while`/`switch` — precisely what a
-tracing JIT is good at. JIT-ing the interpreter recovers most of what compiling
-JavaScript to PHP was providing, so the two are largely **substitutes, not
-complements**: JIT alone is worth about as much as AOT alone, and doing both
-gets 23% off the un-JIT-ed baseline rather than the ~34% they would give if
-they stacked.
+The middle column was the alarming one. The dispatch loop is a hot, type-stable
+`while`/`switch` — precisely what a tracing JIT is good at — so JIT-ing the
+interpreter recovered almost everything a *literal* translation was providing.
+On that evidence the two looked like substitutes rather than complements.
 
-That is the most consequential thing measured in this whole effort, and it
-reframes phase 2. Closing the `switch`/`try` refusals would convert more
-functions, but the ceiling it is climbing toward is roughly 4-8%, not 17%, on
-any deployment that has the JIT on — and turning the JIT on is one line of
-configuration against a compiler package. The case for continuing rests on
-whether the fixed overhead in §9 can be cut far enough that AOT beats a JIT-ed
-interpreter rather than tying it.
+The right-hand column is what changes the conclusion. With the closed-build
+specializations of §10 the two stack: JIT alone is −14%, closed AOT alone is
+−19%, and together they are **−27%** off the un-JIT-ed baseline. Compiling
+ahead of time is worth 14% *on top of* a JIT-ed interpreter, where a literal
+translation was worth 4%.
 
-## 10. What this can and cannot achieve
+Why they stack now is the interesting part. The JIT speeds up the interpreter's
+own PHP, which is where a literal translation's advantage lived. It cannot
+speed up a *native invoke* through `Function.prototype.call`, or a `[[Set]]`
+walk up a prototype chain — those are work the program does, not overhead in
+how the program is run. The specializations delete that work outright, so the
+JIT has nothing to claw back.
 
-The transpiler's real multiplier is 3-6x on converted code (§9), not the 18x
-the hand-written pricing suggested, which puts a fully converted render at
-about **2x** on top of phase 0 rather than 3x. Measured so far: 16.6% from
-converting React alone. Counting phase 0, that is roughly **1.8x end to end**
-from where this began, with maybe 2.5-3x reachable if phase 2 clears the
-switch/try refusals.
+## 12. What this can and cannot achieve
 
-Node is 2.09 ms and React 19 on this runtime is now ~80 ms. Nothing in this
-plan closes a 38x gap; it makes a build-time renderer meaningfully faster, and
-that is the honest scope.
+Measured end to end, React 19 at 20 rows, best configuration at each step:
+
+| | render | vs start |
+|---|---|---|
+| where this began | 130 ms | 1.0x |
+| + native library substitution (phase 0) | 88 ms | 1.5x |
+| + ahead-of-time PHP, closed build (phases 1, 1.5) | 72 ms | 1.8x |
+| + PHP's tracing JIT | **65 ms** | **2.0x** |
+
+Node is 2.09 ms. Nothing here closes a 31x gap; it makes a build-time renderer
+twice as fast, and that is the honest scope. Phase 2 (the switch/try refusals)
+is the next increment, and §10 suggests the specializations have more left in
+them than the coverage does.
 
 The binding constraint at that point is no longer the converted code but the
 **29% left interpreted** — which is what would finally justify subtree islands

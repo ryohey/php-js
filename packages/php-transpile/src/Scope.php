@@ -26,7 +26,7 @@ final class Scope
     }
 
     /**
-     * @return array{kind: 'local'|'env'|'global', slot?: int, depth?: int, name: string}
+     * @return array{kind: 'local'|'env'|'global', slot?: int, depth?: int, name: string, owner?: Ctx}
      */
     public function resolve(string $name): array
     {
@@ -43,7 +43,7 @@ final class Scope
                     }
                     return ['kind' => 'local', 'slot' => $b->slot, 'name' => $name];
                 }
-                return ['kind' => 'env', 'depth' => $this->envDepth($c), 'slot' => $b->envIndex, 'name' => $name];
+                return ['kind' => 'env', 'depth' => $this->envDepth($c), 'slot' => $b->envIndex, 'name' => $name, 'owner' => $c];
             }
             // A program-level `var` is a property of the global object, not a
             // slot, so it resolves as a global below.

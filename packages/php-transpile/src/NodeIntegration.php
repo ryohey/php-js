@@ -48,19 +48,28 @@ final class NodeIntegration
          * because opcache caches files and never caches eval'd code.
          */
         private readonly bool $emit = true,
+        /** What the build may take for granted; see Assumptions. */
+        private readonly Assumptions $assume = new Assumptions(),
     ) {
     }
 
     /** Compiles and registers in-process; for tests and one-shot scripts. */
-    public static function forBuild(\Closure $accept): self
+    public static function forBuild(\Closure $accept, ?Assumptions $assume = null): self
     {
-        return new self($accept, true);
+        return new self($accept, true, $assume ?? new Assumptions());
     }
 
-    /** Stamps IDs only; pair with Artifact::register() of a built file. */
-    public static function forRun(\Closure $accept): self
+    /**
+     * Stamps IDs only; pair with `Artifact::register()` of a built file.
+     *
+     * The assumptions must match the build's. They are part of the ID, so a
+     * mismatch does not run the wrong code — nothing matches and every
+     * function falls back to bytecode — but it does silently lose the
+     * optimization, so pass the same value both sides.
+     */
+    public static function forRun(\Closure $accept, ?Assumptions $assume = null): self
     {
-        return new self($accept, false);
+        return new self($accept, false, $assume ?? new Assumptions());
     }
 
     /** Compile every module whose path the filter accepts. */
@@ -76,8 +85,17 @@ final class NodeIntegration
             // Derived from the module's *contents*, so a build and a later run
             // agree, and an upgraded dependency simply stops matching its stale
             // natives instead of binding them to the wrong functions.
-            $moduleKey = hash('xxh128', (string)@file_get_contents($path));
-            return function (object $node, Ctx $ctx, bool $isProgram) use ($path, $moduleKey, &$counter): ?string {
+            $moduleSource = (string)@file_get_contents($path);
+            // The assumptions are part of the identity: code built under them
+            // is not interchangeable with code built without them.
+            $moduleKey = hash('xxh128', $moduleSource . '|' . ($this->assume->standardBuiltins ? 'sb' : ''));
+            // Module-wide proofs a per-function emitter cannot make itself.
+            // Only the build needs the proofs; run mode just matches IDs, and
+            // scanning a 240 KB module there would be pure boot cost.
+            $facts = ($this->emit && $this->assume->standardBuiltins)
+                ? ModuleFacts::scan($moduleSource)
+                : ModuleFacts::none();
+            return function (object $node, Ctx $ctx, bool $isProgram) use ($path, $moduleKey, $facts, &$counter): ?string {
                 if ($isProgram) {
                     return null;
                 }
@@ -100,7 +118,7 @@ final class NodeIntegration
                 }
                 $t = microtime(true);
                 try {
-                    $closure = (new FunctionEmitter($ctx))->emit($node);
+                    $closure = (new FunctionEmitter($ctx, $this->assume, $facts))->emit($node);
                 } catch (Unsupported $e) {
                     $this->refused[] = ['module' => $path, 'id' => $id, 'reason' => $e->getMessage()];
                     return null;

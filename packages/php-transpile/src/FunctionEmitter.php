@@ -63,9 +63,18 @@ final class FunctionEmitter
      * @var \SplObjectStorage<Expr, bool>
      */
     private \SplObjectStorage $isBool;
+    /**
+     * Locals proved to hold a fresh object literal, mapped to the source offset
+     * at which each first escapes.
+     * @var array<string, int>
+     */
+    private array $freshUntil = [];
 
-    public function __construct(private readonly Ctx $ctx)
-    {
+    public function __construct(
+        private readonly Ctx $ctx,
+        private readonly Assumptions $assume = new Assumptions(),
+        private readonly ?ModuleFacts $facts = null,
+    ) {
         $this->b = new BuilderFactory();
         $this->isBool = new \SplObjectStorage();
         $this->scope = new Scope($ctx);
@@ -80,6 +89,7 @@ final class FunctionEmitter
     public function emit(object $node): Expr\Closure
     {
         $body = $node->getBody()->getBody();
+        $this->analyzeFreshObjects($node);
         $this->stmts = [];
         $this->prologue();
         foreach ($body as $stmt) {
@@ -102,6 +112,114 @@ final class FunctionEmitter
             'params' => [$vm, $thisVal, $args, $self],
             'stmts' => $this->stmts,
         ]);
+    }
+
+    /**
+     * Find locals whose only assignment is an object literal, and where each
+     * first escapes.
+     *
+     * A write to such a local before it escapes cannot be intercepted: the
+     * object is one we just made, it has no accessors of its own, and — given
+     * `standardBuiltins` — nothing on `Object.prototype` can shadow the key.
+     * After it escapes, someone else could have called `Object.defineProperty`
+     * on it, so the general `[[Set]]` path resumes.
+     *
+     * Comparing against the *first* escape offset is what makes this sound
+     * inside loops: if a loop body both escapes and writes, the escape's offset
+     * is below at least one write's, and the optimization simply does not
+     * apply there.
+     */
+    private function analyzeFreshObjects(object $fn): void
+    {
+        $this->freshUntil = [];
+        if (!$this->assume->standardBuiltins) {
+            return;
+        }
+        $onlyObjectLiteral = [];
+        $escapeAt = [];
+
+        $walk = function (object $node, ?object $parent) use (&$walk, &$onlyObjectLiteral, &$escapeAt): void {
+            $type = $node->getType();
+            if ($type === 'VariableDeclarator' && $node->getId()->getType() === 'Identifier') {
+                $name = $node->getId()->getName();
+                $init = $node->getInit();
+                if ($init !== null) {
+                    $literal = $init->getType() === 'ObjectExpression';
+                    $onlyObjectLiteral[$name] = ($onlyObjectLiteral[$name] ?? true) && $literal;
+                }
+            } elseif ($type === 'AssignmentExpression' && $node->getLeft()->getType() === 'Identifier') {
+                $name = $node->getLeft()->getName();
+                $literal = $node->getOperator() === '=' && $node->getRight()->getType() === 'ObjectExpression';
+                $onlyObjectLiteral[$name] = ($onlyObjectLiteral[$name] ?? true) && $literal;
+            } elseif ($type === 'Identifier' && $parent !== null && self::isEscapingUse($node, $parent)) {
+                $name = $node->getName();
+                $at = $node->getLocation()?->getStart()?->getIndex() ?? 0;
+                $escapeAt[$name] = min($escapeAt[$name] ?? PHP_INT_MAX, $at);
+            }
+            foreach (get_class_methods($node) as $method) {
+                if (!str_starts_with($method, 'get') || $method === 'getType' || $method === 'getLocation') {
+                    continue;
+                }
+                try {
+                    $child = $node->$method();
+                } catch (\Throwable) {
+                    continue;
+                }
+                foreach (is_array($child) ? $child : [$child] as $c) {
+                    if (is_object($c) && method_exists($c, 'getType')) {
+                        $walk($c, $node);
+                    }
+                }
+            }
+        };
+        foreach ($fn->getBody()->getBody() as $stmt) {
+            $walk($stmt, null);
+        }
+
+        foreach ($onlyObjectLiteral as $name => $ok) {
+            if ($ok) {
+                $this->freshUntil[$name] = $escapeAt[$name] ?? PHP_INT_MAX;
+            }
+        }
+    }
+
+    /**
+     * Whether this mention of an identifier could hand the object to someone
+     * else. Naming it, reading through it, or being re-bound does not; being
+     * passed, returned or stored anywhere does.
+     */
+    private static function isEscapingUse(object $id, object $parent): bool
+    {
+        switch ($parent->getType()) {
+            case 'MemberExpression':
+                // `o.x` / `o[k]`, read or written: the object stays put.
+                return $parent->getObject() !== $id;
+            case 'VariableDeclarator':
+                return $parent->getId() !== $id;
+            case 'AssignmentExpression':
+                // Being assigned *to* is a rebind, not an escape; what it is
+                // rebound to is covered by the only-object-literal check.
+                return $parent->getLeft() !== $id;
+            case 'UpdateExpression':
+                return false;
+            default:
+                return true;
+        }
+    }
+
+    /** Whether a write to this member expression can be a plain store. */
+    private function canStoreDirectly(object $target): bool
+    {
+        $obj = $target->getObject();
+        if ($obj->getType() !== 'Identifier' || !isset($this->freshUntil[$obj->getName()])) {
+            return false;
+        }
+        $at = $target->getLocation()?->getStart()?->getIndex() ?? PHP_INT_MAX;
+        if ($at >= $this->freshUntil[$obj->getName()]) {
+            return false;
+        }
+        // A plain local only; an env slot could be written from elsewhere.
+        return $this->scope->resolve($obj->getName())['kind'] === 'local';
     }
 
     /** Bind parameters, declare locals, and expose the environment record. */
@@ -516,6 +634,10 @@ final class FunctionEmitter
     private function callExpr(object $node): Expr
     {
         $callee = $node->getCallee();
+        $fused = $this->fuseKnownBuiltinCall($node, $callee);
+        if ($fused !== null) {
+            return $fused;
+        }
         if ($callee->getType() === 'MemberExpression') {
             [$obj, $key] = $this->memberParts($callee);
             $recv = $this->temp();
@@ -532,6 +654,63 @@ final class FunctionEmitter
             new P\Arg($this->undef()),
             new P\Arg($this->argList($node->getArguments())),
         ]);
+    }
+
+    /**
+     * `X.call(o, k)` where the module proved `X` is
+     * `Object.prototype.hasOwnProperty`. React's property-copy loop does this
+     * once per property, and going through Function.prototype.call and then
+     * through the builtin costs two native invokes each time — measured as the
+     * single largest gap between generated and hand-written PHP
+     * (docs/aot-php.md §9).
+     */
+    private function fuseKnownBuiltinCall(object $node, object $callee): ?Expr
+    {
+        if (!$this->assume->standardBuiltins || $this->facts === null) {
+            return null;
+        }
+        if ($callee->getType() !== 'MemberExpression' || $callee->getComputed()) {
+            return null;
+        }
+        $prop = $callee->getProperty();
+        if ($prop->getType() !== 'Identifier' || $prop->getName() !== 'call') {
+            return null;
+        }
+        $recv = $callee->getObject();
+        while ($recv->getType() === 'ParenthesizedExpression') {
+            $recv = $recv->getExpression();
+        }
+        if ($recv->getType() !== 'Identifier') {
+            return null;
+        }
+        if (!isset($this->facts->hasOwnPropertyBindings[$recv->getName()])) {
+            return null;
+        }
+        // The proof is about the *module's* binding. A same-named local, or one
+        // in an intermediate scope, is a different variable.
+        $r = $this->scope->resolve($recv->getName());
+        if ($r['kind'] !== 'env' || ($r['owner'] ?? null) !== $this->moduleCtx()) {
+            return null;
+        }
+        $args = $node->getArguments();
+        if (count($args) !== 2) {
+            return null;
+        }
+        return $this->bool($this->staticCall('Ops', 'hasOwn', [
+            $this->var('vm'),
+            $this->expr($args[0]),
+            $this->expr($args[1]),
+        ]));
+    }
+
+    /** The outermost function scope — for a CommonJS module, its wrapper. */
+    private function moduleCtx(): Ctx
+    {
+        $c = $this->ctx;
+        while ($c->parent !== null && !$c->parent->isProgram) {
+            $c = $c->parent;
+        }
+        return $c;
     }
 
     private function argList(array $args): Expr
@@ -692,12 +871,15 @@ final class FunctionEmitter
             return $this->store($target->getName(), $value);
         }
         if ($target->getType() === 'MemberExpression') {
+            $direct = $this->canStoreDirectly($target);
             [$obj, $key] = $this->memberParts($target);
             $v = $this->temp();
             $this->stmts[] = $this->assign($v, $value);
-            $this->stmts[] = new Stmt\Expression(new Expr\MethodCall($this->var('vm'), 'setMember', [
-                new P\Arg($obj), new P\Arg($key), new P\Arg($v), new P\Arg($this->b->val($this->strict)),
-            ]));
+            $this->stmts[] = new Stmt\Expression($direct
+                ? $this->staticCall('Ops', 'putOwn', [$this->var('vm'), $obj, $key, $v])
+                : new Expr\MethodCall($this->var('vm'), 'setMember', [
+                    new P\Arg($obj), new P\Arg($key), new P\Arg($v), new P\Arg($this->b->val($this->strict)),
+                ]));
             return $v;
         }
         throw new Unsupported('assignment target');
