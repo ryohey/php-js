@@ -98,8 +98,8 @@ on it:
   server-side from React's own published CommonJS build, asserts the HTML is
   byte-identical to Node, and reports boot and render separately.
 - [`packages/php-transpile`](packages/php-transpile) — build-time compiler from
-  JavaScript functions to PHP. Converts most of React to PHP with unchanged
-  output; the bytecode stays as the fallback.
+  JavaScript functions to PHP. Converts 262 of React's 291 functions with
+  unchanged output; the bytecode stays as the fallback.
 
 ## Performance
 
@@ -111,8 +111,8 @@ are worth knowing before measuring anything yourself:
   default.
 - **Precompile.** Boot is dominated by compiling JS, which `phpjs compile` plus
   a warm opcache removes entirely.
-- **Compile the hot library ahead of time.** `php-transpile` turns most of
-  React into PHP: ~48% off a render, and ~39% even with the JIT already on.
+- **Compile the hot library ahead of time.** `php-transpile` turns almost all
+  of React into PHP: ~65% off a render, and ~58% even with the JIT already on.
 
 `packages/react-ssr-bench/README.md` has the numbers and a per-opcode
 breakdown of where the remaining time goes; `docs/aot-php.md` covers the

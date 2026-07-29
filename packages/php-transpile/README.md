@@ -96,9 +96,11 @@ Numeric literals are excluded — JS says `1 === 1.0` and PHP does not.
 
 Neither is a name match or a hardcoded pattern for one library: both are proofs
 over the module being compiled, and both refuse when the proof fails. With
-them the numbers become **48% without the JIT and 39% with it** — the JIT and
+them the numbers become **65% without the JIT and 58% with it** — the JIT and
 this package stop being substitutes, because what these delete is work the
-program does rather than overhead in how it is run.
+program does rather than overhead in how it is run. Once coverage is this
+complete the JIT is worth about 1% on top, having no interpreter loop left to
+accelerate; it earns its keep on code that was *not* compiled ahead of time.
 
 Assumptions are hashed into the native IDs, so a run configured differently
 from its build matches nothing and falls back to bytecode rather than running
@@ -108,22 +110,22 @@ See [docs/aot-php.md §10-§11](../../docs/aot-php.md).
 
 ## Coverage
 
-Against React 19, 252 of 291 functions compile. What it refuses, and why, is
+Against React 19, 262 of 291 functions compile. What it refuses, and why, is
 the emitter's real specification:
 
 | Refusal | Count |
 |---|---|
 | the function's own locals are captured | 23 |
-| labelled statement | 6 |
 | nested function expression | 5 |
-| `typeof` on a possibly-undeclared global | 4 |
 | regexp literal | 1 |
 
 The first row is the structural one: such a function has to allocate a `JSEnv`
 and have its nested functions close over it, which means emitting nested
 functions too.
 
-A refusal is a normal outcome — that function keeps running as bytecode.
+A refusal is a normal outcome — that function keeps running as bytecode. None
+of the three left is on the render's hot path: the interpreter is entered twice
+per render for React, both times during setup.
 
 ## Correctness
 
@@ -136,6 +138,11 @@ function changed nothing observable, so that is what the tests check:
   deletion, prototype getters and setters, `arguments` past the end.
 - `ReactAotTest` renders the real React 19 app both ways and requires the HTML
   to match byte for byte, with 200+ functions converted.
+
+The corners are where the bugs were. Both of the emitter's two real defects so
+far were a `continue` landing in the wrong place — once inside a `switch`
+inside a `for`, once inside a `do`-`while` — and both were found by an
+equivalence case, not by reading the generated PHP.
 
 ## What it does not do
 

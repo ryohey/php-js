@@ -1,20 +1,22 @@
 # Ahead-of-time PHP for the hot path
 
-Status: **phases 0, 0.5, 1, 1.5 and 3 done.** This adapts an
+Status: **phases 0, 0.5, 1, 1.5, 2, 2.5 and 3 done.** This adapts an
 externally drafted "hot-path transpilation" strategy to what this runtime
 actually is and what it actually measures. Read DESIGN.md first; its §2
 (compilation pipeline), §5 (object model) and §11 (shared-nothing / opcache)
 constrain most of what follows. Section numbers below are this document's.
 
 Where it stands: native library substitution took React 19 down 30% (§6 phase
-0). The transpiler (`packages/php-transpile`) compiles **252 of 291** React
-functions to PHP with byte-identical output and takes a further **48%** off a
-render, or **39%** on top of PHP's tracing JIT.
+0). The transpiler (`packages/php-transpile`) compiles **262 of 291** React
+functions to PHP with byte-identical output and takes a further **65%** off a
+render, or **58%** on top of PHP's tracing JIT.
 
-Getting there needed two things that are easy to state and were not obvious:
-the build has to be allowed to prove things about a pinned library (§10), and
-the functions worth converting are the ones an emitter finds hardest, not the
-ones it finds easiest (§6 phase 2). A literal translation that assumes nothing,
+Getting there needed three things that are easy to state and were not obvious:
+the build has to be allowed to prove things about a pinned library (§10); the
+functions worth converting are the ones an emitter finds hardest, not the ones
+it finds easiest (§6 phase 2); and refusals have to be ranked by how much of
+the render they are, not by how many functions they block — the two orders were
+almost unrelated (§6 phase 2.5). A literal translation that assumes nothing,
 converting only the easy functions, was worth 16.7% and 4.2%.
 
 The goal is a Next.js-SSG-equivalent: render React trees to static HTML at build
@@ -380,6 +382,64 @@ from another direction. It is also, now, most of what is left.
 
 *Exit criterion met:* refusals are 13% of functions and the remainder is
 characterised.
+
+**Phase 2.5 — labels, and `typeof` on a global. → DONE.**
+Counting refusals ranks them by how many *functions* they block, which is the
+wrong axis. Counting interpreted frame entries in one render ranks them by how
+much of the render they are, and the two orders had almost nothing to do with
+each other. After phase 2 the render entered the interpreter 502 times, and
+**376 of those were a single function** — `retryNode`, refused for a labelled
+statement, the second-rarest refusal in the table above. The 23 environment-record
+refusals, the largest row by function count, accounted for **two**.
+
+So: labels, then the `typeof` that `retryNode` turned out to need next.
+
+- Every entry on the emitter's breakable stack is exactly one PHP breakable
+  construct, so a target's PHP level is its distance from the top of that stack
+  — `break L` and `continue L` are the same walk as the unlabelled ones with a
+  different stop condition. A loop consumes its own label so `continue L` can
+  reach it; anything else labelled gets a `do { } while (false)` around it,
+  which is all `break L` needs.
+- `typeof x` on a global is the one name read that is not a ReferenceError, so
+  it cannot use the ordinary global load. `Ops::typeofGlobal()` mirrors the
+  VM's `TYPEOF_GLOBAL` opcode.
+
+Implementing labels turned up a bug in code that had been shipped since phase 1:
+`continue` inside a `do`-`while` skipped the test. The loop is emitted as
+`while (true) { <body>; if (!t) break; }` — the test sits after the body, the
+way JS runs it — so a PHP `continue` jumped over it. The `for` loop already had
+the wrapper that fixes this; the `do`-`while` should have had it too, and now
+does. Nothing in React hit it, and no test covered it until this one.
+
+252 → **262 of 291** functions, and the render again:
+
+| | bytecode | AOT, closed build | |
+|---|---|---|---|
+| opcache, no JIT | 59.6 ms | 20.9 ms | **−65.0%** (9/9) |
+| opcache + tracing JIT | 48.9 ms | 20.7 ms | **−57.9%** (9/9) |
+
+The interpreter is now essentially absent from the render. Interpreted frame
+entries fell 502 → 123, and **121 of those 123 are the benchmark app's own
+components**, which the build filter never accepted — it only accepts
+`node_modules/react`. Two entries per render are all that is left of React
+itself, both one-shot setup.
+
+That also explains the second column. Turning the JIT on is worth 18% against
+bytecode and **1% against this**: there is no longer an interpreter loop for it
+to speed up, and the remaining time is in generated PHP and native builtins.
+The JIT has become what the premise wanted it to be — insurance for code that
+was not compiled ahead of time, which here means the application's own.
+
+**What is left refused:**
+
+| Refusal | Count |
+|---|---|
+| function's own locals are captured (needs an environment record) | 23 |
+| nested function expression | 5 |
+| regexp literal | 1 |
+
+Nothing in this table is on the render's hot path any more. Phase 4 should be
+judged on the application's components, not on React's remainder.
 
 **Phase 3 — opcache wiring. → DONE for the file path; preload untested.**
 `NodeIntegration::forBuild()` emits, `writePhp()` writes, `Artifact::register()`

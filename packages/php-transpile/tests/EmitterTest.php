@@ -49,6 +49,18 @@ final class EmitterTest extends EquivalenceTestCase
         ];
 
         yield 'missing argument is undefined' => ['undefined', 'function f(a) { return typeof a; } f()'];
+        // The one name read that is not a ReferenceError.
+        yield 'typeof an undeclared global' => ['undefined', 'function f() { return typeof nowhere; } f()'];
+        yield 'typeof a declared global' => ['function', 'function f() { return typeof Array; } f()'];
+        yield 'typeof a global assigned later' => [
+            'undefined,number',
+            'function f() { return typeof later; } var s = f(); later = 1; s + "," + f()',
+        ];
+        yield 'typeof a catch parameter' => [
+            'object',
+            'function f() { try { throw {}; } catch (e) { return typeof e; } } f()',
+        ];
+        yield 'typeof undefined' => ['undefined', 'function f() { return typeof undefined; } f()'];
         yield 'an explicit null argument stays null' => [true, 'function f(a) { return a === null; } f(null)'];
         yield 'extra arguments are ignored' => [1, 'function f(a) { return a; } f(1, 2, 3)'];
 
@@ -64,6 +76,64 @@ final class EmitterTest extends EquivalenceTestCase
         yield 'nested loops' => [
             '00,01,10,11',
             'function f() { var out = []; for (var i = 0; i < 2; i++) { for (var j = 0; j < 2; j++) { out.push("" + i + j); } } return out.join(","); } f()',
+        ];
+        // `continue` in a do-while jumps to the *test*, not past it. The
+        // generated loop puts the test at the end of the body, so a PHP
+        // `continue` would skip it and the loop would never end.
+        yield 'continue in a do-while still tests' => [
+            '1,3,5,7,9',
+            'function f() { var out = [], i = 0; do { i = i + 1; if (i % 2 === 0) { continue; } out.push(i); } while (i < 10); return out.join(","); } f()',
+        ];
+
+        yield 'labelled break leaves the outer loop' => [
+            '00,01,10',
+            'function f() { var out = []; outer: for (var i = 0; i < 3; i++) { for (var j = 0; j < 2; j++) { if (i === 1 && j === 1) { break outer; } out.push("" + i + j); } } return out.join(","); } f()',
+        ];
+        yield 'labelled continue skips the rest of the outer body' => [
+            '00,10,20',
+            'function f() { var out = []; outer: for (var i = 0; i < 3; i++) { for (var j = 0; j < 2; j++) { out.push("" + i + j); continue outer; } out.push("never"); } return out.join(","); } f()',
+        ];
+        // The outer `for` has an update, so its body is wrapped and `continue
+        // outer` has to break that wrapper rather than the inner loop.
+        yield 'labelled continue still runs the update' => [
+            3,
+            'function f() { outer: for (var i = 0; i < 3; i++) { while (true) { continue outer; } } return i; } f()',
+        ];
+        yield 'labelled continue on a while loop' => [
+            '1,2,3',
+            'function f() { var out = [], i = 0; outer: while (i < 3) { i = i + 1; for (var j = 0; j < 1; j++) { out.push(i); continue outer; } } return out.join(","); } f()',
+        ];
+        yield 'labelled continue on a do-while re-tests' => [
+            '1,2,3',
+            'function f() { var out = [], i = 0; outer: do { i = i + 1; for (var j = 0; j < 1; j++) { out.push(i); continue outer; } } while (i < 3); return out.join(","); } f()',
+        ];
+        yield 'labelled break out of a labelled block' => [
+            'a',
+            'function f(x) { var s = ""; done: { s = s + "a"; if (x) { break done; } s = s + "b"; } return s; } f(1)',
+        ];
+        yield 'a labelled block that is not broken out of runs on' => [
+            'ab',
+            'function f(x) { var s = ""; done: { s = s + "a"; if (x) { break done; } s = s + "b"; } return s; } f(0)',
+        ];
+        yield 'labelled break out of a switch' => [
+            'x',
+            'function f(v) { var s = ""; sw: switch (v) { case 1: s = "x"; break sw; case 2: s = "y"; } return s; } f(1)',
+        ];
+        yield 'labelled continue from inside a switch' => [
+            '0,2',
+            'function f() { var out = []; outer: for (var i = 0; i < 3; i++) { switch (i) { case 1: continue outer; default: out.push(i); } } return out.join(","); } f()',
+        ];
+        yield 'labelled break from inside a for-in' => [
+            'a',
+            'function f(o) { var s = ""; outer: for (var k in o) { for (var j = 0; j < 1; j++) { s = s + k; break outer; } } return s; } f({ a: 1, b: 2 })',
+        ];
+        yield 'labelled continue on a for-in' => [
+            'ab',
+            'function f(o) { var s = ""; outer: for (var k in o) { s = s + k; for (var j = 0; j < 1; j++) { continue outer; } s = s + "!"; } return s; } f({ a: 1, b: 2 })',
+        ];
+        yield 'inner label shadows an outer one of the same name' => [
+            '0,1',
+            'function f() { var out = []; L: for (var i = 0; i < 2; i++) { L: for (var j = 0; j < 3; j++) { if (j === 1) { break L; } } out.push(i); } return out.join(","); } f()',
         ];
 
         yield 'for-in over own properties' => [
@@ -258,7 +328,6 @@ final class EmitterTest extends EquivalenceTestCase
     {
         yield 'nested function' => ['nested function', 'function f() { function g() { return 1; } return g(); }'];
         yield 'closure over own local' => ['environment record', 'function f() { var a = 1; return function () { return a; }; }'];
-        yield 'labelled break' => ['LabeledStatement', 'function f() { a: for (;;) { break a; } }'];
         yield 'regexp literal' => ['RegExpLiteral', 'function f(s) { return /x/.test(s); }'];
         yield 'getter in an object literal' => ['accessor property', 'function f() { return { get a() { return 1; } }; }'];
         yield 'with-style dynamic scope' => ['statement not supported', 'function f(o) { debugger; return o; }'];

@@ -243,6 +243,21 @@ final class Ops
         $obj->props[is_string($key) ? $key : Conversions::toString($vm, $key)] = $value;
     }
 
+    /**
+     * `typeof x` where `x` resolves to a global.
+     *
+     * This is the one read of an undeclared name that is not a ReferenceError,
+     * which is exactly why it needs its own entry point: the ordinary global
+     * load throws. Mirrors the VM's TYPEOF_GLOBAL opcode.
+     */
+    public static function typeofGlobal(Vm $vm, string $name): string
+    {
+        $g = $vm->realm->globalObject;
+        return $g->hasProperty($name)
+            ? TypeOps::typeofOp($g->get($name, $vm))
+            : 'undefined';
+    }
+
     /** Read the nth argument, where a missing one is `undefined` (never PHP null). */
     public static function arg(array $args, int $i): mixed
     {

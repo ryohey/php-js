@@ -55,12 +55,22 @@ final class FunctionEmitter
     private int $tempSeq = 0;
     private bool $strict;
     /**
-     * PHP-level breakable constructs currently open, innermost last: 'loop' for
-     * a JS loop, 'switch' for the do-while a switch lowers to. JS `break`
-     * targets the innermost of either, which is what PHP's bare `break` does —
-     * but JS `continue` targets the innermost *loop*, so it has to count past
-     * any switches in between.
-     * @var list<'loop'|'switch'>
+     * PHP-level breakable constructs currently open, innermost last. Every
+     * entry is one PHP `break`-able construct, so a target's PHP level is just
+     * its distance from the top of this stack.
+     *
+     * - `loop` — a JS loop, emitted as `while (true)`.
+     * - `switch` — the `do { } while (false)` a switch lowers to.
+     * - `continueWrap` — the `do { } while (false)` around a `for` body that
+     *   makes `continue` land on the update; not a JS breakable itself.
+     * - `label` — the `do { } while (false)` around a labelled statement that
+     *   is not a loop, so `break L` can leave it.
+     *
+     * JS `break` targets the innermost loop or switch, which is what PHP's bare
+     * `break` does — but JS `continue` targets the innermost *loop*, so it has
+     * to count past any switch in between, and a labelled break or continue
+     * counts to its own target.
+     * @var list<array{kind: 'loop'|'switch'|'continueWrap'|'label', label: ?string}>
      */
     private array $breakables = [];
     /**
@@ -272,7 +282,11 @@ final class FunctionEmitter
 
     // ---- statements --------------------------------------------------------
 
-    private function stmt(object $node): void
+    /**
+     * @param ?string $label the label a `LabeledStatement` immediately above
+     *                       this one carried, for the loops that can consume it
+     */
+    private function stmt(object $node, ?string $label = null): void
     {
         switch ($node->getType()) {
             case 'ExpressionStatement':
@@ -318,16 +332,16 @@ final class FunctionEmitter
                 );
                 return;
             case 'WhileStatement':
-                $this->whileLoop($node);
+                $this->whileLoop($node, $label);
                 return;
             case 'DoWhileStatement':
-                $this->doWhileLoop($node);
+                $this->doWhileLoop($node, $label);
                 return;
             case 'ForStatement':
-                $this->forLoop($node);
+                $this->forLoop($node, $label);
                 return;
             case 'ForInStatement':
-                $this->forInLoop($node);
+                $this->forInLoop($node, $label);
                 return;
             case 'SwitchStatement':
                 $this->switchStmt($node);
@@ -335,20 +349,18 @@ final class FunctionEmitter
             case 'TryStatement':
                 $this->tryStmt($node);
                 return;
-            case 'BreakStatement':
-                if ($node->getLabel() !== null) {
-                    throw new Unsupported('labelled break');
-                }
-                if ($this->breakables === []) {
-                    throw new Unsupported('break outside a loop or switch');
-                }
-                $this->stmts[] = new Stmt\Break_(new \PhpParser\Node\Scalar\Int_($this->breakLevel()));
+            case 'BreakStatement': {
+                $label = $node->getLabel();
+                $this->stmts[] = new Stmt\Break_(new \PhpParser\Node\Scalar\Int_(
+                    $this->breakLevel($label?->getName())
+                ));
                 return;
+            }
             case 'ContinueStatement':
-                if ($node->getLabel() !== null) {
-                    throw new Unsupported('labelled continue');
-                }
-                $this->stmts[] = $this->continueStmt();
+                $this->stmts[] = $this->continueStmt($node->getLabel()?->getName());
+                return;
+            case 'LabeledStatement':
+                $this->labelled($node);
                 return;
             case 'FunctionDeclaration':
                 throw new Unsupported('nested function declaration');
@@ -358,13 +370,36 @@ final class FunctionEmitter
     }
 
     /**
+     * `L: stmt`.
+     *
+     * A loop consumes the label itself, so `continue L` can reach it. Anything
+     * else only has to answer `break L`, which a `do { } while (false)` around
+     * it does.
+     */
+    private function labelled(object $node): void
+    {
+        $name = $node->getLabel()->getName();
+        $body = $node->getBody();
+        if (in_array($body->getType(), [
+            'ForStatement', 'ForInStatement', 'WhileStatement', 'DoWhileStatement',
+        ], true)) {
+            $this->stmt($body, $name);
+            return;
+        }
+        $this->breakables[] = ['kind' => 'label', 'label' => $name];
+        $inner = $this->block(fn () => $this->stmt($body));
+        array_pop($this->breakables);
+        $this->stmts[] = new Stmt\Do_($this->b->val(false), $inner);
+    }
+
+    /**
      * A JS loop test can require statements (an assignment, a short-circuit),
      * and those must re-run every iteration — so the loop is emitted as
      * `while (true) { <test statements>; if (!cond) break; ... }`.
      */
-    private function whileLoop(object $node): void
+    private function whileLoop(object $node, ?string $label): void
     {
-        $this->breakables[] = 'loop';
+        $this->breakables[] = ['kind' => 'loop', 'label' => $label];
         $body = $this->block(function () use ($node) {
             $this->breakUnless($node->getTest());
             $this->stmt($node->getBody());
@@ -373,18 +408,34 @@ final class FunctionEmitter
         $this->stmts[] = new Stmt\While_($this->b->val(true), $body);
     }
 
-    private function doWhileLoop(object $node): void
+    /**
+     * `do { } while (t)` becomes `while (true) { <body>; if (!t) break; }`, so
+     * the test sits after the body the way JS runs it. That makes `continue`
+     * dangerous for the same reason a `for` update does — a PHP `continue`
+     * would jump over the test and never leave the loop — so a body with one
+     * gets the same do-while wrapper, and `continue` breaks that instead,
+     * landing exactly on the test.
+     */
+    private function doWhileLoop(object $node, ?string $label): void
     {
-        $this->breakables[] = 'loop';
-        $body = $this->block(function () use ($node) {
-            $this->stmt($node->getBody());
+        $wrap = $this->containsContinue($node->getBody());
+        $this->breakables[] = ['kind' => 'loop', 'label' => $label];
+        $body = $this->block(function () use ($node, $wrap) {
+            if ($wrap) {
+                $this->breakables[] = ['kind' => 'continueWrap', 'label' => null];
+                $inner = $this->block(fn () => $this->stmt($node->getBody()));
+                array_pop($this->breakables);
+                $this->stmts[] = new Stmt\Do_($this->b->val(false), $inner);
+            } else {
+                $this->stmt($node->getBody());
+            }
             $this->breakUnless($node->getTest());
         });
         array_pop($this->breakables);
         $this->stmts[] = new Stmt\While_($this->b->val(true), $body);
     }
 
-    private function forLoop(object $node): void
+    private function forLoop(object $node, ?string $label): void
     {
         $init = $node->getInit();
         if ($init !== null) {
@@ -401,13 +452,13 @@ final class FunctionEmitter
         // the update instead of skipping it.
         $wrap = $node->getUpdate() !== null && $this->containsContinue($node->getBody());
 
-        $this->breakables[] = 'loop';
+        $this->breakables[] = ['kind' => 'loop', 'label' => $label];
         $body = $this->block(function () use ($node, $wrap) {
             if ($node->getTest() !== null) {
                 $this->breakUnless($node->getTest());
             }
             if ($wrap) {
-                $this->breakables[] = 'continueWrap';
+                $this->breakables[] = ['kind' => 'continueWrap', 'label' => null];
                 $inner = $this->block(fn () => $this->stmt($node->getBody()));
                 array_pop($this->breakables);
                 $this->stmts[] = new Stmt\Do_($this->b->val(false), $inner);
@@ -422,7 +473,7 @@ final class FunctionEmitter
         $this->stmts[] = new Stmt\While_($this->b->val(true), $body);
     }
 
-    private function forInLoop(object $node): void
+    private function forInLoop(object $node, ?string $label): void
     {
         $left = $node->getLeft();
         if ($left->getType() === 'VariableDeclaration') {
@@ -457,7 +508,7 @@ final class FunctionEmitter
         );
         $k = $this->temp();
 
-        $this->breakables[] = 'loop';
+        $this->breakables[] = ['kind' => 'loop', 'label' => $label];
         $body = $this->block(function () use ($node, $target, $obj, $k, $guarded) {
             if (!$guarded) {
                 // A property deleted mid-iteration is skipped, as in the VM.
@@ -563,16 +614,20 @@ final class FunctionEmitter
 
     /**
      * PHP level for a JS `break`: the innermost loop or switch, counting past
-     * any continue-wrapper in between (a wrapper is not a JS breakable).
+     * any continue-wrapper in between (a wrapper is not a JS breakable), or
+     * the construct carrying $label when there is one.
      */
-    private function breakLevel(): int
+    private function breakLevel(?string $label): int
     {
         for ($i = count($this->breakables) - 1, $n = 1; $i >= 0; $i--, $n++) {
-            if ($this->breakables[$i] !== 'continueWrap') {
+            $e = $this->breakables[$i];
+            if ($label !== null ? $e['label'] === $label : $e['kind'] !== 'continueWrap') {
                 return $n;
             }
         }
-        throw new Unsupported('break outside a loop or switch');
+        throw new Unsupported($label !== null
+            ? 'break to an undeclared label'
+            : 'break outside a loop or switch');
     }
 
     /**
@@ -584,17 +639,34 @@ final class FunctionEmitter
      * becomes a `break` of that wrapper, landing exactly on the update. Any
      * switch in between just adds a level.
      */
-    private function continueStmt(): Stmt
+    private function continueStmt(?string $label): Stmt
     {
         for ($i = count($this->breakables) - 1, $n = 1; $i >= 0; $i--, $n++) {
-            if ($this->breakables[$i] === 'continueWrap') {
+            $e = $this->breakables[$i];
+            if ($label !== null) {
+                if ($e['label'] !== $label) {
+                    continue;
+                }
+                if ($e['kind'] !== 'loop') {
+                    throw new Unsupported('continue to a label that is not a loop');
+                }
+                // The wrapper of the target loop, if it has one, sits directly
+                // above it: `for` pushes it immediately after the loop itself.
+                $inner = $this->breakables[$i + 1] ?? null;
+                return $inner !== null && $inner['kind'] === 'continueWrap'
+                    ? new Stmt\Break_(new \PhpParser\Node\Scalar\Int_($n - 1))
+                    : new Stmt\Continue_(new \PhpParser\Node\Scalar\Int_($n));
+            }
+            if ($e['kind'] === 'continueWrap') {
                 return new Stmt\Break_(new \PhpParser\Node\Scalar\Int_($n));
             }
-            if ($this->breakables[$i] === 'loop') {
+            if ($e['kind'] === 'loop') {
                 return new Stmt\Continue_(new \PhpParser\Node\Scalar\Int_($n));
             }
         }
-        throw new Unsupported('continue outside a loop');
+        throw new Unsupported($label !== null
+            ? 'continue to an undeclared label'
+            : 'continue outside a loop');
     }
 
     /**
@@ -617,7 +689,7 @@ final class FunctionEmitter
         $this->stmts[] = $this->assign($d, $this->expr($node->getDiscriminant()));
         $m = $this->temp();
 
-        $this->breakables[] = 'switch';
+        $this->breakables[] = ['kind' => 'switch', 'label' => null];
         $body = $this->block(function () use ($cases, $d, $m) {
             $this->stmts[] = $this->assign($m, $this->b->val(-1));
             $defaultIndex = null;
@@ -739,22 +811,26 @@ final class FunctionEmitter
         return $inner;
     }
 
-    private function containsContinue(object $node): bool
+    private function containsContinue(object $node, bool $crossedLoop = false): bool
     {
         $type = $node->getType();
         if ($type === 'ContinueStatement') {
-            return true;
+            // An unlabelled `continue` under a nested loop belongs to that
+            // loop. A labelled one can name any loop out to the function, so
+            // it counts wherever it is -- checking which loop it actually names
+            // would only save the wrapper.
+            return !$crossedLoop || $node->getLabel() !== null;
         }
-        // A nested loop owns its own `continue`; a nested function is another
-        // program. Everything else has to be searched -- searching by a
-        // whitelist of getters is how a `continue` inside a switch was missed,
-        // which turned a for loop's update into dead code.
-        if (in_array($type, [
-            'ForStatement', 'ForInStatement', 'WhileStatement', 'DoWhileStatement',
-            'FunctionExpression', 'FunctionDeclaration',
-        ], true)) {
+        // A nested function is another program.
+        if ($type === 'FunctionExpression' || $type === 'FunctionDeclaration') {
             return false;
         }
+        // Everything else has to be searched -- searching by a whitelist of
+        // getters is how a `continue` inside a switch was missed, which turned
+        // a for loop's update into dead code.
+        $crossedLoop = $crossedLoop || in_array($type, [
+            'ForStatement', 'ForInStatement', 'WhileStatement', 'DoWhileStatement',
+        ], true);
         foreach (get_class_methods($node) as $getter) {
             if (!str_starts_with($getter, 'get') || $getter === 'getType' || $getter === 'getLocation') {
                 continue;
@@ -768,7 +844,7 @@ final class FunctionEmitter
                 continue;
             }
             foreach (is_array($child) ? $child : [$child] as $c) {
-                if (is_object($c) && method_exists($c, 'getType') && $this->containsContinue($c)) {
+                if (is_object($c) && method_exists($c, 'getType') && $this->containsContinue($c, $crossedLoop)) {
                     return true;
                 }
             }
@@ -1038,11 +1114,17 @@ final class FunctionEmitter
                 new P\Arg($obj), new P\Arg($key), new P\Arg($this->b->val($this->strict)),
             ]);
         }
-        if ($op === 'typeof' && $argNode->getType() === 'Identifier') {
-            $r = $this->scope->resolve($argNode->getName());
-            if ($r['kind'] === 'global') {
-                throw new Unsupported('typeof on a possibly-undeclared global');
-            }
+        // `typeof x` on an undeclared global is the one name read that is not
+        // a ReferenceError, so it cannot go through the ordinary global load.
+        // Only a name that really resolves to the global object qualifies --
+        // `undefined` and a catch parameter are handled by load() as usual.
+        if ($op === 'typeof' && $argNode->getType() === 'Identifier'
+            && $argNode->getName() !== 'undefined'
+            && $this->caughtBinding($argNode->getName()) === null
+            && $this->scope->resolve($argNode->getName())['kind'] === 'global') {
+            return $this->staticCall('Ops', 'typeofGlobal', [
+                $this->var('vm'), $this->b->val($argNode->getName()),
+            ]);
         }
         $a = $this->expr($argNode);
         return match ($op) {
