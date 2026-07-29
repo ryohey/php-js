@@ -84,8 +84,9 @@ $aot = NodeIntegration::forRun($accept, Assumptions::closedBuild());
 - `hasOwnProperty.call(o, k)` becomes a direct own-property test, when the
   module proves the binding was assigned `Object.prototype.hasOwnProperty`
   exactly once and never reassigned.
-- A `for-in` loop guarded by that call drops the emitter's own
-  deleted-during-iteration check, which the guard already subsumes.
+- A `for-in` loop guarded by that call asks for own enumerable keys directly
+  and drops the emitter's deleted-during-iteration check — the guard was going
+  to discard the inherited keys anyway, and it already covers deletion.
 - A write to a local proven to hold a fresh object literal, before it escapes,
   becomes a store instead of a `[[Set]]` walk.
 
@@ -95,7 +96,7 @@ Numeric literals are excluded — JS says `1 === 1.0` and PHP does not.
 
 Neither is a name match or a hardcoded pattern for one library: both are proofs
 over the module being compiled, and both refuse when the proof fails. With
-them the numbers become **18% without the JIT and 16% with it** — the JIT and
+them the numbers become **18% without the JIT and 12-16% with it** — the JIT and
 this package stop being substitutes, because what these delete is work the
 program does rather than overhead in how it is run.
 
@@ -141,6 +142,6 @@ speculation, no escape analysis, no assumption that a write target is a fresh
 object, no assumption that `hasOwnProperty` is still the builtin.
 
 That costs 3.5-8x against hand-written PHP for the same function
-(docs/aot-php.md §9); the closed-build assumptions above bring it to 2.8x. It
+(docs/aot-php.md §9); the closed-build assumptions above bring it to 2.3x. It
 is the right default: every specialization beyond this needs its own
 justification, and correctness is worth more than the last 2x.

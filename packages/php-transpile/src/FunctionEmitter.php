@@ -412,18 +412,24 @@ final class FunctionEmitter
             throw new Unsupported('for-in into a member expression');
         }
 
+        // `for (k in o) { if (hasOwnProperty.call(o, k)) ... }` is the standard
+        // way to skip inherited keys. Its guard both selects own keys and
+        // covers what the liveness check is for -- a property deleted
+        // mid-iteration fails hasOwnProperty too -- so recognising it removes
+        // a prototype walk from the key list and a lookup per key.
+        $guarded = $this->bodyOpensWithOwnGuard($node, $target->getName());
+
         $obj = $this->temp();
         $this->stmts[] = $this->assign($obj, $this->expr($node->getRight()));
         $keys = $this->temp();
-        $this->stmts[] = $this->assign($keys, $this->staticCall('Ops', 'forInKeys', [$this->var('vm'), $obj]));
+        // An own-guarded loop wants own keys, so ask for them directly rather
+        // than building the full for-in list and letting the guard throw the
+        // inherited ones away.
+        $this->stmts[] = $this->assign(
+            $keys,
+            $this->staticCall('Ops', $guarded ? 'ownKeys' : 'forInKeys', [$this->var('vm'), $obj])
+        );
         $k = $this->temp();
-
-        // `for (k in o) { if (hasOwnProperty.call(o, k)) ... }` is the standard
-        // way to skip inherited keys, and its guard already covers what the
-        // liveness check is for: a property deleted mid-iteration fails
-        // hasOwnProperty too. Emitting both means two lookups per key, one of
-        // them a prototype walk.
-        $guarded = $this->bodyOpensWithOwnGuard($node, $target->getName());
 
         $this->loopDepth++;
         $body = $this->block(function () use ($node, $target, $obj, $k, $guarded) {
@@ -941,13 +947,9 @@ final class FunctionEmitter
             throw new Unsupported("logical operator $op");
         }
         $lhs = $this->expr($node->getLeft());
-        // Boolness has to be carried across the temporary by hand: the marker
-        // is keyed on the expression node, and the temp is a different node.
-        // Chained `&&` builds a temp per level, so losing it here means a
-        // ToBoolean call on every link of the chain.
+        // Boolness has to be carried by hand: the marker is keyed on the
+        // expression node, and the temporary below is a different node.
         $lhsIsBool = $this->isBool->contains($lhs);
-        $t = $this->temp();
-        $this->stmts[] = $this->assign($t, $lhs);
 
         $rhs = null;
         $rhsStmts = $this->block(function () use ($node, &$rhs) {
@@ -955,6 +957,25 @@ final class FunctionEmitter
         });
         $rhsIsBool = $this->isBool->contains($rhs);
 
+        // When both sides are already booleans and the right one needs no
+        // statements, this is exactly PHP's own `&&` — same short circuit, same
+        // result, one expression instead of a temporary and an `if` per link.
+        // Minified code is mostly long condition chains, so the chain collapses
+        // whole. It is only valid for booleans: JS `a && b` yields a *value*,
+        // PHP's yields a bool, and those agree only when the value is a bool.
+        if ($lhsIsBool && $rhsIsBool && $rhsStmts === []) {
+            return $this->bool($op === '&&'
+                ? new Expr\BinaryOp\BooleanAnd($lhs, $rhs)
+                : new Expr\BinaryOp\BooleanOr($lhs, $rhs));
+        }
+
+        // Otherwise: keep the value, and reuse the previous link's temporary
+        // rather than copying into a fresh one.
+        $t = $this->reusableTemp($lhs);
+        if ($t === null) {
+            $t = $this->temp();
+            $this->stmts[] = $this->assign($t, $lhs);
+        }
         $cond = $lhsIsBool ? $t : $this->staticCall('Conversions', 'toBoolean', [$t]);
         if ($op === '||') {
             $cond = new Expr\BooleanNot($cond);
@@ -1167,6 +1188,18 @@ final class FunctionEmitter
     {
         $this->isBool->attach($e);
         return $e;
+    }
+
+    /**
+     * If an expression is one of our own temporaries, it can be written to
+     * again rather than copied. Each `temp()` is handed out once and consumed
+     * once, so nothing else can be holding it.
+     */
+    private function reusableTemp(Expr $e): ?Expr\Variable
+    {
+        return ($e instanceof Expr\Variable && is_string($e->name) && preg_match('/^t\d+$/', $e->name) === 1)
+            ? $e
+            : null;
     }
 
     /** Evaluate $effect for its side effect, then yield $value. */

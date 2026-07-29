@@ -10,7 +10,7 @@ Where it stands: native library substitution took React 19 down 30% (§6 phase
 0). The transpiler now exists (`packages/php-transpile`), compiles **219 of
 291** React functions to PHP with byte-identical output, and — once the build
 is allowed to prove things about a pinned library (§10) — takes another
-**17.7%** off a render, or **16.2%** on top of PHP's tracing JIT. A literal
+**18%** off a render, or **12-16%** on top of PHP's tracing JIT. A literal
 translation that assumes nothing manages 16.7% and 4.2%: the difference between
 those two rows is the whole argument, and it is in §9-§11.
 
@@ -547,13 +547,19 @@ compares against the *first* escape offset, which is what makes it sound inside
 loops: a loop body that both escapes and writes has the escape at the lower
 offset, so the specialization simply does not apply there.
 
-**A `hasOwnProperty` guard makes the liveness check redundant.** `for (k in o)
-{ if (hasOwnProperty.call(o, k)) ... }` is *the* way to skip inherited keys, and
-the emitter was following it with its own deleted-during-iteration check — two
-lookups per key, one of them a prototype walk. The guard already covers it: a
-property deleted mid-iteration fails `hasOwnProperty` too. Recognised only when
-the guard is the loop body's first condition, on the same object and the same
-loop variable.
+**A `hasOwnProperty` guard rewrites the whole loop.** `for (k in o) { if
+(hasOwnProperty.call(o, k)) ... }` is *the* way to skip inherited keys, and
+recognising it removes two things. The emitter was following the guard with its
+own deleted-during-iteration check — the guard already covers that, since a
+property deleted mid-iteration fails `hasOwnProperty` too. And the key list no
+longer needs to be a full for-in list: the guard was going to discard the
+inherited keys anyway, so the loop asks for own enumerable keys directly.
+
+That second half was the largest single item left. Building a for-in list for a
+plain object costs 648 ns against 185 ns for own keys alone, because it has to
+enumerate `Object.prototype` to discover that none of it is enumerable — per
+loop, every call. Recognised only when the guard is the body's first condition,
+on the same object and the same loop variable.
 
 **And one that assumes nothing: `===` against a non-numeric literal.**
 `x === "key"`, `x === null`, `x === undefined` compile to PHP's own `===`,
@@ -565,18 +571,38 @@ two really can meet. React's minified output is full of these guards, and each
 one was a static call plus a `ToBoolean` that the result-is-a-bool tracking can
 now also drop.
 
-Measured, on `createElement`:
+Measured on `createElement`, calling the generated closure directly so no
+interpreter is in the loop:
 
 | | per call | vs hand-written |
 |---|---|---|
-| bytecode | 49.8 µs | — |
-| generated, literal | 15.3 µs | 4.8x |
-| generated, closed build | **8.7 µs** | **2.8x** |
-| hand-written PHP | 3.2 µs | 1x |
+| generated, closed build (first cut) | 5.49 µs | 2.60x |
+| + own-keys under a guard | **4.79 µs** | **2.28x** |
+| hand-written PHP | 2.10 µs | 1x |
 
-The property-copy loop that §9 blamed now emits a `foreach` over the key list,
-one own-property test, three PHP string comparisons and a store — which is
-within sight of what the hand-written version does by hand.
+The property-copy loop that §9 blamed now emits a `foreach` over own keys, one
+own-property test, three PHP string comparisons and a store — which is close to
+what the hand-written version does by hand.
+
+**Three other things were tried and did not work**, which is worth recording
+because they all looked obvious:
+
+- *Inlining the property-read fast path* (the single most common thing the
+  emitter generates, 818 of React's 924 reads have a literal key). Measured
+  3% **slower**, consistently. `Ops::getProp` costs 64 ns against 32 ns for the
+  same test inline — but only when it hits, and React reads methods off
+  prototypes often enough that the misses, which now pay the inline test *and*
+  the call, more than cancel the hits.
+- *Collapsing `&&` chains of booleans into one PHP expression* instead of a
+  temporary and an `if` per link. No measurable change.
+- *Reusing the previous link's temporary* in those chains rather than copying.
+  Perhaps 3%, at the edge of noise; kept because it is strictly less code.
+
+The pattern across all four is the same: **removing work wins, shaving
+per-operation overhead does not.** The two changes that paid — dropping the
+`hasOwnProperty` round-trip and dropping the prototype walk — each deleted
+something the program was doing. The three that did not were all attempts to
+make the same work cheaper.
 
 The tests carry more negative cases than positive ones on purpose. A
 specialization that fails to fire is a performance bug; one that fires when its
@@ -606,10 +632,15 @@ opcodes are opcodes.
 **And then the JIT nearly ate the win — until the build was allowed to
 assume things.** Paired runs, React 19 / 20 rows:
 
-| | bytecode | AOT, literal | AOT, closed build |
-|---|---|---|---|
-| opcache, no JIT | 87.2 ms | 71.4 ms (−16.7%) | 69.1 ms (**−17.7%**) |
-| opcache + tracing JIT | 75.1 ms | 66.9 ms (−4.2%) | 63.5 ms (**−16.2%**) |
+| | AOT, literal | AOT, closed build |
+|---|---|---|
+| opcache, no JIT | −16.7% | **−18%** |
+| opcache + tracing JIT | −4.2% | **−12 to −16%** |
+
+(Paired runs, 7-9 pairs, every set 9/9 or 7/7 for the closed build. The JIT row
+is a range because the machine's speed moved by a third between measurement
+sessions and the two configurations do not scale with it identically; the
+per-function numbers above are the cleaner evidence for any single change.)
 
 The middle column was the alarming one. The dispatch loop is a hot, type-stable
 `while`/`switch` — precisely what a tracing JIT is good at — so JIT-ing the
@@ -619,8 +650,8 @@ On that evidence the two looked like substitutes rather than complements.
 The right-hand column is what changes the conclusion. With the closed-build
 specializations of §10 the two stack: JIT alone is −14%, closed AOT alone is
 −18%, and together they are **−27%** off the un-JIT-ed baseline. Compiling
-ahead of time is worth **16% on top of** a JIT-ed interpreter, where a literal
-translation was worth 4%.
+ahead of time is worth **12-16% on top of** a JIT-ed interpreter, where a
+literal translation was worth 4%.
 
 Why they stack now is the interesting part. The JIT speeds up the interpreter's
 own PHP, which is where a literal translation's advantage lived. It cannot
@@ -639,6 +670,9 @@ Measured end to end, React 19 at 20 rows, best configuration at each step:
 | + native library substitution (phase 0) | 88 ms | 1.5x |
 | + ahead-of-time PHP, closed build (phases 1, 1.5) | 69 ms | 1.9x |
 | + PHP's tracing JIT | **63 ms** | **2.1x** |
+
+(Absolute figures from one machine state; this host's speed has moved by a
+third between sessions. The ratios are the durable part.)
 
 Node is 2.09 ms. Nothing here closes a 31x gap; it makes a build-time renderer
 twice as fast, and that is the honest scope. Phase 2 (the switch/try refusals)

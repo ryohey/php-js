@@ -172,6 +172,23 @@ final class AssumptionsTest extends TestCase
         $this->assertStringNotContainsString('forInLive', $php);
     }
 
+    public function testAnOwnGuardedLoopAsksForOwnKeysOnly(): void
+    {
+        // The guard was going to discard the inherited keys, so building the
+        // full for-in list means walking the prototype chain for nothing.
+        $php = $this->emit(self::GUARDED_LOOP, 'copy', Assumptions::closedBuild());
+        $this->assertStringContainsString('Ops::ownKeys', $php);
+        $this->assertStringNotContainsString('Ops::forInKeys', $php);
+    }
+
+    #[DataProvider('unguardedLoops')]
+    public function testAnUnguardedLoopStillBuildsTheFullKeyList(string $module): void
+    {
+        $php = $this->emit($module, 'copy', Assumptions::closedBuild());
+        $this->assertStringContainsString('Ops::forInKeys', $php);
+        $this->assertStringNotContainsString('Ops::ownKeys', $php);
+    }
+
     public function testTheLivenessCheckStaysByDefault(): void
     {
         $php = $this->emit(self::GUARDED_LOOP, 'copy', Assumptions::none());
@@ -249,6 +266,18 @@ final class AssumptionsTest extends TestCase
             . 'function A() {} A.prototype.inherited = 1;'
             . 'function copy(src) { var ks = []; for (var k in src) { if (hasOwnProperty.call(src, k)) { ks.push(k); } } return ks.join(","); }'
             . 'var o = new A(); o.own = 1; exports.result = copy(o);',
+        ];
+        yield 'a guarded loop keeps own-key order' => [
+            'z,a,m',
+            'var hasOwnProperty = Object.prototype.hasOwnProperty;'
+            . 'function keys(src) { var ks = []; for (var k in src) { if (hasOwnProperty.call(src, k)) { ks.push(k); } } return ks.join(","); }'
+            . 'exports.result = keys({ z: 1, a: 2, m: 3 });',
+        ];
+        yield 'a guarded loop over a non-object receiver' => [
+            '0,1',
+            'var hasOwnProperty = Object.prototype.hasOwnProperty;'
+            . 'function keys(src) { var ks = []; for (var k in src) { if (hasOwnProperty.call(src, k)) { ks.push(k); } } return ks.join(","); }'
+            . 'exports.result = keys("ab");',
         ];
         yield 'a guarded loop still skips a key deleted mid-iteration' => [
             'a',
