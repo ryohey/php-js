@@ -59,7 +59,7 @@ final class ModuleLoader
      * They exist because bundles pull them in at load time even when the code
      * path that uses them is never taken.
      */
-    private const STUBS = ['stream', 'util', 'events'];
+    private const STUBS = ['stream', 'util', 'events', 'crypto', 'async_hooks'];
 
     private function loadStub(string $name, Vm $vm): mixed
     {

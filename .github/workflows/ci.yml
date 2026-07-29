@@ -78,6 +78,8 @@ jobs:
         working-directory: packages/react-ssr-bench
         run: |
           npm install --no-audit --no-fund
+          npm install --no-audit --no-fund --prefix apps/react19
           composer install --no-interaction --no-progress
           vendor/bin/phpunit
-          php bin/react-ssr-bench --items 20 --iterations 5 --compare-node
+          php bin/react-ssr-bench --react 17 --items 20 --iterations 5 --compare-node
+          php bin/react-ssr-bench --react 19 --items 20 --iterations 5 --compare-node

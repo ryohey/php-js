@@ -250,15 +250,26 @@ effect measured so far.
 
 ## 6. Build order
 
-**Phase 0 — native substitution. No transpiler.**
-Replace the JS polyfills on React's hot path with native PHP in `node-compat`:
-`Math.clz32` and `Math.imul` first (measured: −20% on React 19), then `Map` /
-`Set` (~6%, subject to the §11.3 caveat above). Add the `crypto` stub. Extend
-the bench to React 19, and re-profile afterwards — removing a quarter of the
-render will reshuffle everything below it.
-*Exit:* React 19 render improved ≥25%, byte-identical to Node, test262 flat.
-*Cost:* hours to a day. This phase has no research risk; only the `Map`/`Set`
-size is uncertain.
+**Phase 0 — native substitution. No transpiler. → DONE.**
+Native `Math.clz32/imul/trunc/sign/log2/log10/cbrt/hypot/fround` and native
+`Map`/`Set`/`WeakMap`/`WeakSet` in `node-compat`, plus `crypto` and
+`async_hooks` stubs and a `queueMicrotask` global (React 19's server entry
+needs all three). The React 19 fixture is now part of the benchmark.
+
+*Result: **−29.9%** on a React 19 render (130 → 91 ms), 7/7 paired runs, output
+hash unchanged and still byte-identical to Node on both render methods.*
+
+Two things worth carrying forward from doing it:
+
+- The natives install *before* `js/polyfills.js` runs, and that file defines
+  only what is missing, so the JS versions became fallbacks without being
+  deleted. A test asserts the ordering, because inverting it would silently
+  give the 30% back.
+- Reading arguments as `$args[0] ?? JSUndefined` is wrong and it bit twice: JS
+  `null` arrives as PHP `null`, so `??` turns it into `undefined`. That made
+  `Math.sign(null)` return NaN instead of 0, and made `null` and `undefined`
+  the same `Map` key. Use `array_key_exists`. DESIGN.md §5.1 flags the same
+  trap for property reads; it applies to every native's argument list.
 
 **Phase 1 — one transpiled function, end to end.**
 Pick the smallest hot pure leaf function (`escapeTextForBrowser`: a char loop
@@ -296,7 +307,42 @@ React release, with no mechanical way to tell it has drifted. Transpiled output
 is regenerable from the upstream source and is checked by byte-identity. Prefer
 transpiling even where hand-porting looks easier.
 
-## 7. What this can and cannot achieve
+## 7. Where phase 0 left the profile
+
+Re-profiling React 19 after phase 0, the polyfills are gone from the render
+entirely — 73 distinct JS functions down to 60 — and what remains is flat:
+
+| Function | self time |
+|---|---|
+| `createElement` | 11.3% |
+| `renderElement` | 10.2% |
+| `pushStartGenericElement` | 8.9% |
+| `flushSubtree` | 8.1% |
+| `pushStartInstance` | 7.3% |
+| `retryNode` | 7.2% |
+| the app's own `.map` callback | 5.8% |
+| `renderNodeDestructive` | 4.5% |
+| `renderNode` | 3.8% |
+| `escapeTextForBrowser` | 3.7% |
+| top 10 combined | 71% |
+
+**This makes the transpiler case harder, not easier.** Phase 0 took the one
+concentrated target; there is no 20% item left. Each remaining function is
+worth 4-11% of the render *before* multiplying by however much faster compiled
+PHP is than the interpreter for that function — and these are the object-heavy,
+call-heavy ones, not arithmetic loops, so the multiplier will be nothing like
+`clz32`'s.
+
+Converting the entire top 10 at a hypothetical 5x on that slice would yield
+about 1.8x overall. That is the number the transpiler has to be worth building
+for.
+
+*Reproducing this:* the per-function profile comes from an ad-hoc patch that
+accumulates `hrtime` deltas per template at the top of the dispatch loop. It is
+not committed — a per-instruction hook costs a few percent and does not belong
+in the loop. See §2 for the calibration check that makes its output usable.
+
+## 8. What this can and cannot achieve
 
 If React internals are ~95% of a render and AOT PHP is *N* times faster on that
 slice, the overall speedup is `1 / (0.05 + 0.95/N)`: 4.0x at N=5, 6.9x at N=10.
@@ -306,9 +352,14 @@ build-time renderer; not parity, and nobody should plan as if it were.
 
 Two things to weigh before committing to phase 1:
 
-- **Phase 0 may be a large fraction of the available win for a fraction of the
-  effort.** One measurement already returned 20%. Finish phase 0 and re-profile
-  before deciding the transpiler is worth building.
+- **Phase 0 was a large fraction of the available win for a fraction of the
+  effort** — it returned 30% in a day, and §7 shows it also flattened what is
+  left. The next step is not phase 1 as written but the cheapest experiment
+  that prices the transpiler: hand-write **one** object-heavy React internal
+  (`createElement`, say) as a PHP native and measure it. That yields the real
+  multiplier for the realistic case, without building any transpiler at all. If
+  it comes back at 2x, the transpiler is not worth building; if it comes back
+  at 8x, it is.
 - **For SSG specifically, memoization may dominate all of this.** Build-time
   rendering with fixed input means identical subtrees render repeatedly across
   pages. Caching rendered output keyed by element identity is a different lever

@@ -6,4 +6,6 @@
 /packages/*/composer.lock
 /packages/*/node_modules/
 /packages/*/package-lock.json
+/packages/*/apps/*/node_modules/
+/packages/*/apps/*/package-lock.json
 /packages/*/.phpunit.cache/

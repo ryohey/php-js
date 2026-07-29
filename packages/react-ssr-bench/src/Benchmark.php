@@ -96,9 +96,15 @@ final class Benchmark
      */
     public static function renderWithNode(string $appRoot, int $itemCount, string $method): ?string
     {
+        // A fixture may ship a Node-specific entry when the module specifier
+        // php-js uses is one Node refuses (React 19's package `exports` map
+        // blocks the deep path into the synchronous server build).
+        $entry = is_file($appRoot . '/js/app.node.js')
+            ? $appRoot . '/js/app.node.js'
+            : $appRoot . '/js/app.js';
         $script = sprintf(
             'process.stdout.write(require(%s).%s(%d, "php-js"))',
-            json_encode($appRoot . '/js/app.js'),
+            json_encode($entry),
             $method === 'renderToString' ? 'renderToString' : 'renderToStaticMarkup',
             $itemCount
         );

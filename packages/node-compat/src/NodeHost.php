@@ -78,6 +78,8 @@ final class NodeHost
             ProcessBuiltins::entries(),
             FileSystem::entries(),
             TimerQueue::entries(),
+            MathExtras::entries(),
+            CollectionBuiltins::entries(),
         ));
     }
 
@@ -151,6 +153,13 @@ final class NodeHost
         foreach (TimerQueue::globals($realm) as $name => $fn) {
             $global->defineOwnData($name, $fn, $flags);
         }
+
+        // Natives first: the polyfill file only defines what is missing, so
+        // installing here makes the JS versions a fallback rather than a
+        // competitor. Math.clz32 alone is 20% of a React 19 render when it is
+        // interpreted (docs/aot-php.md §2).
+        MathExtras::install($realm, $this->engine->vm);
+        CollectionBuiltins::install($realm);
 
         $this->engine->evaluate(file_get_contents(__DIR__ . '/../js/polyfills.js'));
     }

@@ -19,6 +19,7 @@ $options = [
     'method' => 'renderToStaticMarkup',
     'print' => false,
     'compare' => false,
+    'react' => '17',
 ];
 for ($i = 1; $i < $argc; $i++) {
     switch ($argv[$i]) {
@@ -37,6 +38,9 @@ for ($i = 1; $i < $argc; $i++) {
         case '--compare-node':
             $options['compare'] = true;
             break;
+        case '--react':
+            $options['react'] = $argv[++$i];
+            break;
         case '--help':
             fwrite(STDOUT, <<<TXT
             Usage: react-ssr-bench [options]
@@ -45,6 +49,7 @@ for ($i = 1; $i < $argc; $i++) {
               --method NAME     renderToStaticMarkup | renderToString
               --print           write the rendered HTML to stdout
               --compare-node    also render under Node and diff the two outputs
+              --react 17|19     which React fixture to render (default 17)
 
             TXT);
             exit(0);
@@ -54,7 +59,15 @@ for ($i = 1; $i < $argc; $i++) {
     }
 }
 
-$bench = new Benchmark(dirname(__DIR__));
+$appRoot = $options['react'] === '17'
+    ? dirname(__DIR__)
+    : dirname(__DIR__) . '/apps/react' . $options['react'];
+if (!is_dir($appRoot . '/node_modules/react')) {
+    fwrite(STDERR, "No React fixture at $appRoot -- run `npm install` there first.\n");
+    exit(2);
+}
+
+$bench = new Benchmark($appRoot);
 
 try {
     $bench->boot();
@@ -72,7 +85,7 @@ try {
     }
 
     if ($options['compare']) {
-        $node = Benchmark::renderWithNode(dirname(__DIR__), $options['items'], $options['method']);
+        $node = Benchmark::renderWithNode($appRoot, $options['items'], $options['method']);
         if ($node === null) {
             fwrite(STDERR, "compare: node is not available, skipping\n");
         } elseif ($node === $html) {

@@ -1,0 +1,9 @@
+{
+  "name": "phpjs-react19-ssr-fixture",
+  "private": true,
+  "description": "React 19 SSR fixture for the php-js benchmark",
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

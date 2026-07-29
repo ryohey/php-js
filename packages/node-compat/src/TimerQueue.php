@@ -36,6 +36,7 @@ final class TimerQueue
             'node.timers.setInterval' => [self::class, 'setIntervalNative'],
             'node.timers.setImmediate' => [self::class, 'setImmediateNative'],
             'node.timers.clear' => [self::class, 'clearNative'],
+            'node.queueMicrotask' => [self::class, 'queueMicrotaskNative'],
         ];
     }
 
@@ -49,7 +50,21 @@ final class TimerQueue
             'clearTimeout' => $realm->nativeFn('node.timers.clear', 'clearTimeout', 1),
             'clearInterval' => $realm->nativeFn('node.timers.clear', 'clearInterval', 1),
             'clearImmediate' => $realm->nativeFn('node.timers.clear', 'clearImmediate', 1),
+            // Not a timer, but it belongs to the same "when does this run"
+            // surface: queueMicrotask goes straight onto the realm's job queue
+            // (DESIGN.md §9), ahead of any due timer.
+            'queueMicrotask' => $realm->nativeFn('node.queueMicrotask', 'queueMicrotask', 1),
         ];
+    }
+
+    public static function queueMicrotaskNative(Vm $vm, mixed $t, array $args): mixed
+    {
+        $fn = $args[0] ?? null;
+        if (!$fn instanceof JSFunctionBase) {
+            $vm->throwError('TypeError', 'queueMicrotask requires a function');
+        }
+        $vm->realm->enqueueMicrotask($fn, []);
+        return JSUndefined::$undefined;
     }
 
     public function add(mixed $fn, float $delayMs, array $args, ?float $interval): int

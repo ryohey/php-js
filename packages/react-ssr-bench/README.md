@@ -4,13 +4,17 @@ Renders a React app server-side on the [php-js](../..) runtime, using React's
 own published CommonJS build loaded through
 [node-compat](../node-compat) — no bundler, no pre-baked snapshot.
 
+Two fixtures: **React 17** at the package root and **React 19** under
+`apps/react19/`, each with its own `node_modules`. Pick one with `--react`.
+
 The point is twofold: prove the runtime can carry a real dependency graph, and
 give the performance question a number instead of an opinion.
 
 ## Running it
 
 ```console
-$ npm install                    # fetches react + react-dom into node_modules
+$ npm install                    # fetches react 17 into node_modules
+$ npm install --prefix apps/react19   # and react 19 into its own
 $ composer install
 $ php bin/react-ssr-bench --items 20 --iterations 25 --compare-node
 boot: 172.5 ms (7 modules, 155.9 ms compiling), react 17.0.2
@@ -29,6 +33,7 @@ render: 70.84 ms each (14.1/s over 25 iterations), 5492 bytes of HTML
 | `--method NAME` | `renderToStaticMarkup` (default) or `renderToString` |
 | `--print` | write the HTML to stdout |
 | `--compare-node` | render the same app under Node and diff the output |
+| `--react 17\|19` | which React fixture to render (default 17) |
 
 `--compare-node` is the correctness check that matters: the assertion is
 byte-identical output, not merely "looks like HTML". `tests/ReactSsrTest.php`
@@ -39,18 +44,20 @@ runs the same comparison under PHPUnit.
 `renderToStaticMarkup`, PHP 8.4.19 vs Node 22.22.2, all measured in one
 sitting so the columns are comparable:
 
-| Rows | php-js | php-js + JIT | Node 22 | ratio (JIT) |
+| Fixture | Rows | php-js | Node 22 | ratio |
 |---|---|---|---|---|
-| 20 | 88.2 ms | 70.8 ms | 1.34 ms | 53x |
-| 100 | 442 ms | 368 ms | 5.14 ms | 72x |
+| React 17 | 20 | 95.0 ms | 1.34 ms | 71x |
+| React 19 | 20 | 91.7 ms | 2.09 ms | 44x |
+
+React 19 renders in about the same time as React 17 here only because the
+native library work below applies to it; before that it was 130 ms. Adding
+`-d opcache.jit=tracing` takes a further ~20% off either.
+
+Numbers move 20% between sittings on shared hardware — the ratio is the durable
+part, and version-to-version comparisons need interleaved paired runs.
 
 Output is byte-identical in every case. Boot is a further ~170 ms, of which
 ~156 ms is compiling React — a cost the bytecode-file path removes entirely.
-
-Absolute numbers move by 20% or more between machines, so treat the ratio as
-the number and re-measure the rest locally. Comparing two versions of the
-runtime needs interleaved paired runs; a batch of "before" followed by a batch
-of "after" will happily report a 5% change that is entirely drift.
 
 **Turn the JIT on.** `-d opcache.jit=tracing -d opcache.jit_buffer_size=64M`
 is worth ~20% here and costs nothing but configuration. It is off by default
@@ -58,18 +65,26 @@ in PHP, which makes it the cheapest thing on this list.
 
 ### Where the time goes
 
-Not where it looked. One render executes ~188k bytecode instructions and makes
-only ~4000 native calls, so it is interpretation rather than the builtins — but
-it is not raw dispatch either. Fusing the four hottest opcode pairs
-(DESIGN.md §2.4) removed 13% of the instructions and bought about 4% of the
-time, because the instructions it removes are the cheap ones. A per-opcode
-profile puts a third of the render in `CALL`, `GET_METHOD` and property
-lookups, each around ten times the cost of a cheap opcode. `CALL` is the
-largest single item at 15% of the time for 3.9% of the instructions.
+Not where it looked, twice over.
+
+It is interpretation rather than the builtins — one render executes ~188k
+bytecode instructions and makes only ~4000 native calls — but it is not raw
+dispatch either. Fusing the four hottest opcode pairs (DESIGN.md §2.4) removed
+13% of the instructions and bought about 4% of the time, because the
+instructions it removes are the cheap ones. A per-opcode profile puts a third
+of the render in `CALL`, `GET_METHOD` and property lookups, each around ten
+times the cost of a cheap opcode.
+
+The bigger surprise came from profiling by *JS function* instead of by opcode:
+a render runs only 36 (React 17) to 73 (React 19) distinct functions, and a
+quarter of React 19's was `node-compat`'s own JS shims — `Math.clz32` alone was
+20%, as a polyfill that shifts one bit at a time. Reimplementing those natively
+cut React 19 by 30%. **Profile by function before touching the VM.**
 
 The corollary is that plausible micro-optimizations lose about as often as they
 win: replacing the current frame's PHP reference with indexed writes measured
 slower, and so did fusing `GET_LOCAL`+`CALL`. Measure one at a time.
+`docs/aot-php.md` carries the current picture and the plan.
 
 ## Reading the numbers
 
