@@ -9,8 +9,9 @@ constrain most of what follows.
 Where it stands: native library substitution took React 19 down 30% (§6 phase
 0). The transpiler now exists (`packages/php-transpile`), compiles **219 of
 291** React functions to PHP with byte-identical output, and takes another
-**16.6%** off a render. It does *not* hit the speed the hand-written pricing
-experiment predicted — §9 has the honest accounting and what it means.
+**16.7%** off a render without PHP's JIT — but only **4.2%** with it. It does
+not hit the speed the hand-written pricing predicted (§9), and the JIT result
+(§11) questions how much further it is worth pushing.
 
 The goal is a Next.js-SSG-equivalent: render React trees to static HTML at build
 time, in PHP. Build time only, closed input, no untrusted JS.
@@ -296,8 +297,9 @@ does that and refuses what it cannot handle.
 
 *Achieved:* runs unattended over React 19 (219/291 functions, 75% by the CLI's
 count over the two source files), renders byte-identically to the interpreted
-run for both render methods, and takes **16.6% off a render** (7/7 paired).
-test262 unchanged, all suites green.
+run for both render methods, and takes **16.7% off a render** (9/9 paired)
+without the JIT — but only **4.2%** with it, which §11 argues is the finding
+that matters most. test262 unchanged, all suites green.
 
 *Missed:* generated PHP is **3.5-8x the cost of the hand-written native**, not
 the ~2x the exit criterion asked for. §9 explains why, and it is not a
@@ -340,10 +342,15 @@ Then the fixed overhead from §9: every operator is a static call today. Fusing
 common shapes (a comparison feeding an `if`, a property read feeding a call)
 is the same idea as the bytecode peephole pass and should transfer.
 
-**Phase 3 — preload wiring.**
-`opcache.preload` for the generated set, `opcache_compile_file()` warmup as a
-fallback. Measure with and without; the draft's per-file `stat()` concern is
-real only when preload is not used.
+**Phase 3 — opcache wiring. → DONE for the file path; preload untested.**
+`NodeIntegration::forBuild()` emits, `writePhp()` writes, `Artifact::register()`
+`require`s, and `NodeIntegration::forRun()` stamps the IDs without recompiling.
+Native IDs are derived from the module's *contents*, so a build and a later run
+agree, and an upgraded dependency stops matching its stale natives instead of
+binding them to the wrong functions. Confirmed with `opcache_get_status()`:
+966 KB of generated code resident in shared memory.
+
+Two results, one expected and one not — see §11.
 
 **Phase 4 — subtree islands, only if earned.**
 Implement post-order convertibility tagging only if phase 2 produced a hot
@@ -507,6 +514,42 @@ be PHP bools skip `Conversions::toBoolean` (including across the temporaries
 that `&&` chains create), and property reads go through an `Ops::getProp` fast
 path. Together they were worth almost nothing on `createElement` — which is how
 the property-copy loop was identified as the real cost.
+
+## 11. opcache, and what the JIT does to the whole argument
+
+The phase 1 measurement was taken with `eval`'d code, which opcache never
+caches. Replacing that with a built file changes two things and, more
+importantly, exposes one:
+
+**Boot.** `eval` costs 280-450 ms more than `require` for the same 310 KB of
+generated PHP, because every process re-compiles it. The file path is the only
+deployable one; `eval` stays as a convenience for tests.
+
+**Render — unchanged.** 74.5 ms (eval) vs 74.8 ms (file). Once compiled,
+opcodes are opcodes.
+
+**And then the JIT eats most of the win.** Paired runs, 9 pairs each,
+React 19 / 20 rows:
+
+| | bytecode | AOT (file) | AOT gain |
+|---|---|---|---|
+| opcache, no JIT | 86.9 ms | 71.4 ms | **−16.7%** (9/9) |
+| opcache + tracing JIT | 71.1 ms | 66.9 ms | **−4.2%** (8/9) |
+
+The dispatch loop is a hot, type-stable `while`/`switch` — precisely what a
+tracing JIT is good at. JIT-ing the interpreter recovers most of what compiling
+JavaScript to PHP was providing, so the two are largely **substitutes, not
+complements**: JIT alone is worth about as much as AOT alone, and doing both
+gets 23% off the un-JIT-ed baseline rather than the ~34% they would give if
+they stacked.
+
+That is the most consequential thing measured in this whole effort, and it
+reframes phase 2. Closing the `switch`/`try` refusals would convert more
+functions, but the ceiling it is climbing toward is roughly 4-8%, not 17%, on
+any deployment that has the JIT on — and turning the JIT on is one line of
+configuration against a compiler package. The case for continuing rests on
+whether the fixed overhead in §9 can be cut far enough that AOT beats a JIT-ed
+interpreter rather than tying it.
 
 ## 10. What this can and cannot achieve
 

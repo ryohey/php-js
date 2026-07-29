@@ -60,8 +60,16 @@ final class Artifact
         if (!is_array($entries)) {
             throw new \RuntimeException("$path did not return an array of natives");
         }
-        BuiltinRegistry::registerHost($entries);
-        return count($entries);
+        // Loading the same build twice in one process is not an error; the
+        // second copy is the same generated code under a content-derived ID.
+        $fresh = [];
+        foreach ($entries as $id => $fn) {
+            if (!BuiltinRegistry::hasHost($id)) {
+                $fresh[$id] = $fn;
+            }
+        }
+        BuiltinRegistry::registerHost($fresh);
+        return count($fresh);
     }
 
     /** Register in-memory, for tests and for callers that do not want a file. */

@@ -45,10 +45,31 @@ $app = $host->requireModule('./js/app.js');
 printf("%d / %d functions\n", $aot->totalConverted(), $aot->totalSeen());
 ```
 
-`NodeIntegration` compiles and registers in-process, which is what the tests
-and benchmarks use. A production build should write the PHP to disk with
-`Artifact::writePhp()` and load it through `opcache.preload` — `eval`'d code is
-never cached by opcache, which is the entire deployment argument.
+That is build mode: it compiles and registers in-process via `eval`, which is
+convenient for tests but costs 280-450 ms of boot per process and is never
+cached by opcache. The deployable shape is a build step and a run step:
+
+```php
+// build.php -- once, at deploy time
+$aot = NodeIntegration::forBuild($accept);
+$aot->attach($host);
+$host->requireModule('./js/app.js');
+$aot->writePhp('build/react.aot.php');
+
+// runtime
+Artifact::register('build/react.aot.php');   // opcache holds this
+$aot = NodeIntegration::forRun($accept);     // stamps IDs, compiles nothing
+$aot->attach($host);
+```
+
+Native IDs are derived from each module's contents, so the two agree, and an
+upgraded dependency stops matching its stale natives rather than binding them
+to the wrong functions.
+
+**Read [docs/aot-php.md §11](../../docs/aot-php.md) before deploying this.**
+PHP's tracing JIT speeds up the interpreter's dispatch loop by about as much as
+this package speeds up React, so the two are largely substitutes: 17% without
+the JIT, 4% with it.
 
 ## Coverage
 

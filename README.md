@@ -112,7 +112,8 @@ are worth knowing before measuring anything yourself:
 - **Precompile.** Boot is dominated by compiling JS, which `phpjs compile` plus
   a warm opcache removes entirely.
 - **Compile the hot library ahead of time.** `php-transpile` turns most of
-  React into PHP and is worth a further ~17% on a render.
+  React into PHP, worth ~17% on a render — though only ~4% once the JIT is on,
+  since the two largely substitute for each other.
 
 `packages/react-ssr-bench/README.md` has the numbers and a per-opcode
 breakdown of where the remaining time goes; `docs/aot-php.md` covers the

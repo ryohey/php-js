@@ -37,16 +37,30 @@ final class NodeIntegration
 
     /** @var array<string, Expr\Closure> */
     private array $emitted = [];
-    private static int $instance = 0;
-    private readonly string $prefix;
 
     public function __construct(
         /** Return true for modules that should be compiled ahead of time. */
         private readonly \Closure $accept,
+        /**
+         * Build mode emits PHP and registers it in-process. Run mode only
+         * stamps the IDs on the templates and expects the natives to have been
+         * loaded from a generated file already — that is the deployable shape,
+         * because opcache caches files and never caches eval'd code.
+         */
+        private readonly bool $emit = true,
     ) {
-        // Native IDs are process-wide; two hosts in one process must not
-        // collide over the same module path.
-        $this->prefix = 'aot' . (++self::$instance);
+    }
+
+    /** Compiles and registers in-process; for tests and one-shot scripts. */
+    public static function forBuild(\Closure $accept): self
+    {
+        return new self($accept, true);
+    }
+
+    /** Stamps IDs only; pair with Artifact::register() of a built file. */
+    public static function forRun(\Closure $accept): self
+    {
+        return new self($accept, false);
     }
 
     /** Compile every module whose path the filter accepts. */
@@ -59,18 +73,31 @@ final class NodeIntegration
             $counter = 0;
             $this->seen[$path] = 0;
             $this->converted[$path] = 0;
-            return function (object $node, Ctx $ctx, bool $isProgram) use ($path, &$counter): ?string {
+            // Derived from the module's *contents*, so a build and a later run
+            // agree, and an upgraded dependency simply stops matching its stale
+            // natives instead of binding them to the wrong functions.
+            $moduleKey = hash('xxh128', (string)@file_get_contents($path));
+            return function (object $node, Ctx $ctx, bool $isProgram) use ($path, $moduleKey, &$counter): ?string {
                 if ($isProgram) {
                     return null;
                 }
                 $this->seen[$path]++;
                 $id = sprintf(
-                    '%s:%s#%d%s',
-                    $this->prefix,
-                    hash('xxh128', $path),
+                    'aot:%s#%d%s',
+                    $moduleKey,
                     $counter++,
                     $ctx->name !== '' ? ':' . preg_replace('/[^A-Za-z0-9_$]/', '', $ctx->name) : ''
                 );
+                if (!$this->emit) {
+                    // Run mode: the native either came from the generated file
+                    // or it did not, and JSFunction falls back to bytecode when
+                    // it did not. Nothing to compile here.
+                    if (!BuiltinRegistry::hasHost($id)) {
+                        return null;
+                    }
+                    $this->converted[$path]++;
+                    return $id;
+                }
                 $t = microtime(true);
                 try {
                     $closure = (new FunctionEmitter($ctx))->emit($node);
@@ -84,7 +111,12 @@ final class NodeIntegration
                 $this->converted[$path]++;
                 // Register eagerly: the template is instantiated as soon as the
                 // module runs, and JSFunction resolves its native at that point.
-                BuiltinRegistry::registerHost([$id => $this->materialize($id, $closure)]);
+                // IDs are content-derived, so a second build of the same module
+                // in one process would produce the same code -- reuse it rather
+                // than treating it as a conflict.
+                if (!BuiltinRegistry::hasHost($id)) {
+                    BuiltinRegistry::registerHost([$id => $this->materialize($id, $closure)]);
+                }
                 return $id;
             };
         };
@@ -113,6 +145,17 @@ final class NodeIntegration
     public function totalSeen(): int
     {
         return array_sum($this->seen);
+    }
+
+    /** Write the generated corpus where opcache can hold it; returns the path. */
+    public function writePhp(string $path): string
+    {
+        $dir = dirname($path);
+        if (!is_dir($dir) && !mkdir($dir, 0o777, true) && !is_dir($dir)) {
+            throw new \RuntimeException("Cannot create $dir");
+        }
+        file_put_contents($path, $this->php());
+        return $path;
     }
 
     /** The whole generated corpus as one loadable PHP file. */
