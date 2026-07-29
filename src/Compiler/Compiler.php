@@ -380,6 +380,7 @@ final class Compiler
                     $b = new Binding($ctx, $param->getName(), 'catch');
                     $ctx->extraBindings[] = $b;
                     $this->catchBind[$handler] = $b;
+                    $ctx->catchBindings[$handler] = $b;
                     $this->lexStack[] = ['ctx' => $ctx, 'names' => [$param->getName() => $b]];
                     $this->analyzeNode($handler->getBody(), $ctx);
                     array_pop($this->lexStack);

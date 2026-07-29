@@ -54,8 +54,23 @@ final class FunctionEmitter
     private array $stmts = [];
     private int $tempSeq = 0;
     private bool $strict;
-    /** Nesting depth of loops, for break/continue. */
-    private int $loopDepth = 0;
+    /**
+     * PHP-level breakable constructs currently open, innermost last: 'loop' for
+     * a JS loop, 'switch' for the do-while a switch lowers to. JS `break`
+     * targets the innermost of either, which is what PHP's bare `break` does —
+     * but JS `continue` targets the innermost *loop*, so it has to count past
+     * any switches in between.
+     * @var list<'loop'|'switch'>
+     */
+    private array $breakables = [];
+    /**
+     * Catch parameters currently in scope, innermost last. They are block
+     * scoped, so they cannot live in the Ctx chain the way everything else
+     * does; the emitter knows when it is inside a catch body and nothing else
+     * needs to.
+     * @var list<array{name: string, binding: \PhpJs\Compiler\Binding}>
+     */
+    private array $catchScope = [];
     /**
      * Expressions this emitter knows produce a PHP bool. Not type inference on
      * the JS program — a static fact about our own output, which lets `if`
@@ -314,23 +329,26 @@ final class FunctionEmitter
             case 'ForInStatement':
                 $this->forInLoop($node);
                 return;
+            case 'SwitchStatement':
+                $this->switchStmt($node);
+                return;
+            case 'TryStatement':
+                $this->tryStmt($node);
+                return;
             case 'BreakStatement':
                 if ($node->getLabel() !== null) {
                     throw new Unsupported('labelled break');
                 }
-                if ($this->loopDepth === 0) {
-                    throw new Unsupported('break outside a loop (switch is not supported)');
+                if ($this->breakables === []) {
+                    throw new Unsupported('break outside a loop or switch');
                 }
-                $this->stmts[] = new Stmt\Break_();
+                $this->stmts[] = new Stmt\Break_(new \PhpParser\Node\Scalar\Int_($this->breakLevel()));
                 return;
             case 'ContinueStatement':
                 if ($node->getLabel() !== null) {
                     throw new Unsupported('labelled continue');
                 }
-                if ($this->loopDepth === 0) {
-                    throw new Unsupported('continue outside a loop');
-                }
-                $this->stmts[] = new Stmt\Continue_();
+                $this->stmts[] = $this->continueStmt();
                 return;
             case 'FunctionDeclaration':
                 throw new Unsupported('nested function declaration');
@@ -346,23 +364,23 @@ final class FunctionEmitter
      */
     private function whileLoop(object $node): void
     {
-        $this->loopDepth++;
+        $this->breakables[] = 'loop';
         $body = $this->block(function () use ($node) {
             $this->breakUnless($node->getTest());
             $this->stmt($node->getBody());
         });
-        $this->loopDepth--;
+        array_pop($this->breakables);
         $this->stmts[] = new Stmt\While_($this->b->val(true), $body);
     }
 
     private function doWhileLoop(object $node): void
     {
-        $this->loopDepth++;
+        $this->breakables[] = 'loop';
         $body = $this->block(function () use ($node) {
             $this->stmt($node->getBody());
             $this->breakUnless($node->getTest());
         });
-        $this->loopDepth--;
+        array_pop($this->breakables);
         $this->stmts[] = new Stmt\While_($this->b->val(true), $body);
     }
 
@@ -376,23 +394,31 @@ final class FunctionEmitter
                 $this->stmts[] = new Stmt\Expression($this->expr($init));
             }
         }
-        $this->loopDepth++;
-        $body = $this->block(function () use ($node) {
+        // The update lives at the end of the body rather than in a PHP for
+        // header, because the test may need statements of its own. That makes
+        // `continue` dangerous, so when the body has one the body gets a
+        // do-while wrapper and `continue` becomes a break of it -- landing on
+        // the update instead of skipping it.
+        $wrap = $node->getUpdate() !== null && $this->containsContinue($node->getBody());
+
+        $this->breakables[] = 'loop';
+        $body = $this->block(function () use ($node, $wrap) {
             if ($node->getTest() !== null) {
                 $this->breakUnless($node->getTest());
             }
-            $this->stmt($node->getBody());
+            if ($wrap) {
+                $this->breakables[] = 'continueWrap';
+                $inner = $this->block(fn () => $this->stmt($node->getBody()));
+                array_pop($this->breakables);
+                $this->stmts[] = new Stmt\Do_($this->b->val(false), $inner);
+            } else {
+                $this->stmt($node->getBody());
+            }
             if ($node->getUpdate() !== null) {
                 $this->stmts[] = new Stmt\Expression($this->expr($node->getUpdate()));
             }
         });
-        $this->loopDepth--;
-        // `continue` must still run the update, so the update is appended to
-        // the body rather than living in a PHP for-header. A `continue` inside
-        // would therefore skip it -- refuse that combination.
-        if ($node->getUpdate() !== null && $this->containsContinue($node->getBody())) {
-            throw new Unsupported('continue inside a for loop with an update expression');
-        }
+        array_pop($this->breakables);
         $this->stmts[] = new Stmt\While_($this->b->val(true), $body);
     }
 
@@ -431,7 +457,7 @@ final class FunctionEmitter
         );
         $k = $this->temp();
 
-        $this->loopDepth++;
+        $this->breakables[] = 'loop';
         $body = $this->block(function () use ($node, $target, $obj, $k, $guarded) {
             if (!$guarded) {
                 // A property deleted mid-iteration is skipped, as in the VM.
@@ -443,7 +469,7 @@ final class FunctionEmitter
             $this->stmts[] = new Stmt\Expression($this->store($target->getName(), $k));
             $this->stmt($node->getBody());
         });
-        $this->loopDepth--;
+        array_pop($this->breakables);
         $this->stmts[] = new Stmt\Foreach_($keys, $k, ['stmts' => $body]);
     }
 
@@ -535,6 +561,167 @@ final class FunctionEmitter
         }
     }
 
+    /**
+     * PHP level for a JS `break`: the innermost loop or switch, counting past
+     * any continue-wrapper in between (a wrapper is not a JS breakable).
+     */
+    private function breakLevel(): int
+    {
+        for ($i = count($this->breakables) - 1, $n = 1; $i >= 0; $i--, $n++) {
+            if ($this->breakables[$i] !== 'continueWrap') {
+                return $n;
+            }
+        }
+        throw new Unsupported('break outside a loop or switch');
+    }
+
+    /**
+     * PHP statement for a JS `continue`.
+     *
+     * A `for` loop with an update runs that update at the end of the body, so
+     * `continue` cannot be a PHP `continue` — it would skip it and spin
+     * forever. The body is wrapped in a `do { } while (false)` and `continue`
+     * becomes a `break` of that wrapper, landing exactly on the update. Any
+     * switch in between just adds a level.
+     */
+    private function continueStmt(): Stmt
+    {
+        for ($i = count($this->breakables) - 1, $n = 1; $i >= 0; $i--, $n++) {
+            if ($this->breakables[$i] === 'continueWrap') {
+                return new Stmt\Break_(new \PhpParser\Node\Scalar\Int_($n));
+            }
+            if ($this->breakables[$i] === 'loop') {
+                return new Stmt\Continue_(new \PhpParser\Node\Scalar\Int_($n));
+            }
+        }
+        throw new Unsupported('continue outside a loop');
+    }
+
+    /**
+     * `switch` as a `do { ... } while (false)`, which gives `break` its meaning
+     * for free.
+     *
+     * PHP's own `switch` compares loosely, so the cases are lowered by hand:
+     * find the matching clause index first, then run every clause from that
+     * index onward. `if ($m <= $i)` per clause is what reproduces fallthrough —
+     * once a clause matches, all later ones run until a `break`.
+     *
+     * Case tests are evaluated in source order and only until one matches,
+     * which the `$m < 0` guard preserves; each test gets its own block so a
+     * test needing statements still works.
+     */
+    private function switchStmt(object $node): void
+    {
+        $cases = $node->getCases();
+        $d = $this->temp();
+        $this->stmts[] = $this->assign($d, $this->expr($node->getDiscriminant()));
+        $m = $this->temp();
+
+        $this->breakables[] = 'switch';
+        $body = $this->block(function () use ($cases, $d, $m) {
+            $this->stmts[] = $this->assign($m, $this->b->val(-1));
+            $defaultIndex = null;
+            foreach ($cases as $i => $case) {
+                $test = $case->getTest();
+                if ($test === null) {
+                    $defaultIndex = $i;
+                    continue;
+                }
+                $probe = $this->block(function () use ($test, $d, $m, $i) {
+                    $this->stmts[] = new Stmt\Expression(new Expr\Assign(
+                        $m,
+                        new Expr\Ternary(
+                            $this->staticCall('TypeOps', 'strictEquals', [$d, $this->expr($test)]),
+                            $this->b->val($i),
+                            $m
+                        )
+                    ));
+                });
+                $this->stmts[] = new Stmt\If_(
+                    new Expr\BinaryOp\Smaller($m, $this->b->val(0)),
+                    ['stmts' => $probe]
+                );
+            }
+            // No case matched: start at `default` if there is one, otherwise
+            // past the end so nothing runs.
+            $this->stmts[] = new Stmt\If_(
+                new Expr\BinaryOp\Smaller($m, $this->b->val(0)),
+                ['stmts' => [$this->assign($m, $this->b->val($defaultIndex ?? count($cases)))]]
+            );
+            foreach ($cases as $i => $case) {
+                $clause = $this->block(function () use ($case) {
+                    foreach ($case->getConsequent() as $stmt) {
+                        $this->stmt($stmt);
+                    }
+                });
+                if ($clause === []) {
+                    continue;
+                }
+                $this->stmts[] = new Stmt\If_(
+                    new Expr\BinaryOp\SmallerOrEqual($m, $this->b->val($i)),
+                    ['stmts' => $clause]
+                );
+            }
+        });
+        array_pop($this->breakables);
+
+        $this->stmts[] = new Stmt\Do_($this->b->val(false), $body);
+    }
+
+    /**
+     * `try` / `catch` / `finally`, straight onto PHP's own.
+     *
+     * A JS exception crossing a native boundary is a `JSThrowSignal`
+     * (DESIGN.md §4.4), which is exactly what generated code is: the catch
+     * clause unwraps its value into the slot the scope analysis assigned to the
+     * catch parameter.
+     */
+    private function tryStmt(object $node): void
+    {
+        $handler = $node->getHandler();
+        $finalizer = $node->getFinalizer();
+        if ($handler === null && $finalizer === null) {
+            throw new Unsupported('try with neither catch nor finally');
+        }
+
+        $tryBody = $this->block(fn () => $this->stmt($node->getBlock()));
+        $catches = [];
+        if ($handler !== null) {
+            $param = $handler->getParam();
+            if ($param === null || $param->getType() !== 'Identifier') {
+                throw new Unsupported('catch without a plain parameter');
+            }
+            $binding = $this->ctx->catchBindings[$handler] ?? null;
+            if ($binding === null) {
+                throw new Unsupported('catch parameter was not assigned a slot');
+            }
+            if ($binding->captured) {
+                throw new Unsupported('catch parameter is captured by a nested function');
+            }
+            $sig = $this->temp();
+            $this->catchScope[] = ['name' => $param->getName(), 'binding' => $binding];
+            $catchBody = $this->block(function () use ($handler, $binding, $sig) {
+                $this->stmts[] = new Stmt\Expression(new Expr\Assign(
+                    $this->local($binding->name),
+                    new Expr\PropertyFetch($sig, 'value')
+                ));
+                $this->stmt($handler->getBody());
+            });
+            array_pop($this->catchScope);
+            $catches[] = new Stmt\Catch_(
+                [new P\Name('\\PhpJs\\Runtime\\JSThrowSignal')],
+                $sig,
+                $catchBody
+            );
+        }
+
+        $this->stmts[] = new Stmt\TryCatch(
+            $tryBody,
+            $catches,
+            $finalizer === null ? null : new Stmt\Finally_($this->block(fn () => $this->stmt($finalizer)))
+        );
+    }
+
     private function breakUnless(object $test): void
     {
         $cond = $this->truthy($this->expr($test));
@@ -558,15 +745,25 @@ final class FunctionEmitter
         if ($type === 'ContinueStatement') {
             return true;
         }
-        // Do not descend into nested loops: their `continue` belongs to them.
-        if (in_array($type, ['ForStatement', 'ForInStatement', 'WhileStatement', 'DoWhileStatement', 'FunctionExpression', 'FunctionDeclaration'], true)) {
+        // A nested loop owns its own `continue`; a nested function is another
+        // program. Everything else has to be searched -- searching by a
+        // whitelist of getters is how a `continue` inside a switch was missed,
+        // which turned a for loop's update into dead code.
+        if (in_array($type, [
+            'ForStatement', 'ForInStatement', 'WhileStatement', 'DoWhileStatement',
+            'FunctionExpression', 'FunctionDeclaration',
+        ], true)) {
             return false;
         }
-        foreach (['getBody', 'getConsequent', 'getAlternate'] as $getter) {
-            if (!method_exists($node, $getter)) {
+        foreach (get_class_methods($node) as $getter) {
+            if (!str_starts_with($getter, 'get') || $getter === 'getType' || $getter === 'getLocation') {
                 continue;
             }
-            $child = $node->$getter();
+            try {
+                $child = $node->$getter();
+            } catch (\Throwable) {
+                continue;
+            }
             if ($child === null) {
                 continue;
             }
@@ -1098,6 +1295,10 @@ final class FunctionEmitter
         if ($name === 'undefined') {
             return $this->undef();
         }
+        $caught = $this->caughtBinding($name);
+        if ($caught !== null) {
+            return $this->local($caught->name);
+        }
         $r = $this->scope->resolve($name);
         return match ($r['kind']) {
             'local' => $this->local($r['name']),
@@ -1108,6 +1309,10 @@ final class FunctionEmitter
 
     private function store(string $name, Expr $value): Expr
     {
+        $caught = $this->caughtBinding($name);
+        if ($caught !== null) {
+            return new Expr\Assign($this->local($caught->name), $value);
+        }
         $r = $this->scope->resolve($name);
         return match ($r['kind']) {
             'local' => new Expr\Assign($this->local($r['name']), $value),
@@ -1129,6 +1334,17 @@ final class FunctionEmitter
             new P\Arg($this->b->val($this->strict)),
         ]));
         return $t;
+    }
+
+    /** The innermost catch parameter with this name, if we are inside its block. */
+    private function caughtBinding(string $name): ?\PhpJs\Compiler\Binding
+    {
+        for ($i = count($this->catchScope) - 1; $i >= 0; $i--) {
+            if ($this->catchScope[$i]['name'] === $name) {
+                return $this->catchScope[$i]['binding'];
+            }
+        }
+        return null;
     }
 
     private function envSlot(int $depth, int $slot): Expr

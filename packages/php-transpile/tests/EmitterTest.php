@@ -177,6 +177,66 @@ final class EmitterTest extends EquivalenceTestCase
             'boom',
             'function f() { throw new Error("boom"); } var r; try { f(); } catch (e) { r = e.message; } r',
         ];
+        // switch
+        yield 'switch matches strictly' => ['num', 'function f(x) { switch (x) { case "1": return "str"; case 1: return "num"; } return "?"; } f(1)'];
+        yield 'switch falls through' => ['12', 'function f(x) { var o = ""; switch (x) { case 1: o += "1"; case 2: o += "2"; break; case 3: o += "3"; } return o; } f(1)'];
+        yield 'switch default in the middle' => ['d2', 'function f(x) { var o = ""; switch (x) { case 1: o += "1"; break; default: o += "d"; case 2: o += "2"; } return o; } f(9)'];
+        yield 'switch with no match and no default' => ['none', 'function f(x) { var o = "none"; switch (x) { case 1: o = "1"; } return o; } f(5)'];
+        // A matching case must stop the evaluation of later case expressions.
+        yield 'switch stops evaluating tests once one matches' => [
+            'a,1',
+            'function f() { var log = []; function t(v) { log.push(v); return v; }'
+            . ' switch ("a") { case t("a"): break; case t("b"): break; } return log.join(",") + "," + log.length; } f()',
+        ];
+        yield 'switch evaluates every test when none matches' => [
+            'a,b,2',
+            'function f() { var log = []; function t(v) { log.push(v); return v; }'
+            . ' switch (1) { case t("a"): break; case t("b"): break; } return log.join(",") + "," + log.length; } f()',
+        ];
+        yield 'continue inside a switch inside a for' => [
+            'd.2.d.',
+            'function f(n) { var o = ""; for (var i = 0; i < n; i++) { switch (i) { case 1: continue; case 2: o += "2"; break; default: o += "d"; } o += "."; } return o; } f(4)',
+        ];
+        yield 'break inside a loop inside a switch' => [
+            '0',
+            'function f(x) { var o = ""; switch (x) { case 1: for (var i = 0; i < 3; i++) { if (i === 1) { break; } o += i; } break; } return o; } f(1)',
+        ];
+        yield 'switch on a string' => ['b', 'function f(x) { switch (x) { case "a": return "a"; case "b": return "b"; } } f("b")'];
+
+        // try / catch / finally
+        yield 'catch receives the thrown value' => [
+            'boom',
+            'function f() { try { throw new Error("boom"); } catch (e) { return e.message; } } f()',
+        ];
+        yield 'finally runs after catch' => [
+            'tcf',
+            'function f() { var o = ""; try { o += "t"; throw 1; } catch (e) { o += "c"; } finally { o += "f"; } return o; } f()',
+        ];
+        yield 'finally runs without a catch' => [
+            'tf',
+            'function f() { var o = ""; try { o += "t"; } finally { o += "f"; } return o; } f()',
+        ];
+        yield 'finally runs before a return leaves' => [
+            'r:f',
+            'function f(log) { try { return "r"; } finally { log.push("f"); } } var l = []; f(l) + ":" + l.join("")',
+        ];
+        yield 'a rethrow reaches the outer catch' => [
+            'ab',
+            'function f() { try { try { throw "a"; } catch (e) { throw e + "b"; } } catch (e2) { return e2; } } f()',
+        ];
+        yield 'the catch parameter shadows an outer name' => [
+            'inner,outer',
+            'var e = "outer"; function f() { var got; try { throw "inner"; } catch (e) { got = e; } return got + "," + e; } f()',
+        ];
+        yield 'a caught native error is a JS error' => [
+            'TypeError',
+            'function f() { try { return null.x; } catch (e) { return e.name; } } f()',
+        ];
+        yield 'try with no throw skips catch' => [
+            'ok',
+            'function f() { try { return "ok"; } catch (e) { return "caught"; } } f()',
+        ];
+
         yield 'closure over a module binding' => [
             10,
             'var base = 7; function f(x) { return base + x; } f(3)',
@@ -196,14 +256,12 @@ final class EmitterTest extends EquivalenceTestCase
     /** @return iterable<string, array{0: string, 1: string}> */
     public static function refusalCases(): iterable
     {
-        yield 'try/catch' => ['TryStatement', 'function f() { try { return 1; } catch (e) { return 2; } }'];
-        yield 'switch' => ['SwitchStatement', 'function f(x) { switch (x) { case 1: return 1; } }'];
         yield 'nested function' => ['nested function', 'function f() { function g() { return 1; } return g(); }'];
         yield 'closure over own local' => ['environment record', 'function f() { var a = 1; return function () { return a; }; }'];
         yield 'labelled break' => ['LabeledStatement', 'function f() { a: for (;;) { break a; } }'];
         yield 'regexp literal' => ['RegExpLiteral', 'function f(s) { return /x/.test(s); }'];
         yield 'getter in an object literal' => ['accessor property', 'function f() { return { get a() { return 1; } }; }'];
-        yield 'computed member increment' => ['statement not supported', 'function f() { do { } while (0); switch (1) {} }'];
+        yield 'with-style dynamic scope' => ['statement not supported', 'function f(o) { debugger; return o; }'];
     }
 
     /** The emitter must refuse cleanly, leaving the function on bytecode. */

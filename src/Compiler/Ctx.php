@@ -23,6 +23,18 @@ final class Ctx
     public ?Binding $selfBinding = null;
     /** @var list<Binding> catch-parameter bindings owned by this function */
     public array $extraBindings = [];
+    /**
+     * CatchClause node -> its parameter binding, for consumers that work from
+     * the AST rather than the bytecode (the ahead-of-time PHP compiler needs
+     * the slot the analysis assigned; see docs/aot-php.md §3).
+     * @var \SplObjectStorage<object, Binding>
+     */
+    public \SplObjectStorage $catchBindings;
+
+    public function __construct()
+    {
+        $this->catchBindings = new \SplObjectStorage();
+    }
     /** @var list<object> FunctionDeclaration nodes hoisted to the prologue */
     public array $fnDecls = [];
     /** @var list<string> program-level var names (global object properties) */

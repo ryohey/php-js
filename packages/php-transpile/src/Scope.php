@@ -56,9 +56,11 @@ final class Scope
     }
 
     /**
-     * Catch parameters live in `extraBindings` and are block-scoped, which the
-     * Ctx chain alone cannot place. A function containing one is refused, so
-     * they never need resolving.
+     * Catch parameters are deliberately absent here: they live in
+     * `extraBindings` and are scoped to their catch block, which the Ctx chain
+     * cannot express. The emitter tracks them itself while it is inside a catch
+     * body, and outside one the name really is not in scope — so falling
+     * through to a global lookup is the correct answer, not a gap.
      */
     private function bindingIn(Ctx $c, string $name): ?Binding
     {
@@ -67,11 +69,6 @@ final class Scope
         }
         if ($c->selfBinding !== null && $c->selfBinding->name === $name) {
             return $c->selfBinding;
-        }
-        foreach ($c->extraBindings as $b) {
-            if ($b->name === $name) {
-                throw new Unsupported("'$name' is a catch parameter");
-            }
         }
         return null;
     }

@@ -96,7 +96,7 @@ Numeric literals are excluded — JS says `1 === 1.0` and PHP does not.
 
 Neither is a name match or a hardcoded pattern for one library: both are proofs
 over the module being compiled, and both refuse when the proof fails. With
-them the numbers become **18% without the JIT and 12-16% with it** — the JIT and
+them the numbers become **48% without the JIT and 39% with it** — the JIT and
 this package stop being substitutes, because what these delete is work the
 program does rather than overhead in how it is run.
 
@@ -108,17 +108,20 @@ See [docs/aot-php.md §10-§11](../../docs/aot-php.md).
 
 ## Coverage
 
-Against React 19's two production sources, 202 of 268 functions compile. What
-it refuses, and why, is the emitter's real specification:
+Against React 19, 252 of 291 functions compile. What it refuses, and why, is
+the emitter's real specification:
 
 | Refusal | Count |
 |---|---|
-| `switch` statement | 28 |
 | the function's own locals are captured | 23 |
-| `try` statement | 15 |
-| nested function expression | 3 |
-| `typeof` on a possibly-undeclared global | 2 |
-| labelled statement | 1 |
+| labelled statement | 6 |
+| nested function expression | 5 |
+| `typeof` on a possibly-undeclared global | 4 |
+| regexp literal | 1 |
+
+The first row is the structural one: such a function has to allocate a `JSEnv`
+and have its nested functions close over it, which means emitting nested
+functions too.
 
 A refusal is a normal outcome — that function keeps running as bytecode.
 

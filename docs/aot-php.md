@@ -7,12 +7,15 @@ actually is and what it actually measures. Read DESIGN.md first; its §2
 constrain most of what follows. Section numbers below are this document's.
 
 Where it stands: native library substitution took React 19 down 30% (§6 phase
-0). The transpiler now exists (`packages/php-transpile`), compiles **219 of
-291** React functions to PHP with byte-identical output, and — once the build
-is allowed to prove things about a pinned library (§10) — takes another
-**18%** off a render, or **12-16%** on top of PHP's tracing JIT. A literal
-translation that assumes nothing manages 16.7% and 4.2%: the difference between
-those two rows is the whole argument, and it is in §9-§11.
+0). The transpiler (`packages/php-transpile`) compiles **252 of 291** React
+functions to PHP with byte-identical output and takes a further **48%** off a
+render, or **39%** on top of PHP's tracing JIT.
+
+Getting there needed two things that are easy to state and were not obvious:
+the build has to be allowed to prove things about a pinned library (§10), and
+the functions worth converting are the ones an emitter finds hardest, not the
+ones it finds easiest (§6 phase 2). A literal translation that assumes nothing,
+converting only the easy functions, was worth 16.7% and 4.2%.
 
 The goal is a Next.js-SSG-equivalent: render React trees to static HTML at build
 time, in PHP. Build time only, closed input, no untrusted JS.
@@ -324,29 +327,59 @@ See §10. Two specializations, both gated behind an explicit `Assumptions` flag
 that is off by default. Worth −3.6% on top of the literal build without the
 JIT, and much more with it (§11).
 
-**Phase 2 — close the refusals, then the fixed overhead.**
-The emitter refuses 72 of React's 291 functions, and the reasons are now
-measured rather than guessed:
+**Phase 2 — `switch` and `try`. → DONE, and it was the whole game.**
+The decision to do these first came from one measurement: with the 219
+functions of phase 1 converted, **essentially all the remaining render time was
+still in interpreted code**. The converted functions had become cheap enough to
+vanish from the profile; the refused ones were the render. And every one of the
+eleven hottest still-interpreted functions was refused for exactly one of two
+reasons — `switch` or `try`. Not one for the closure case.
+
+Both are emitter work. `switch` cannot use PHP's own, which compares loosely,
+so it lowers to a `do { } while (false)` — which gives `break` its meaning for
+free — with the matching clause index found first and `if ($m <= $i)` per
+clause reproducing fallthrough. `try` maps straight onto PHP's, catching the
+`JSThrowSignal` that a JS exception already is at a native boundary.
+
+219 → **252 of 291** functions, and the render:
+
+| | bytecode | AOT, closed build | |
+|---|---|---|---|
+| opcache, no JIT | 60.9 ms | 31.0 ms | **−47.9%** (9/9) |
+| opcache + tracing JIT | 48.3 ms | 28.5 ms | **−38.7%** (9/9) |
+
+Two bugs worth recording, both found by the tests rather than by reading:
+
+- A `continue` inside a `switch` inside a `for` spun forever. The update is
+  emitted at the end of the loop body (the test may need statements, so it
+  cannot live in a PHP `for` header), and PHP `continue` skipped it. The guard
+  that was supposed to refuse this searched the AST through a whitelist of
+  getters, which does not include a switch's cases. The fix is better than the
+  guard: when the body has a `continue`, it is wrapped in `do { } while (false)`
+  and `continue` becomes a `break` of that wrapper — landing exactly on the
+  update. The refusal is gone.
+- The equivalence suite rejected one of its own new expectations. `switch (1)
+  { case t("a"): ... case t("b"): ... }` evaluates *both* tests, because
+  neither matches. Written as an assertion about "stops at the first match" it
+  was simply wrong, and running the same program interpreted said so.
+
+**What is left refused**, and it is now a different shape entirely:
 
 | Refusal | Count |
 |---|---|
-| `switch` statement | 28 |
 | function's own locals are captured (needs an environment record) | 23 |
-| `try` statement | 15 |
-| nested function expression | 3 |
-| `typeof` on a possibly-undeclared global | 2 |
-| labelled statement | 1 |
+| labelled statement | 6 |
+| nested function expression | 5 |
+| `typeof` on a possibly-undeclared global | 4 |
+| regexp literal | 1 |
 
-`switch` and `try` are ordinary emitter work. The environment-record case is
-the structural one: a function whose locals are captured must allocate a
-`JSEnv` and have its nested functions close over it, which means emitting
-nested functions too — that is the same problem as phase 4's islands, arriving
-from a different direction.
-*Exit:* refusals below ~10% of functions, with the remainder characterised.
+The environment-record case is the structural one: such a function must
+allocate a `JSEnv` and have its nested functions close over it, which means
+emitting nested functions too — the same problem as phase 4's islands, reached
+from another direction. It is also, now, most of what is left.
 
-Then the fixed overhead from §9: every operator is a static call today. Fusing
-common shapes (a comparison feeding an `if`, a property read feeding a call)
-is the same idea as the bytecode peephole pass and should transfer.
+*Exit criterion met:* refusals are 13% of functions and the remainder is
+characterised.
 
 **Phase 3 — opcache wiring. → DONE for the file path; preload untested.**
 `NodeIntegration::forBuild()` emits, `writePhp()` writes, `Artifact::register()`
