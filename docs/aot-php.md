@@ -61,9 +61,9 @@ removing the interpreter, not changing the heap — and keeping one heap
 representation is what makes the boundary free (§3 below).
 
 **The scope decision is right, and now measured.** "Transpile library internals,
-not user components" holds: in a 20-row render, user component functions
-(`Row`, `Badge`, `App`, `buildItems`) are under 5% of self time on React 17 and
-below the top 20 on React 19. Everything else is React.
+not user components" holds: in a 20-row render, user component code is under 5%
+of self time on React 17 and about 5% on React 19 (mostly one `.map` callback
+building rows). Everything else is React or this project's own shims.
 
 **React 19 already works, today, unmodified.** The draft treats React 19 support
 as part of the project. It is not:
@@ -110,6 +110,33 @@ from 128 ms to 102 ms with identical output.
 **A 20% win, from two functions, with no new machinery.** That is more than the
 superinstruction pass and the prototype-walk fix combined. It is the thing to do
 before writing a transpiler, and it sets the bar the transpiler has to clear.
+
+And it is not the only one. Attributing every entry in the React 19 profile:
+
+| Origin | Share of render |
+|---|---|
+| `node-compat` JS polyfills | **~27%** |
+| React internals | ~68% |
+| User component code | ~5% |
+
+The polyfill share is `clz32` at 20.5% plus the `Map`/`Set` implementation at
+about 6% (`keyOf` 4.2% and its `_k`/`_entries` accessors 2.0%) — React 19 uses
+`Map` heavily inside the renderer. So **roughly a quarter of a React 19 render
+is this project's own JS shim code**, and phase 0 addresses all of it.
+
+One caveat on a native `Map`/`Set`: §11.3 forbids foreign PHP objects on the JS
+heap, so `SplObjectStorage` is not available. A native implementation is a
+`JSMap extends JSObject` holding plain PHP arrays keyed by an object-id stamp —
+structurally what the polyfill already does, but without the interpreter. The
+win should be large but it is not the near-total elimination `clz32` got.
+
+*Profiler calibration.* These shares come from an interval profiler that adds an
+`hrtime` pair per instruction, which inflates functions made of many cheap
+instructions. The `clz32` ablation is the check: the profile predicted ~26 ms
+once deflated for total instrumentation overhead, and removing it saved 26 ms.
+Attribution is therefore trustworthy to within a few points — but only the
+`clz32` line has been confirmed by ablation, and the ranking below it is a
+hypothesis until each one is likewise replaced and measured.
 
 ## 3. How AOT PHP plugs into this runtime
 
@@ -224,13 +251,14 @@ effect measured so far.
 ## 6. Build order
 
 **Phase 0 — native substitution. No transpiler.**
-Replace the JS polyfills that sit on React's hot path with native PHP in
-`node-compat`: `Math.clz32`, `Math.imul` (measured: −20% on React 19), then
-whatever the profile promotes next — the `Map`/`Set` polyfill shows up at 2% and
-`Object.assign` is a candidate. Add the `crypto` stub. Extend the bench to
-React 19.
-*Exit:* React 19 render improved ≥20%, byte-identical to Node, test262 flat.
-*Cost:* hours.
+Replace the JS polyfills on React's hot path with native PHP in `node-compat`:
+`Math.clz32` and `Math.imul` first (measured: −20% on React 19), then `Map` /
+`Set` (~6%, subject to the §11.3 caveat above). Add the `crypto` stub. Extend
+the bench to React 19, and re-profile afterwards — removing a quarter of the
+render will reshuffle everything below it.
+*Exit:* React 19 render improved ≥25%, byte-identical to Node, test262 flat.
+*Cost:* hours to a day. This phase has no research risk; only the `Map`/`Set`
+size is uncertain.
 
 **Phase 1 — one transpiled function, end to end.**
 Pick the smallest hot pure leaf function (`escapeTextForBrowser`: a char loop
