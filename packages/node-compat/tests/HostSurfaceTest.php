@@ -118,6 +118,38 @@ final class HostSurfaceTest extends TestCase
             'var s = new Set(); s.add(Symbol.for("x")); s.add(Symbol.for("x")); String(s.size)'
         ));
         $this->assertSame('true', $this->eval($host, 'String(new Set([1, 1, 2]).size === 2)'));
+        // Map/Set iteration. Not decoration: TypeScript's own bundle refuses to
+        // load without `"entries" in Map.prototype`, and its downlevelled for-of
+        // loops then drive these through next().
+        $this->assertSame('true', $this->eval($host, "String('entries' in Map.prototype)"));
+        $this->assertSame('a,b', $this->eval(
+            $host,
+            'var m = new Map([["a",1],["b",2]]), it = m.keys(), o = [], r;'
+                . ' while (!(r = it.next()).done) o.push(r.value); o.join(",")'
+        ));
+        $this->assertSame('a=1,b=2', $this->eval(
+            $host,
+            'var m = new Map([["a",1],["b",2]]), it = m.entries(), o = [], r;'
+                . ' while (!(r = it.next()).done) o.push(r.value[0] + "=" + r.value[1]); o.join(",")'
+        ));
+        $this->assertSame('10,20', $this->eval(
+            $host,
+            'var s = new Set([10,20]), it = s.values(), o = [], r;'
+                . ' while (!(r = it.next()).done) o.push(r.value); o.join(",")'
+        ));
+        // An iterator is itself iterable, and a collection is iterable.
+        $this->assertSame('true', $this->eval(
+            $host,
+            'var it = new Map().keys(); String(it[Symbol.iterator]() === it)'
+        ));
+        $this->assertSame('function', $this->eval($host, 'typeof new Map()[Symbol.iterator]'));
+        // Deleting during iteration skips the entry, as forEach does.
+        $this->assertSame('a|c', $this->eval(
+            $host,
+            'var m = new Map([["a",1],["b",2],["c",3]]), it = m.keys();'
+                . ' var first = it.next().value; m.delete("b");'
+                . ' var o = [first], r; while (!(r = it.next()).done) o.push(r.value); o.join("|")'
+        ));
         $this->assertSame('3', $this->eval($host, 'String(new Uint16Array([1, 2, 3]).length)'));
         $this->assertSame('65535', $this->eval($host, 'String(new Uint16Array([-1])[0])'));
         $this->assertSame('abab', $this->eval($host, '"ab".repeat(2)'));

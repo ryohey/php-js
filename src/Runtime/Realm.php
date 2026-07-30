@@ -345,6 +345,16 @@ final class Realm
         return $this->symbolsByKey[$propertyKey] ?? null;
     }
 
+    /**
+     * Prototype for host-provided collection iterators (node-compat's Map and
+     * Set). Kept here because it is realm state and the host has nowhere else
+     * to memoize it.
+     */
+    public function collectionIteratorPrototype(): JSObject
+    {
+        return $this->memo['CollectionIterator.prototype'] ??= new JSObject($this->objectPrototype());
+    }
+
     public function mathObject(): JSObject
     {
         return $this->memo['Math'] ??= MathBuiltins::makeObject($this);

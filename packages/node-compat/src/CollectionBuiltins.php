@@ -53,6 +53,14 @@ final class CollectionBuiltins
             'node.Set.prototype.clear' => [self::class, 'clear'],
             'node.Set.prototype.forEach' => [self::class, 'setForEach'],
             'node.Set.prototype.size' => [self::class, 'size'],
+            'node.Collection.iterator.next' => [self::class, 'iteratorNext'],
+            'node.Collection.iterator.self' => [self::class, 'iteratorSelf'],
+            'node.Map.prototype.keys' => [self::class, 'mapKeys'],
+            'node.Map.prototype.values' => [self::class, 'mapValues'],
+            'node.Map.prototype.entries' => [self::class, 'mapEntries'],
+            'node.Set.prototype.keys' => [self::class, 'setValues'],
+            'node.Set.prototype.values' => [self::class, 'setValues'],
+            'node.Set.prototype.entries' => [self::class, 'setEntries'],
         ];
     }
 
@@ -68,6 +76,17 @@ final class CollectionBuiltins
         $realm->defineMethod($mapProto, 'delete', 'node.Map.prototype.delete', 1);
         $realm->defineMethod($mapProto, 'clear', 'node.Map.prototype.clear', 0);
         $realm->defineMethod($mapProto, 'forEach', 'node.Map.prototype.forEach', 1);
+        // Iteration, which is not decoration: TypeScript's own bundle refuses to
+        // load without `"entries" in Map.prototype`, and its downlevelled for-of
+        // loops then drive these through `next()`.
+        $realm->defineMethod($mapProto, 'keys', 'node.Map.prototype.keys', 0);
+        $realm->defineMethod($mapProto, 'values', 'node.Map.prototype.values', 0);
+        $realm->defineMethod($mapProto, 'entries', 'node.Map.prototype.entries', 0);
+        $mapProto->defineOwnData(
+            $realm->wellKnownSymbol('iterator')->propertyKey,
+            $realm->nativeFn('node.Map.prototype.entries', '[Symbol.iterator]', 0),
+            $flags
+        );
         self::defineSize($realm, $mapProto, 'node.Map.prototype.size');
         $mapCtor = $realm->nativeFn('node.Map.call', 'Map', 0, 'node.Map.ctor');
         $realm->linkPair($mapCtor, $mapProto);
@@ -78,6 +97,14 @@ final class CollectionBuiltins
         $realm->defineMethod($setProto, 'delete', 'node.Set.prototype.delete', 1);
         $realm->defineMethod($setProto, 'clear', 'node.Set.prototype.clear', 0);
         $realm->defineMethod($setProto, 'forEach', 'node.Set.prototype.forEach', 1);
+        $realm->defineMethod($setProto, 'keys', 'node.Set.prototype.keys', 0);
+        $realm->defineMethod($setProto, 'values', 'node.Set.prototype.values', 0);
+        $realm->defineMethod($setProto, 'entries', 'node.Set.prototype.entries', 0);
+        $setProto->defineOwnData(
+            $realm->wellKnownSymbol('iterator')->propertyKey,
+            $realm->nativeFn('node.Set.prototype.values', '[Symbol.iterator]', 0),
+            $flags
+        );
         self::defineSize($realm, $setProto, 'node.Set.prototype.size');
         $setCtor = $realm->nativeFn('node.Set.call', 'Set', 0, 'node.Set.ctor');
         $realm->linkPair($setCtor, $setProto);
@@ -232,6 +259,95 @@ final class CollectionBuiltins
     public static function setForEach(Vm $vm, mixed $t, array $args): mixed
     {
         return self::each($vm, $t, $args, 'Set.prototype.forEach', true);
+    }
+
+    /**
+     * The shared prototype for the iterators, carrying `next` and the
+     * self-returning `[Symbol.iterator]` that makes an iterator iterable.
+     */
+    private static function iteratorPrototype(Realm $realm): JSObject
+    {
+        $proto = $realm->collectionIteratorPrototype();
+        if ($proto->hasOwn('next')) {
+            return $proto;
+        }
+        $realm->defineMethod($proto, 'next', 'node.Collection.iterator.next', 0);
+        $proto->defineOwnData(
+            $realm->wellKnownSymbol('iterator')->propertyKey,
+            $realm->nativeFn('node.Collection.iterator.self', '[Symbol.iterator]', 0),
+            JSObject::W | JSObject::C
+        );
+        return $proto;
+    }
+
+    private static function iterator(Vm $vm, mixed $t, string $kind, string $who): JSCollectionIterator
+    {
+        return new JSCollectionIterator(
+            self::receiver($vm, $t, $who),
+            $kind,
+            self::iteratorPrototype($vm->realm)
+        );
+    }
+
+    public static function mapKeys(Vm $vm, mixed $t, array $args): mixed
+    {
+        return self::iterator($vm, $t, JSCollectionIterator::KEYS, 'Map.prototype.keys');
+    }
+
+    public static function mapValues(Vm $vm, mixed $t, array $args): mixed
+    {
+        return self::iterator($vm, $t, JSCollectionIterator::VALUES, 'Map.prototype.values');
+    }
+
+    public static function mapEntries(Vm $vm, mixed $t, array $args): mixed
+    {
+        return self::iterator($vm, $t, JSCollectionIterator::ENTRIES, 'Map.prototype.entries');
+    }
+
+    /** A Set's keys and values are the same thing. */
+    public static function setValues(Vm $vm, mixed $t, array $args): mixed
+    {
+        return self::iterator($vm, $t, JSCollectionIterator::KEYS, 'Set.prototype.values');
+    }
+
+    /** A Set's entries are [value, value]. */
+    public static function setEntries(Vm $vm, mixed $t, array $args): mixed
+    {
+        return self::iterator($vm, $t, 'setEntries', 'Set.prototype.entries');
+    }
+
+    public static function iteratorSelf(Vm $vm, mixed $t, array $args): mixed
+    {
+        return $t;
+    }
+
+    public static function iteratorNext(Vm $vm, mixed $t, array $args): mixed
+    {
+        if (!$t instanceof JSCollectionIterator) {
+            $vm->throwError('TypeError', 'next called on an incompatible receiver');
+        }
+        $result = $vm->realm->newObject();
+        $list = $t->collection->list;
+        // Past tombstones, and re-reading the list each call so entries added
+        // during iteration are seen -- the same rule forEach follows.
+        while ($t->cursor < count($list) && $list[$t->cursor] === null) {
+            $t->cursor++;
+        }
+        if ($t->cursor >= count($list)) {
+            $result->defineOwnData('value', JSUndefined::$undefined, JSObject::W | JSObject::E | JSObject::C);
+            $result->defineOwnData('done', true, JSObject::W | JSObject::E | JSObject::C);
+            return $result;
+        }
+        [$key, $value] = $list[$t->cursor++];
+        $item = match ($t->kind) {
+            JSCollectionIterator::KEYS => $key,
+            JSCollectionIterator::VALUES => $value,
+            JSCollectionIterator::ENTRIES => $vm->realm->newArray([$key, $value]),
+            default => $vm->realm->newArray([$key, $key]),   // a Set's entries
+        };
+        $result->defineOwnData('value', $item, JSObject::W | JSObject::E | JSObject::C);
+        $result->defineOwnData('done', false, JSObject::W | JSObject::E | JSObject::C);
+        return $result;
     }
 
     private static function each(Vm $vm, mixed $t, array $args, string $who, bool $isSet): mixed
