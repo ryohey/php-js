@@ -29,6 +29,9 @@ final class TypeOps
         if (is_string($v)) {
             return 'string';
         }
+        if ($v instanceof JSSymbol) {
+            return 'symbol';
+        }
         if ($v instanceof JSFunctionBase) {
             return 'function';
         }
@@ -199,6 +202,6 @@ final class TypeOps
         if (!$obj instanceof JSObject) {
             $vm->throwError('TypeError', "Cannot use 'in' operator on non-object");
         }
-        return $obj->hasProperty(Conversions::toString($vm, $key));
+        return $obj->hasProperty($vm->propertyKey($key));
     }
 }

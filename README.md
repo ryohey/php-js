@@ -43,7 +43,8 @@ The core language works end to end:
   limit
 - **Values**: unboxed — JS number → PHP `int|float` (int only where a double is
   exact), string → PHP `string` (UTF-8 storage, UTF-16 semantics on demand),
-  only `undefined` is a sentinel
+  only `undefined` is a sentinel. `Symbol` is a real primitive (`typeof` answers
+  `"symbol"`), which no polyfill can be and which React's fragments require
 - **Objects**: PHP-array property storage, spec `[[DefineOwnProperty]]`,
   `[[OwnPropertyKeys]]` ordering, array exotic behaviour including sparse
   index attributes, and a mapped `arguments` object
@@ -58,7 +59,8 @@ The core language works end to end:
 
 Known gaps, all tracked in DESIGN.md §15: direct `eval` inherits the caller's
 strict mode but cannot inject bindings into the enclosing scope, `with` is
-unimplemented, `@@species` does not exist in an ES5 realm, and local time is
+unimplemented, the well-known symbols exist but nothing consults them (so
+`@@species` still selects nothing), and local time is
 fixed to UTC. The regexp translator accepts some patterns the spec rejects,
 since PCRE does the parsing. ES6+ syntax is intentionally out of scope —
 downlevel with SWC first.

@@ -22,6 +22,7 @@ final class ObjectBuiltins
             'Object.ctor' => [self::class, 'callCtor'],
             'Object.keys' => [self::class, 'keys'],
             'Object.getOwnPropertyNames' => [self::class, 'getOwnPropertyNames'],
+            'Object.getOwnPropertySymbols' => [self::class, 'getOwnPropertySymbols'],
             'Object.getPrototypeOf' => [self::class, 'getPrototypeOf'],
             'Object.create' => [self::class, 'create'],
             'Object.defineProperty' => [self::class, 'defineProperty'],
@@ -57,7 +58,8 @@ final class ObjectBuiltins
         $ctor = $r->nativeFn('Object', 'Object', 1, 'Object.ctor');
         $r->linkPair($ctor, $r->objectPrototype());
         foreach ([
-            'keys' => 1, 'getOwnPropertyNames' => 1, 'getPrototypeOf' => 1,
+            'keys' => 1, 'getOwnPropertyNames' => 1, 'getOwnPropertySymbols' => 1,
+            'getPrototypeOf' => 1,
             'create' => 2, 'defineProperty' => 3, 'defineProperties' => 2,
             'getOwnPropertyDescriptor' => 2,
             'freeze' => 1, 'isFrozen' => 1, 'seal' => 1, 'isSealed' => 1,
@@ -114,6 +116,23 @@ final class ObjectBuiltins
         return $vm->realm->newArray($o->ownKeys());
     }
 
+    /**
+     * The only way back from a property table's private symbol keys to the
+     * symbols themselves; everything else filters them out (see JSSymbol).
+     */
+    public static function getOwnPropertySymbols(Vm $vm, mixed $t, array $args): mixed
+    {
+        $o = self::coerceObject($vm, $args);
+        $symbols = [];
+        foreach ($o->ownSymbolKeys() as $key) {
+            $symbol = $vm->realm->symbolByKey($key);
+            if ($symbol !== null) {
+                $symbols[] = $symbol;
+            }
+        }
+        return $vm->realm->newArray($symbols);
+    }
+
     public static function getPrototypeOf(Vm $vm, mixed $t, array $args): mixed
     {
         $o = self::coerceObject($vm, $args);
@@ -137,7 +156,7 @@ final class ObjectBuiltins
     public static function defineProperty(Vm $vm, mixed $t, array $args): mixed
     {
         $o = self::requireObject($vm, $args, 'Object.defineProperty');
-        $key = Conversions::toString($vm, (\array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined));
+        $key = $vm->propertyKey(\array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined);
         $desc = (\array_key_exists(2, $args) ? $args[2] : JSUndefined::$undefined);
         self::applyDescriptor($vm, $o, $key, $desc);
         return $o;
@@ -207,7 +226,7 @@ final class ObjectBuiltins
     public static function getOwnPropertyDescriptor(Vm $vm, mixed $t, array $args): mixed
     {
         $o = self::coerceObject($vm, $args);
-        $key = Conversions::toString($vm, (\array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined));
+        $key = $vm->propertyKey(\array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined);
         $d = $o->ownDescriptor($key);
         if ($d === null) {
             return JSUndefined::$undefined;
@@ -313,7 +332,7 @@ final class ObjectBuiltins
 
     public static function hasOwnProperty(Vm $vm, mixed $t, array $args): mixed
     {
-        $key = Conversions::toString($vm, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined));
+        $key = $vm->propertyKey(\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined);
         $o = Conversions::toObject($vm, $t);
         return $o->hasOwn($key);
     }
@@ -335,7 +354,7 @@ final class ObjectBuiltins
 
     public static function propertyIsEnumerable(Vm $vm, mixed $t, array $args): mixed
     {
-        $key = Conversions::toString($vm, (\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined));
+        $key = $vm->propertyKey(\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined);
         $o = Conversions::toObject($vm, $t);
         $d = $o->ownDescriptor($key);
         return $d !== null && ($d[2] & JSObject::E);

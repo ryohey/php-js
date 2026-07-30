@@ -128,23 +128,30 @@ writes.
 ## What ES5 costs you, in practice
 
 The engine targets ES5.1 (plus Promise) and its compiler will not grow ES6+
-syntax support, so the bundle is downlevelled — that part is mechanical. One
-thing is not:
+syntax support, so the bundle is downlevelled — that part is mechanical, and it
+turned out to be the whole cost. Nothing in this demo is written around the
+engine.
 
-**JSX fragments do not work.** React detects a fragment with
-`typeof type === 'symbol'`, and ES5 has no symbol primitive; this host polyfills
-`Symbol` as a branded string, so `<>…</>` reaches the renderer looking like a tag
-name and throws `Invalid tag: @@react.fragment`. Group siblings with a real
-element instead. Nothing else in this demo needed working around.
+That was not true at first. `<></>` failed with `Invalid tag: @@react.fragment`,
+because React brands element types with `Symbol.for("react.fragment")` and its
+renderer tests `typeof type === "string"` *before* identity-comparing against
+those brands — and `Symbol` was polyfilled as a branded string. No amount of
+JavaScript fixes that: `typeof` is a type question. So the engine grew a real
+Symbol primitive (DESIGN.md §3.4) and fragments work.
+
+Worth stating because it is the general shape of the thing: the gaps that matter
+are types and syntax, not library surface. Library surface a polyfill can cover.
 
 ## Numbers from this machine
 
 Not a benchmark — `packages/react-ssr-bench` is the benchmark. These are the
-numbers the demo shows, so you know roughly what to expect.
+numbers the demo shows, so you know roughly what to expect. Absolute values
+drift with the machine by a fair margin; `bin/phpjs-ssg bench` interleaves the
+two engines so the ratio survives that, and the ratio is the durable part.
 
 | | bytecode | ahead-of-time PHP |
 |---|---|---|
-| `/inventory/?items=120` render | ~418 ms | ~168 ms (**−60%**) |
+| `/inventory/?items=120` render | ~400-420 ms | ~145-150 ms (**−64%**) |
 | `/` render | ~12 ms | ~6 ms |
 | boot, warm opcache | ~4-10 ms | ~4-10 ms |
 | boot without a build | ~400 ms | ~400 ms |

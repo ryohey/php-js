@@ -40,8 +40,8 @@ final class Conversions
         if (is_string($v)) {
             return $v !== '';
         }
-        // null, undefined -> false; objects -> true
-        return $v instanceof JSObject;
+        // null, undefined -> false; objects and symbols -> true
+        return $v instanceof JSObject || $v instanceof JSSymbol;
     }
 
     /** 9.3 ToNumber */
@@ -61,6 +61,9 @@ final class Conversions
         }
         if ($v instanceof JSObject) {
             return self::toNumber($vm, self::toPrimitive($vm, $v, 'number'));
+        }
+        if ($v instanceof JSSymbol) {
+            $vm->throwError('TypeError', 'Cannot convert a Symbol value to a number');
         }
         return NAN; // undefined
     }
@@ -145,6 +148,12 @@ final class Conversions
         }
         if ($v instanceof JSObject) {
             return self::toString($vm, self::toPrimitive($vm, $v, 'string'));
+        }
+        if ($v instanceof JSSymbol) {
+            // The spec makes this a TypeError on purpose, so that a symbol used
+            // where a string was meant is a bug rather than a stringified one.
+            // `String(sym)` and `sym.toString()` are the deliberate ways out.
+            $vm->throwError('TypeError', 'Cannot convert a Symbol value to a string');
         }
         return 'undefined';
     }
@@ -300,6 +309,9 @@ final class Conversions
         $realm = $vm->realm;
         if (is_string($v)) {
             return new JSPrimitiveWrapper($v, 'String', $realm->stringPrototype());
+        }
+        if ($v instanceof JSSymbol) {
+            return new JSPrimitiveWrapper($v, 'Symbol', $realm->symbolPrototype());
         }
         if (is_int($v) || is_float($v)) {
             return new JSPrimitiveWrapper($v, 'Number', $realm->numberPrototype());

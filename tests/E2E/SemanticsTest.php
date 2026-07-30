@@ -110,6 +110,88 @@ final class SemanticsTest extends EvalTestCase
             '1000000000000000100',
             'JSON.parse("1000000000000000128").toString()',
         ];
+        // Symbol is a primitive type, which no polyfill can be: `typeof` is the
+        // whole point. React's renderer tests `typeof type === "string"` before
+        // it identity-compares against its element brands, so a symbol that is
+        // really a string makes `<></>` fail with "Invalid tag".
+        yield 'typeof a symbol' => ['symbol', 'typeof Symbol("x")'];
+        yield 'symbols are unique' => [false, 'Symbol("a") === Symbol("a")'];
+        yield 'the registry returns one symbol' => [true, 'Symbol.for("a") === Symbol.for("a")'];
+        yield 'a registry symbol is not a fresh one' => [false, 'Symbol.for("a") === Symbol("a")'];
+        yield 'keyFor on a registered symbol' => ['a', 'Symbol.keyFor(Symbol.for("a"))'];
+        yield 'keyFor on an unregistered symbol' => ['undefined', 'String(Symbol.keyFor(Symbol("a")))'];
+        yield 'a symbol is truthy' => [true, 'Symbol("") ? true : false'];
+        yield 'Symbol is not a constructor' => [
+            'TypeError',
+            'try { new Symbol("x"); "none" } catch (e) { e.constructor.name }',
+        ];
+        // Implicit ToString is a TypeError on purpose; String() is the way out.
+        yield 'a symbol will not concatenate' => [
+            'TypeError',
+            'try { "" + Symbol("x"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'String() describes a symbol' => ['Symbol(hi)', 'String(Symbol("hi"))'];
+        yield 'toString describes a symbol' => ['Symbol(hi)', 'Symbol("hi").toString()'];
+        yield 'description' => ['hi', 'Symbol("hi").description'];
+        yield 'a symbol will not become a number' => [
+            'TypeError',
+            'try { +Symbol("x"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'class of a symbol' => ['[object Symbol]', 'Object.prototype.toString.call(Symbol("x"))'];
+        // Symbol-keyed properties live in the same string-keyed table under a
+        // private key, and every enumeration filters them out (see JSSymbol).
+        yield 'a symbol key round-trips' => [
+            2,
+            'var s = Symbol("k"), o = {}; o[s] = 2; o[s]',
+        ];
+        yield 'two symbols with one description are two keys' => [
+            '1,2',
+            'var a = Symbol("k"), b = Symbol("k"), o = {}; o[a] = 1; o[b] = 2; o[a] + "," + o[b]',
+        ];
+        yield 'a symbol key is invisible to Object.keys' => [
+            '["a"]',
+            'var s = Symbol("k"), o = {a: 1}; o[s] = 2; JSON.stringify(Object.keys(o))',
+        ];
+        yield 'a symbol key is invisible to getOwnPropertyNames' => [
+            '["a"]',
+            'var s = Symbol("k"), o = {a: 1}; o[s] = 2; JSON.stringify(Object.getOwnPropertyNames(o))',
+        ];
+        yield 'a symbol key is invisible to for-in' => [
+            'a',
+            'var s = Symbol("k"), o = {a: 1}; o[s] = 2; var out = []; for (var k in o) out.push(k); out.join(",")',
+        ];
+        yield 'a symbol-keyed value is invisible to JSON' => [
+            '{"a":1}',
+            'var s = Symbol("k"), o = {a: 1}; o[s] = 2; JSON.stringify(o)',
+        ];
+        yield 'getOwnPropertySymbols finds it' => [
+            true,
+            'var s = Symbol("k"), o = {}; o[s] = 1; Object.getOwnPropertySymbols(o)[0] === s',
+        ];
+        yield 'in works with a symbol' => [
+            true,
+            'var s = Symbol("k"), o = {}; o[s] = 1; s in o',
+        ];
+        yield 'hasOwnProperty works with a symbol' => [
+            true,
+            'var s = Symbol("k"), o = {}; o[s] = 1; o.hasOwnProperty(s)',
+        ];
+        yield 'delete works with a symbol' => [
+            0,
+            'var s = Symbol("k"), o = {}; o[s] = 1; delete o[s]; Object.getOwnPropertySymbols(o).length',
+        ];
+        yield 'defineProperty works with a symbol' => [
+            '7,0',
+            'var s = Symbol("k"), o = {};'
+                . ' Object.defineProperty(o, s, {value: 7});'
+                . ' o[s] + "," + Object.keys(o).length',
+        ];
+        yield 'a well-known symbol is a symbol' => ['symbol', 'typeof Symbol.iterator'];
+        // It exists so feature detection works; this is an ES5.1 realm and there
+        // is no iteration protocol behind it, same as @@species (DESIGN.md §15).
+        yield 'a well-known symbol is stable' => [true, 'Symbol.iterator === Symbol.iterator'];
+        yield 'arrays have no iterator' => ['undefined', 'typeof [][Symbol.iterator]'];
+
         yield 'toFixed stays exact' => ['1000000000000000128', '(1000000000000000128).toFixed(0)'];
         // 15.7.4.5 takes |x| first, then picks the *larger* n on a tie: ties go
         // away from zero, not to even. PHP's own sprintf('%F') rounds to even,

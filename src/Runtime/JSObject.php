@@ -351,11 +351,24 @@ class JSObject
      * @param list<string> $keys
      * @return list<string>
      */
+    /**
+     * [[OwnPropertyKeys]] order: integer indices ascending, then the rest in
+     * insertion order.
+     *
+     * Symbol-keyed properties are dropped here, and doing it in this one place
+     * is what keeps `Object.keys`, `for-in`, `JSON.stringify` and
+     * `Object.getOwnPropertyNames` from ever seeing a symbol without any of them
+     * knowing symbols exist (see JSSymbol). `ownSymbolKeys()` is the only way
+     * back to them.
+     */
     protected static function orderKeys(array $keys): array
     {
         $indices = [];
         $strings = [];
         foreach ($keys as $k) {
+            if (JSSymbol::isSymbolKey($k)) {
+                continue;
+            }
             $idx = JSArray::asIndex($k);
             if ($idx !== null) {
                 $indices[] = $idx;
@@ -390,7 +403,7 @@ class JSObject
         return self::orderKeys($keys);
     }
 
-    /** @return list<string> all own keys (including non-enumerable) */
+    /** @return list<string> all own keys (including non-enumerable), names only */
     public function ownKeys(): array
     {
         $this->ensureAllOwn();
@@ -399,5 +412,25 @@ class JSObject
             $keys[] = (string)$k;
         }
         return self::orderKeys($keys);
+    }
+
+    /**
+     * Own symbol-keyed property keys, in insertion order, as the private
+     * strings they are stored under. `Object.getOwnPropertySymbols` maps them
+     * back to symbols through the realm.
+     *
+     * @return list<string>
+     */
+    public function ownSymbolKeys(): array
+    {
+        $this->ensureAllOwn();
+        $keys = [];
+        foreach ($this->props as $k => $_) {
+            $k = (string)$k;
+            if (JSSymbol::isSymbolKey($k)) {
+                $keys[] = $k;
+            }
+        }
+        return $keys;
     }
 }

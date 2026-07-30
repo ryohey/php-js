@@ -21,39 +21,11 @@
   }
 
   // ---- Symbol -------------------------------------------------------------
-  // A registry of unique strings. Enough for the one thing library code
-  // actually needs from Symbol: an unforgeable-ish tag to brand values with
-  // (React's element $$typeof). Not a distinct primitive type.
-  if (typeof global.Symbol !== 'function') {
-    var symbolCounter = 0;
-    var symbolRegistry = {};
-
-    var SymbolPolyfill = function Symbol(description) {
-      var name = '@@Symbol(' + (description === undefined ? '' : description) + ')#' + (++symbolCounter);
-      return name;
-    };
-    SymbolPolyfill['for'] = function (key) {
-      key = String(key);
-      if (!Object.prototype.hasOwnProperty.call(symbolRegistry, key)) {
-        symbolRegistry[key] = '@@' + key;
-      }
-      return symbolRegistry[key];
-    };
-    SymbolPolyfill.keyFor = function (sym) {
-      for (var key in symbolRegistry) {
-        if (symbolRegistry[key] === sym) {
-          return key;
-        }
-      }
-      return undefined;
-    };
-    ['iterator', 'asyncIterator', 'toStringTag', 'hasInstance', 'species', 'toPrimitive'].forEach(
-      function (name) {
-        SymbolPolyfill[name] = '@@' + name;
-      }
-    );
-    def(global, 'Symbol', SymbolPolyfill);
-  }
+  // Nothing to do: Symbol is a primitive type and the engine owns it
+  // (src/Runtime/JSSymbol.php). This file used to fake it with branded strings,
+  // which was enough to brand a value and not enough for anything that asks
+  // `typeof x === 'symbol'` -- React's renderer asks, which is why `<></>` did
+  // not work until the engine grew the type.
 
   // ---- Object -------------------------------------------------------------
   def(Object, 'assign', function assign(target) {
@@ -88,11 +60,6 @@
 
   def(Object, 'entries', function entries(o) {
     return Object.keys(Object(o)).map(function (k) { return [k, o[k]]; });
-  });
-
-  def(Object, 'getOwnPropertySymbols', function getOwnPropertySymbols() {
-    // Symbols are plain strings here, so they are already own property names.
-    return [];
   });
 
   def(Object, 'setPrototypeOf', function setPrototypeOf(obj, proto) {

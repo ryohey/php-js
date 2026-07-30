@@ -1152,7 +1152,7 @@ final class Vm
     public function getMember(mixed $obj, mixed $key): mixed
     {
         if ($obj instanceof JSObject) {
-            return $obj->get($this->toKeyString($key), $this);
+            return $obj->get($this->propertyKey($key), $this);
         }
         if (is_string($obj)) {
             if ($key === 'length') {
@@ -1161,7 +1161,7 @@ final class Vm
             if (is_int($key)) {
                 return StringOps::charAt($obj, $key) ?? JSUndefined::$undefined;
             }
-            $k = $this->toKeyString($key);
+            $k = $this->propertyKey($key);
             if ($k === 'length') {
                 return StringOps::length16($obj);
             }
@@ -1172,10 +1172,13 @@ final class Vm
             return $this->realm->stringPrototype()->get($k, $this, $obj);
         }
         if (is_int($obj) || is_float($obj)) {
-            return $this->realm->numberPrototype()->get($this->toKeyString($key), $this, $obj);
+            return $this->realm->numberPrototype()->get($this->propertyKey($key), $this, $obj);
         }
         if (is_bool($obj)) {
-            return $this->realm->booleanPrototype()->get($this->toKeyString($key), $this, $obj);
+            return $this->realm->booleanPrototype()->get($this->propertyKey($key), $this, $obj);
+        }
+        if ($obj instanceof \PhpJs\Runtime\JSSymbol) {
+            return $this->realm->symbolPrototype()->get($this->propertyKey($key), $this, $obj);
         }
         $desc = is_string($key) || is_int($key) ? " '" . $key . "'" : '';
         $this->throwError('TypeError', 'Cannot read properties of '
@@ -1185,7 +1188,7 @@ final class Vm
     public function setMember(mixed $obj, mixed $key, mixed $value, bool $strict): void
     {
         if ($obj instanceof JSObject) {
-            $obj->set($this->toKeyString($key), $value, $this, $strict);
+            $obj->set($this->propertyKey($key), $value, $this, $strict);
             return;
         }
         if ($obj === null || $obj instanceof JSUndefined) {
@@ -1201,7 +1204,7 @@ final class Vm
     public function deleteMember(mixed $obj, mixed $key, bool $strict): bool
     {
         if ($obj instanceof JSObject) {
-            return $obj->deleteKey($this->toKeyString($key), $this, $strict);
+            return $obj->deleteKey($this->propertyKey($key), $this, $strict);
         }
         if ($obj === null || $obj instanceof JSUndefined) {
             $this->throwError('TypeError', 'Cannot convert ' . ($obj === null ? 'null' : 'undefined') . ' to object');
@@ -1209,13 +1212,25 @@ final class Vm
         return true;
     }
 
-    private function toKeyString(mixed $key): string
+    /**
+     * ToPropertyKey: the single place a JS value becomes a property-table key.
+     *
+     * Symbols are the reason this is public and the reason it is one function.
+     * Property tables are string-keyed PHP arrays (DESIGN.md §5), so each symbol
+     * carries one private string and this is where the substitution happens --
+     * see JSSymbol. Ahead-of-time compiled code calls it through `Ops`, so the
+     * two paths cannot disagree about what a key is.
+     */
+    public function propertyKey(mixed $key): string
     {
         if (is_string($key)) {
             return $key;
         }
         if (is_int($key)) {
             return (string)$key;
+        }
+        if ($key instanceof \PhpJs\Runtime\JSSymbol) {
+            return $key->propertyKey;
         }
         return Conversions::toString($this, $key);
     }

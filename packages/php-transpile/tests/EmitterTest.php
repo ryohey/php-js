@@ -136,6 +136,43 @@ final class EmitterTest extends EquivalenceTestCase
             'function f() { var out = []; L: for (var i = 0; i < 2; i++) { L: for (var j = 0; j < 3; j++) { if (j === 1) { break L; } } out.push(i); } return out.join(","); } f()',
         ];
 
+        // Symbols are a primitive the generated code has to agree with the
+        // interpreter about: `Ops::hasOwn` and `Ops::putOwn` do their own
+        // property-key conversion, and `===` against a literal is lowered to
+        // PHP's own.
+        yield 'a symbol key reads back' => [
+            7,
+            'function f(o, s) { return o[s]; } var s = Symbol("k"), o = {}; o[s] = 7; f(o, s)',
+        ];
+        yield 'a symbol key writes' => [
+            9,
+            'function f(o, s, v) { o[s] = v; return o[s]; } f({}, Symbol("k"), 9)',
+        ];
+        yield 'hasOwnProperty with a symbol' => [
+            true,
+            'var h = Object.prototype.hasOwnProperty; function f(o, s) { return h.call(o, s); }'
+                . ' var s = Symbol("k"), o = {}; o[s] = 1; f(o, s)',
+        ];
+        yield 'symbol identity' => [true, 'function f(a, b) { return a === b; } var s = Symbol("k"); f(s, s)'];
+        yield 'distinct symbols' => [false, 'function f(a, b) { return a === b; } f(Symbol("k"), Symbol("k"))'];
+        yield 'a symbol is never a string' => [false, 'function f(x) { return x === "k"; } f(Symbol("k"))'];
+        yield 'typeof a symbol' => ['symbol', 'function f(x) { return typeof x; } f(Symbol("k"))'];
+        yield 'in with a symbol' => [
+            true,
+            'function f(o, s) { return s in o; } var s = Symbol("k"), o = {}; o[s] = 1; f(o, s)',
+        ];
+        yield 'for-in skips a symbol key' => [
+            'a',
+            'function f(o) { var out = []; for (var k in o) out.push(k); return out.join(","); }'
+                . ' var s = Symbol("k"), o = {a: 1}; o[s] = 2; f(o)',
+        ];
+        // The fresh-object specialization writes straight into the table, so it
+        // has to convert a symbol key the same way [[Set]] would.
+        yield 'a fresh object takes a symbol key' => [
+            '3/0',
+            'function f(s) { var o = {}; o[s] = 3; return o[s] + "/" + Object.keys(o).length; } f(Symbol("k"))',
+        ];
+
         yield 'for-in over own properties' => [
             'a=1;b=2;',
             'function f(o) { var s = ""; for (var k in o) { s = s + k + "=" + o[k] + ";"; } return s; } f({ a: 1, b: 2 })',

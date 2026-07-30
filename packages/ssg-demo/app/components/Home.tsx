@@ -2,16 +2,9 @@ import React from 'react';
 
 import { features } from '../content';
 
-/*
- * No JSX fragment here, and that is a constraint rather than a style choice:
- * React detects a fragment with `typeof type === 'symbol'`, and an ES5 engine
- * has no symbol primitive — this host polyfills Symbol as a branded string, so a
- * fragment arrives at the renderer looking like a tag name. A real element is
- * the ES5-safe way to group siblings.
- */
 export function Home() {
   return (
-    <div className="home">
+    <>
       <section className="hero">
         <h1>JavaScript, executed by PHP</h1>
         <p className="lede">
@@ -36,6 +29,6 @@ export function Home() {
           </article>
         ))}
       </section>
-    </div>
+    </>
   );
 }

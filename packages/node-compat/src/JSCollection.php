@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpJs\Node;
 
 use PhpJs\Runtime\JSObject;
+use PhpJs\Runtime\JSSymbol;
 use PhpJs\Runtime\JSUndefined;
 use PhpJs\Runtime\TypeOps;
 
@@ -75,6 +76,12 @@ final class JSCollection extends JSObject
             // cannot be recycled underneath a live entry.
             self::$objectIdMap ??= new \WeakMap();
             return 'o' . (self::$objectIdMap[$v] ??= ++self::$objectIds);
+        }
+        if ($v instanceof JSSymbol) {
+            // Keyed by the symbol's own unique property key, which is exactly
+            // the identity a Map needs: two symbols with one description are two
+            // keys, and Symbol.for returns one symbol so it is one key.
+            return 's' . $v->propertyKey;
         }
         // Unreachable for the value types in §3, but a wrong key would be a
         // silent lookup failure rather than an error, so be loud about it.

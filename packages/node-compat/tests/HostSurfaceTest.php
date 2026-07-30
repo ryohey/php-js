@@ -93,8 +93,30 @@ final class HostSurfaceTest extends TestCase
     {
         $host = $this->host();
         $this->assertSame('function', $this->eval($host, 'typeof Object.assign'));
-        $this->assertSame('@@react.element', $this->eval($host, 'Symbol.for("react.element")'));
+        // Symbol is the engine's, not this file's: a primitive type, so
+        // `typeof` answers "symbol" and the registry hands back one value.
+        $this->assertSame('symbol', $this->eval($host, 'typeof Symbol.for("react.element")'));
+        $this->assertSame('true', $this->eval(
+            $host,
+            'String(Symbol.for("react.element") === Symbol.for("react.element"))'
+        ));
         $this->assertSame('2', $this->eval($host, 'String(new Map([["a", 2]]).get("a"))'));
+        // A symbol is a valid collection key, and two symbols sharing a
+        // description are two keys. This threw a PHP LogicException until the
+        // hash function learned the type.
+        $this->assertSame('1', $this->eval(
+            $host,
+            'var s = Symbol("a"); var m = new Map(); m.set(s, 1); String(m.get(s))'
+        ));
+        $this->assertSame('2,false', $this->eval(
+            $host,
+            'var a = Symbol("k"), b = Symbol("k"); var m = new Map();'
+                . ' m.set(a, 1); m.set(b, 2); m.size + "," + (m.get(a) === m.get(b))'
+        ));
+        $this->assertSame('1', $this->eval(
+            $host,
+            'var s = new Set(); s.add(Symbol.for("x")); s.add(Symbol.for("x")); String(s.size)'
+        ));
         $this->assertSame('true', $this->eval($host, 'String(new Set([1, 1, 2]).size === 2)'));
         $this->assertSame('3', $this->eval($host, 'String(new Uint16Array([1, 2, 3]).length)'));
         $this->assertSame('65535', $this->eval($host, 'String(new Uint16Array([-1])[0])'));

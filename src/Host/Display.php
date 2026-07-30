@@ -9,6 +9,7 @@ use PhpJs\Runtime\JSArray;
 use PhpJs\Runtime\JSFunctionBase;
 use PhpJs\Runtime\JSObject;
 use PhpJs\Runtime\JSPrimitiveWrapper;
+use PhpJs\Runtime\JSSymbol;
 use PhpJs\Runtime\JSUndefined;
 use PhpJs\Vm\Vm;
 
@@ -37,6 +38,11 @@ final class Display
         }
         if ($depth > 4) {
             return '[...]';
+        }
+        if ($v instanceof JSSymbol) {
+            // Never through ToString: that is a TypeError for a symbol, and
+            // console.log is exactly where you want to see one, not throw.
+            return $v->display();
         }
         if ($v instanceof JSArray) {
             $parts = [];

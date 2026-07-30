@@ -108,9 +108,45 @@ No boxing. Mapping between JS and PHP values:
 | boolean | `bool` | As-is |
 | null | `null` | As-is |
 | undefined | `JSUndefined::$instance` | The one singleton. Tested with `=== JSUndefined::$instance` |
+| symbol | `JSSymbol` | Identity is PHP object identity. See §3.4 |
 | object / function | `JSObject` and its subclasses | See §5 |
 
 Type dispatch uses combinations of `is_int` / `is_float` / `is_string` / `is_bool` / `=== null` / `instanceof`, centralized in `TypeOps`. C-style optimizations such as NaN boxing are not ported (they are harmful here).
+
+### 3.4 Symbol, the one post-ES5 primitive
+
+Symbol is in the engine and not in node-compat's polyfills, which is a deliberate
+exception to "ES5.1 plus Promise" and worth justifying, because the boundary it
+crosses is *type* and not *syntax*.
+
+No library polyfill can make `typeof x` answer `"symbol"`. That is not a
+cosmetic gap. React brands element types with `Symbol.for("react.fragment")` and
+its renderer tests `typeof type === "string"` **before** identity-comparing
+against those brands, so a symbol that is really a string takes the
+host-element path: `<></>` fails with `Invalid tag: @@react.fragment`. A string
+polyfill also collapses distinct symbols into one property key. The type has to
+be real or the feature is not there.
+
+What that costs, kept small on purpose:
+
+- `JSSymbol` is a primitive, not a `JSObject`: no own properties, wrapped on
+  demand by `Conversions::toObject()` like a string or a number.
+  `TypeOps::strictEquals` already falls through to identity, so equality needed
+  no change.
+- Implicit `ToString` and `ToNumber` throw, per spec. `String(sym)` and
+  `sym.toString()` are the sanctioned descriptions, and `Display` prints one
+  rather than throwing inside `console.log`.
+- Symbol keys share the string-keyed property table; see §5's note on
+  `Vm::propertyKey()` and `orderKeys()`.
+- The registry (`Symbol.for` / `keyFor`) and the well-known symbols live on the
+  realm, not in a static, because a symbol is heap state and two realms in one
+  process must not share one (§11).
+
+What it deliberately does not do is give the well-known symbols meaning. They
+exist as values and work as keys, so feature detection sees what it expects, but
+this is still an ES5.1 realm: there is no iteration protocol behind
+`Symbol.iterator` and nothing consults `Symbol.toPrimitive`. That is the same
+position as `@@species` in §15 — present, inert, and honest about it.
 
 ### 3.1 Number semantics
 
@@ -200,7 +236,8 @@ class JSObject {
 - Ordinary data properties (writable/enumerable/configurable all true) are stored as raw values in `$props`. Only when `defineProperty` specifies other attributes or accessors does an entry appear in `$descs`. **Gets take a fast path that skips descriptor checks entirely when `$descs === null`.**
 - Fast-path get: `$obj->props[$k] ?? <miss handling>`. Because `??` misfires only when the stored value is JS `null` (= PHP null), the miss route starts with an `array_key_exists` correction (we accept that only null-storing cases are slower).
 - The prototype chain is walked through plain PHP object references. `JSObject::get` takes the same `$props[$k] ?? …` shortcut at *every* level rather than calling `getOwn` per level, because a method lookup walks two or three prototypes before it hits anything and the virtual call dominates otherwise. Objects whose own properties are not fully described by `$props` — array indices, string wrapper code units, mapped `arguments` — clear `ownPropsArePlain`, which forces the general path for them. Lazily materialized properties do not need the flag: an unmaterialized key is simply absent from `$props`, so the shortcut misses and falls through to `ensureOwn` on its own.
-- Property keys are strings only (ES5, no Symbol). PHP arrays canonicalize numeric-string keys to ints; this is harmless because JS also identifies `"0"` with `0`, but key enumeration inserts a `(string)` normalization.
+- Property tables are keyed by string. PHP arrays canonicalize numeric-string keys to ints; this is harmless because JS also identifies `"0"` with `0`, but key enumeration inserts a `(string)` normalization.
+- Symbol keys ride in the same table. A `JSSymbol` (§3.4) owns one private, NUL-prefixed key string; `Vm::propertyKey()` is the only place the substitution happens, and `JSObject::orderKeys()` filters those keys out of every enumeration. That is what keeps `Object.keys`, `for-in`, `JSON.stringify` and `Object.getOwnPropertyNames` symbol-blind without any of them knowing symbols exist, and `Object.getOwnPropertySymbols` is the only way back. The alternative — a string-or-symbol key type through every property operation — buys spec purity at a cost the whole object model would pay.
 
 ### 5.2 Exotic objects
 
@@ -404,7 +441,7 @@ invisible from unit tests:
 - **Ahead-of-time PHP for the hot path**: `docs/aot-php.md`. It fits without a new dispatch mechanism, because `BuiltinRegistry`'s string-ID indirection (forced by §11.3) is already the function table such a scheme needs. It has now been priced rather than guessed: hand-writing React 19's `createElement` in PHP is **18x** faster than interpreting it with conservative `[[Set]]` semantics, ~40x if the emitter proves the write target is fresh. Projected at about 3x on a whole render. The remaining open question is not whether it wins but how much of that survives a general emitter.
 - **Direct `eval`**: the dynamic-scoping fallout is wide. `eval` now inherits the caller's strict mode, which is what most strict-mode early-error tests observe, but it still compiles and runs in the global scope and cannot inject a binding into the calling function — the remaining `compound-assignment` and `eval-code` failures. Implementing it means marking the containing function as dynamically scoped and emitting name-based lookups there (§4.5). Inheriting strictness is also technically wrong for *indirect* eval, which the spec keeps sloppy; that trade is deliberate until direct eval is distinguished at the call site.
 - **`with`**: unimplemented; the compiler rejects it. Same machinery as direct `eval`, so both should land together.
-- **`@@species`**: `ArraySpeciesCreate` and the Promise combinators honour the constructor lookup and its observable errors, but always produce a base Array/Promise — an ES5 realm has no Symbols to key the species hook on.
+- **`@@species`**: `ArraySpeciesCreate` and the Promise combinators honour the constructor lookup and its observable errors, but always produce a base Array/Promise. `Symbol.species` now exists as a value (§3.4) — what is missing is any code that consults it, and in an ES5 realm there is nothing for it to select.
 - **RegExp pattern validation**: PCRE does the parsing, so patterns the spec rejects as early errors are accepted (most of the remaining `language/literals/regexp` failures). Fixing this needs a JS pattern validator in front of the translator.
 - **Local time is UTC.** `getTimezoneOffset()` reports 0 and every local getter mirrors its UTC counterpart. Time zone and DST policy has no good answer in a shared-nothing request model; revisit only with a host-supplied zone.
 - **`Function` constructor**: requires shipping Peast + the compiler in the runtime. Accepted as dynamic compilation that bypasses opcache (assumed rare).

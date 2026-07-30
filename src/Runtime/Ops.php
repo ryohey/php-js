@@ -228,7 +228,7 @@ final class Ops
      */
     public static function hasOwn(Vm $vm, mixed $obj, mixed $key): bool
     {
-        $k = is_string($key) ? $key : Conversions::toString($vm, $key);
+        $k = is_string($key) ? $key : $vm->propertyKey($key);
         $o = $obj instanceof JSObject ? $obj : Conversions::toObject($vm, $obj);
         return $o->hasOwn($k);
     }
@@ -240,7 +240,7 @@ final class Ops
      */
     public static function putOwn(Vm $vm, JSObject $obj, mixed $key, mixed $value): void
     {
-        $obj->props[is_string($key) ? $key : Conversions::toString($vm, $key)] = $value;
+        $obj->props[is_string($key) ? $key : $vm->propertyKey($key)] = $value;
     }
 
     /**

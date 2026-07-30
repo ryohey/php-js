@@ -70,7 +70,16 @@ final class StringBuiltins
 
     public static function callAsFunction(Vm $vm, mixed $t, array $args): mixed
     {
-        return count($args) === 0 ? '' : Conversions::toString($vm, $args[0]);
+        if (count($args) === 0) {
+            return '';
+        }
+        // 21.1.1.1: called as a function, `String` is the sanctioned way to
+        // describe a symbol. Implicit ToString throws instead, and
+        // `new String(sym)` still throws -- only this spelling is allowed.
+        if ($args[0] instanceof \PhpJs\Runtime\JSSymbol) {
+            return $args[0]->display();
+        }
+        return Conversions::toString($vm, $args[0]);
     }
 
     public static function ctor(Vm $vm, array $args): mixed

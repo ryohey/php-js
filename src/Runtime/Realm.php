@@ -17,6 +17,7 @@ use PhpJs\Builtins\ObjectBuiltins;
 use PhpJs\Builtins\PromiseBuiltins;
 use PhpJs\Builtins\RegExpBuiltins;
 use PhpJs\Builtins\StringBuiltins;
+use PhpJs\Builtins\SymbolBuiltins;
 use PhpJs\Vm\Vm;
 
 /**
@@ -57,7 +58,7 @@ final class Realm
     private const GLOBAL_NAMES = [
         'undefined', 'NaN', 'Infinity', 'globalThis',
         'Object', 'Function', 'Array', 'String', 'Number', 'Boolean',
-        'Math', 'JSON', 'console',
+        'Math', 'JSON', 'console', 'Symbol',
         'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'EvalError', 'URIError',
         'RegExp', 'Date', 'Promise',
         'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'eval',
@@ -93,6 +94,7 @@ final class Realm
             'String' => $this->stringConstructor(),
             'Number' => $this->numberConstructor(),
             'Boolean' => $this->booleanConstructor(),
+            'Symbol' => $this->symbolConstructor(),
             'Math' => $this->mathObject(),
             'JSON' => $this->jsonObject(),
             'console' => $this->consoleObject(),
@@ -288,6 +290,59 @@ final class Realm
     public function booleanConstructor(): JSNativeFunction
     {
         return $this->memo['Boolean'] ??= BooleanBuiltins::makeConstructor($this);
+    }
+
+    public function symbolPrototype(): JSObject
+    {
+        if (!isset($this->memo['Symbol.prototype'])) {
+            $proto = new JSObject($this->objectPrototype());
+            $proto->className = 'Symbol';
+            $this->memo['Symbol.prototype'] = $proto;
+            SymbolBuiltins::populateProto($this, $proto);
+            $this->symbolConstructor();
+        }
+        return $this->memo['Symbol.prototype'];
+    }
+
+    public function symbolConstructor(): JSNativeFunction
+    {
+        return $this->memo['Symbol'] ??= SymbolBuiltins::makeConstructor($this);
+    }
+
+    /**
+     * Symbols by their private property key, so `Object.getOwnPropertySymbols`
+     * can turn a property table's keys back into the symbols that made them.
+     *
+     * Per realm rather than static: a symbol is heap state, and two realms in
+     * one process must not share one (DESIGN.md §11).
+     * @var array<string, JSSymbol>
+     */
+    private array $symbolsByKey = [];
+    /** @var array<string, JSSymbol> the `Symbol.for` registry */
+    private array $symbolRegistry = [];
+
+    public function newSymbol(?string $description, ?string $registryKey = null): JSSymbol
+    {
+        $symbol = new JSSymbol($description, $registryKey);
+        $this->symbolsByKey[$symbol->propertyKey] = $symbol;
+        return $symbol;
+    }
+
+    public function symbolForKey(string $key): JSSymbol
+    {
+        return $this->symbolRegistry[$key] ??= $this->newSymbol($key, $key);
+    }
+
+    /** `Symbol.iterator` and the rest; described in SymbolBuiltins. */
+    public function wellKnownSymbol(string $name): JSSymbol
+    {
+        return $this->memo['@@' . $name] ??= $this->newSymbol('Symbol.' . $name);
+    }
+
+    /** The symbol a private property key came from, if this realm made it. */
+    public function symbolByKey(string $propertyKey): ?JSSymbol
+    {
+        return $this->symbolsByKey[$propertyKey] ?? null;
     }
 
     public function mathObject(): JSObject
