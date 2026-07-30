@@ -30,9 +30,6 @@ final class Builder
 {
     public const MANIFEST = 'manifest.php';
 
-    /** Compile React ahead of time only where it is worth it: React itself. */
-    private const AOT_PATHS = '/node_modules/react';
-
     /**
      * @param string $appRoot   module root; holds bundle/ and node_modules/
      * @param string $buildDir  where the generated PHP goes
@@ -80,10 +77,9 @@ final class Builder
         // PHP come out of the same pass and cannot disagree.
         $started = microtime(true);
         $host = $this->freshHost();
-        $aot = NodeIntegration::forBuild(
-            static fn (string $path): bool => str_contains($path, self::AOT_PATHS),
-            Assumptions::closedBuild()
-        );
+        // Only what a lockfile pins gets compiled into PHP; the site's own
+        // JavaScript stays interpreted. Trust explains why, and a test holds it.
+        $aot = NodeIntegration::forBuild(Trust::filter(), Assumptions::closedBuild());
         $aot->attach($host);
         $entry = $host->requireModule($this->entry);
         $vm = $host->vm();

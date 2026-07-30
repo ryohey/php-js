@@ -66,6 +66,39 @@ Native IDs are derived from each module's contents, so the two agree, and an
 upgraded dependency stops matching its stale natives rather than binding them
 to the wrong functions.
 
+## What the input has to be
+
+**Trusted, and pinned.** This is a code generator: it reads JavaScript and
+writes PHP that gets `require`d. Two guarantees the interpreter makes do not
+survive the translation, and both are verified rather than assumed:
+
+- **`Vm::setTimeLimit()` is not enforced.** The deadline is checked by the
+  dispatch loop, and generated PHP has no dispatch loop. A `while (true) {}` the
+  interpreter aborts after 0.5 s runs forever once it is compiled.
+- **JS recursion becomes PHP recursion.** Interpreted JS frames live on the VM's
+  own stack, so runaway recursion raises a catchable `RangeError`. Compiled
+  frames are PHP frames, and the same program exhausts memory with a fatal error.
+
+Neither is a defect to be fixed later: they are what "no dispatch loop" and "a
+real PHP function" mean, and they are most of why compiling is faster. There is
+no injection surface — emission goes AST-to-AST through nikic/php-parser and
+never concatenates strings — but an injection surface was never the concern. The
+concern is that the interpreter is the part with the safety rails, and untrusted
+code is exactly the code that needs them.
+
+So the rule is: compile dependencies a lockfile pins, and let everything else
+interpret. `NodeIntegration::pinnedDependencies()` is that filter:
+
+```php
+$aot = NodeIntegration::forBuild(NodeIntegration::pinnedDependencies());
+```
+
+Precompiled *bytecode* is a different matter and carries none of this: a
+template file is `<?php return [...];` of plain arrays, so loading it defines
+nothing and calls nothing, and the VM interprets it afterwards with every rail
+in place. Precompiling any JavaScript is as safe as running it. It is only the
+generated PHP that needs a trusted input.
+
 ## Closed-build assumptions
 
 By default the emitter assumes nothing, and a literal translation is worth

@@ -53,6 +53,25 @@ final class NodeIntegration
     ) {
     }
 
+    /**
+     * The accept filter to use unless there is a reason not to: only modules
+     * inside a `node_modules` directory.
+     *
+     * Generated PHP is code, and running it gives up two things the interpreter
+     * guarantees — the wall-clock limit, which only the dispatch loop checks,
+     * and a JS call stack that is not the PHP call stack. Both are fine for a
+     * dependency a lockfile pins and reviewed as a version bump. Neither is fine
+     * for code that arrives at run time. Anything this rejects still runs, as
+     * bytecode, with those guarantees intact.
+     *
+     * @param ?string $package restrict further to one package, e.g. 'react'
+     */
+    public static function pinnedDependencies(?string $package = null): \Closure
+    {
+        $needle = '/node_modules/' . ($package === null ? '' : $package . '/');
+        return static fn (string $path): bool => str_contains($path, $needle);
+    }
+
     /** Compiles and registers in-process; for tests and one-shot scripts. */
     public static function forBuild(\Closure $accept, ?Assumptions $assume = null): self
     {

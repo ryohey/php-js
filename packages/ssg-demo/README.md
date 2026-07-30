@@ -44,22 +44,25 @@ Things worth doing once it is up:
 ## How the pieces fit
 
 ```
-src/*.tsx ──vite+babel──► bundle/entry.cjs ──┐
-                                             ├──► build/*.php ──► request ──► HTML
-node_modules/react ──php-js-transpile────────┘      (opcache)
+app/*.tsx ──vite+babel──► bundle/entry.cjs ──► bytecode ──┐
+                                                          ├─► request ──► HTML
+node_modules ──php-js-transpile─────────────► PHP ────────┘   (opcache)
 ```
 
-**The sources are TypeScript and JSX**, bundled by Vite into one CommonJS file.
+**The sources are TypeScript and JSX** in `app/`, bundled by Vite into one
+CommonJS file.
 Two things in `vite.config.ts` are not defaults and both matter: esbuild handles
 the TSX but cannot target ES5, so Babel downlevels the finished chunk; and JSX
 compiles to classic `React.createElement` calls, so the bundle needs nothing
 from `react/jsx-runtime`. React itself stays external — the runtime loads
 React's own published CommonJS build, which is the thing worth measuring.
 
-**React is compiled to PHP at build time.** `bin/phpjs-ssg build` runs
-[php-transpile](../php-transpile) over `node_modules/react`, which turns 262 of
-its 291 functions into PHP functions. The bytecode stays as the fallback, so
-this is an optimization and not a dependency.
+**Dependencies are compiled to PHP; the site's own code is not.** The build runs
+[php-transpile](../php-transpile) over `node_modules`, turning 262 of React's 291
+functions into PHP functions, and stops there — `app/` stays interpreted. That
+split is a security boundary, not an oversight; `src/Trust.php` is where it is
+written down and *Why the site's own code stays interpreted* below is why. The
+bytecode remains the fallback everywhere, so none of this is a dependency.
 
 **A request compiles no JavaScript.** PHP is shared-nothing, so anything the
 build does not precompute is paid per request — and parsing React's server build
@@ -72,6 +75,44 @@ regressing would be invisible except in the timings.
 `<div id="phpjs-metrics">` and the server substitutes into it, because only the
 server knows how long the render took. An export leaves it empty, so `dist/` is
 deployable as-is.
+
+## Why the site's own code stays interpreted
+
+Precompiling bytecode and compiling to PHP look like one optimization. They are
+on opposite sides of a line:
+
+- **Bytecode is data.** `build/templates.*.php` is `<?php return [...];` of plain
+  arrays. Loading it defines nothing and calls nothing; the VM interprets it
+  afterwards, inside its sandbox. Precompiling any JavaScript is as safe as
+  running it.
+- **Generated PHP is code**, and running it gives up two things the interpreter
+  guarantees. Measured, not assumed:
+
+  | | interpreted | compiled |
+  |---|---|---|
+  | `while (true) {}` under a 0.5 s limit | `RangeError` after 0.69 s | never returns |
+  | unbounded recursion | catchable `RangeError` | fatal: memory exhausted |
+
+  The wall-clock limit is checked by the dispatch loop and generated PHP has no
+  dispatch loop. Interpreted JS frames live on the VM's own stack; compiled
+  frames are PHP frames. Neither is a bug to be fixed — they are most of why
+  compiling is 60% faster.
+
+There is no injection surface (emission is AST-to-AST through nikic/php-parser,
+never string concatenation), but that was never the risk worth naming. The risk
+is that the interpreter is the part with the safety rails, and code you did not
+pin is exactly the code that needs them.
+
+So: compile `node_modules`, interpret everything else. Extending the filter to
+`app/` was measured at about **3%** — a fair price. A test asserts that no
+template outside `node_modules` carries a native ID, because the filter is one
+`str_contains` away from silently accepting everything.
+
+Two related choices in the same spirit: `serve` leaves
+`opcache.validate_timestamps` **on**, so a rebuild is always picked up and a
+cached copy never outlives the file it came from; and `build/` is written by the
+build, not by a request — a web process that can write there can run whatever it
+writes.
 
 ## Two ways of not being wrong
 
@@ -111,21 +152,24 @@ numbers the demo shows, so you know roughly what to expect.
 ## Layout
 
 ```
-src/                TypeScript and JSX sources
+app/                the site: TypeScript and JSX, built by Vite
   entry.tsx           SSR entry for php-js
   entry.node.tsx      same components, rendered by Node, for the diff
   router.tsx          the route table
   components/         Layout, Home, Docs, Inventory, About
   content.ts          the site's text and data
+src/                the host: PHP, autoloaded as PhpJs\Ssg\
   Builder.php         the build step
   Renderer.php        renders a route from what the build produced
   Exporter.php        static generation
   Toolbar.php         the strip the server injects
+  Trust.php           what may be compiled to PHP, and what may not
 bundle/             Vite output (generated)
 build/              precompiled PHP (generated)
 dist/               static export (generated)
 public/             front controller and the stylesheet
 ```
 
-`src/` holds both the TSX and the PHP on purpose: the demo is the pair, and
-splitting them across two trees would only hide that.
+`app/` is the guest and `src/` is the host — one is JavaScript this runtime
+executes, the other is the PHP doing the executing, and they are the two sides of
+the demo rather than one codebase.

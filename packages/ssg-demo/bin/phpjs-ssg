@@ -88,7 +88,10 @@ try {
                 'opcache.enable_cli=1',
                 'opcache.memory_consumption=256',
                 'opcache.max_accelerated_files=20000',
-                'opcache.validate_timestamps=0',
+                // Timestamp validation stays *on*, unlike a production tuning
+                // guide's advice: a rebuild has to be picked up, and a cache
+                // that outlives the file it came from is the wrong default for
+                // anything that loads generated code.
             ];
             $ini[] = isset($flags['--no-jit'])
                 ? 'opcache.jit=off'

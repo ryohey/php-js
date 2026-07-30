@@ -227,6 +227,49 @@ is the single most important structural requirement on the implementation.
 - Not generate code at runtime. Build writes `.php` files; runtime `require`s or
   preloads them. `eval()` is not opcache-cached and is out.
 
+### The input has to be trusted, and that is structural
+
+The draft assumed a closed build-time input and was right to, but did not say
+what goes wrong otherwise. Two guarantees the interpreter makes do not survive
+compilation. Both are measured, not reasoned about:
+
+| | interpreted | compiled |
+|---|---|---|
+| `while (true) {}` under `setTimeLimit(0.5)` | `RangeError` after 0.69 s | never returns |
+| unbounded recursion | catchable `RangeError` | fatal: memory exhausted |
+
+The deadline is checked by the dispatch loop (§4 of DESIGN.md, every
+`DEADLINE_CHECK_INTERVAL` instructions) and generated PHP has no dispatch loop.
+JS frames live on the VM's own stack and PHP's stack is untouched — that is
+DESIGN.md §4's first promise — but a compiled call is a real PHP call, so
+compiled recursion is PHP recursion. `Vm::invoke` even reaches the `nativeId`
+branch before the re-entry counter, so `MAX_REENTRY` does not apply either.
+
+None of this is a defect queued for repair. It is what "no dispatch loop" and "a
+real PHP function" *mean*, and it is most of where the 65% comes from. Adding a
+deadline tick to every generated loop would put back the per-iteration overhead
+the whole exercise removes, and capping compiled recursion at `MAX_REENTRY` (400)
+would refuse trees the interpreter renders fine (`MAX_FRAMES` is 10000) — a
+capability regression traded for a limit the trusted case does not want.
+
+So the boundary is a build-time policy, not a runtime check:
+
+- **Compile what a lockfile pins.** `NodeIntegration::pinnedDependencies()` is
+  that filter, and `packages/ssg-demo` uses it with a test that asserts no
+  template outside `node_modules` carries a native ID.
+- **Interpret everything else** — application code, anything authored per
+  deployment, anything that arrives at run time. It costs about 3% on this
+  workload (§6 phase 2.5 measured extending the filter to the app's own
+  components), which is the right price for keeping the rails on.
+- **Precompiled bytecode is not in scope for any of this.** A template file is
+  `<?php return [...];` of plain arrays: loading it defines nothing and calls
+  nothing, and the VM interprets it afterwards with every guarantee intact.
+  Precompiling any JavaScript is exactly as safe as running it. Only the
+  *generated PHP* needs a trusted input.
+
+There is no injection surface either way — emission is AST-to-AST and never
+concatenates strings — but that was never the risk worth naming.
+
 ## 4. Package layout
 
 Core stays clean; this follows the existing split.

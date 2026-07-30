@@ -10,6 +10,7 @@ use PhpJs\Ssg\Page;
 use PhpJs\Ssg\Paths;
 use PhpJs\Ssg\Renderer;
 use PhpJs\Ssg\Toolbar;
+use PhpJs\Ssg\Trust;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -50,6 +51,41 @@ final class DemoSiteTest extends TestCase
         $this->assertGreaterThan(200, $manifest['converted'], 'ahead-of-time coverage collapsed');
         $this->assertNotEmpty($manifest['routes']);
         $this->assertStringStartsWith('19.', $manifest['reactVersion']);
+    }
+
+    /**
+     * The trust boundary, checked rather than believed.
+     *
+     * Generated PHP leaves the VM behind, and with it the wall-clock limit and
+     * the recursion guard (see Trust). So only lockfile-pinned dependencies may
+     * be compiled into PHP -- and the filter that decides this is one
+     * `str_contains` away from silently accepting everything, which is why this
+     * asserts on the built templates instead of on the filter.
+     */
+    public function testOnlyPinnedDependenciesAreCompiledToPhp(): void
+    {
+        $templates = require self::$buildDir . '/templates.aot.php';
+        $checked = 0;
+        foreach ($templates as $path => $template) {
+            if (Trust::mayCompileToPhp($path)) {
+                continue;
+            }
+            $checked++;
+            $this->assertTrue(
+                Trust::templateIsInterpreted($template),
+                "$path was compiled to PHP but is not a pinned dependency"
+            );
+        }
+        // The site's own bundle is in there, so a pass with nothing checked
+        // would mean the paths stopped looking the way this assumes.
+        $this->assertGreaterThan(0, $checked, 'no untrusted module was examined');
+    }
+
+    public function testTheBoundaryRejectsTheSitesOwnCode(): void
+    {
+        $this->assertFalse(Trust::mayCompileToPhp(Paths::appRoot() . '/bundle/entry.cjs'));
+        $this->assertFalse(Trust::mayCompileToPhp('/srv/tenant-uploads/user.js'));
+        $this->assertTrue(Trust::mayCompileToPhp(Paths::appRoot() . '/node_modules/react/index.js'));
     }
 
     public function testARequestCompilesNoJavaScript(): void

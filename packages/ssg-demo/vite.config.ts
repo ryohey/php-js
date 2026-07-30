@@ -34,8 +34,8 @@ export default defineConfig({
       input: {
         // Two entries so the same components can be rendered by php-js and by
         // Node, for the byte-identity check.
-        entry: 'src/entry.tsx',
-        'entry.node': 'src/entry.node.tsx',
+        entry: 'app/entry.tsx',
+        'entry.node': 'app/entry.node.tsx',
       },
       external: [
         'react',
