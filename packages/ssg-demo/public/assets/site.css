@@ -104,6 +104,15 @@ pre {
   color: var(--muted);
 }
 
+/* A cache hit: the page came off disk and the runtime never started. */
+.metrics-cached {
+  background: var(--accent-soft);
+}
+
+.metrics-cached .metrics-mode {
+  color: var(--accent);
+}
+
 .metrics-stats {
   display: flex;
   flex-wrap: wrap;

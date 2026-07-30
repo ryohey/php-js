@@ -29,6 +29,18 @@ final class Paths
         return self::packageRoot() . '/build';
     }
 
+    /** Where on-demand rendered pages are cached; must be under the docroot. */
+    public static function cacheDir(): string
+    {
+        return self::publicDir() . '/cache';
+    }
+
+    /** Default target for `phpjs-ssg package`. */
+    public static function distributionDir(): string
+    {
+        return self::packageRoot() . '/package';
+    }
+
     /** Default target for the static export. */
     public static function distDir(): string
     {

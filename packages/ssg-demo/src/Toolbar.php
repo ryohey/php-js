@@ -17,6 +17,8 @@ final class Toolbar
     /**
      * @param 'aot'|'bytecode'|'static' $mode
      * @param array<string, int>        $options query options in play, e.g. items
+     * @param ?string                   $cacheStatus a PageCache::* constant, when
+     *                                  the on-demand cache handled the request
      */
     public static function render(
         string $mode,
@@ -25,26 +27,38 @@ final class Toolbar
         int $modulesCompiled,
         string $reactVersion,
         array $options = [],
+        ?string $cacheStatus = null,
     ): string {
-        $label = match ($mode) {
-            'aot' => 'ahead-of-time PHP',
-            'bytecode' => 'interpreted bytecode',
-            'static' => 'exported file',
+        $hit = $cacheStatus === PageCache::HIT || $cacheStatus === PageCache::WAIT;
+        $label = match (true) {
+            $hit => 'cached page',
+            $mode === 'aot' => 'ahead-of-time PHP',
+            $mode === 'bytecode' => 'interpreted bytecode',
+            $mode === 'static' => 'exported file',
             default => $mode,
         };
 
-        $stats = [
-            ['render', $mode === 'static' ? 'file read' : self::ms($page->renderMs)],
-            ['boot', self::ms($bootMs)],
-            ['html', self::bytes($page->bytes())],
-        ];
+        $stats = [];
+        if ($cacheStatus !== null && $cacheStatus !== PageCache::BYPASS) {
+            $stats[] = ['cache', $cacheStatus];
+        }
+        $stats[] = ['render', match (true) {
+            $hit => 'served from disk',
+            $mode === 'static' => 'file read',
+            default => self::ms($page->renderMs),
+        }];
+        if (!$hit) {
+            $stats[] = ['boot', self::ms($bootMs)];
+        }
+        $stats[] = ['html', self::bytes($page->bytes())];
         if ($modulesCompiled > 0) {
             // Should never happen with a warm build: it means JavaScript is
             // being parsed on a request.
             $stats[] = ['compiled', $modulesCompiled . ' modules'];
         }
 
-        $out = '<div id="' . self::esc(Renderer::METRICS_ID) . '" class="metrics metrics-' . self::esc($mode) . '">';
+        $modeClass = $hit ? 'cached' : $mode;
+        $out = '<div id="' . self::esc(Renderer::METRICS_ID) . '" class="metrics metrics-' . self::esc($modeClass) . '">';
         $out .= '<span class="metrics-mode">' . self::esc($label) . '</span>';
         $out .= '<span class="metrics-stats">';
         foreach ($stats as [$name, $value]) {
@@ -59,7 +73,9 @@ final class Toolbar
                 . self::esc($short) . '</a>';
         }
         $out .= '</span>';
-        $out .= '<span class="metrics-react">React ' . self::esc($reactVersion) . '</span>';
+        if ($reactVersion !== '') {
+            $out .= '<span class="metrics-react">React ' . self::esc($reactVersion) . '</span>';
+        }
         return $out . '</div>';
     }
 

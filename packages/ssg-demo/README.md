@@ -36,8 +36,10 @@ Things worth doing once it is up:
 | | |
 |---|---|
 | `build` | Compiles the Vite bundle, React and the polyfills to PHP arrays in `build/`. Nothing is compiled again after this. |
-| `export` | Renders every route into `dist/` — static site generation. |
-| `serve` | Local server, rendering on every request. |
+| `export` | Renders every route into `dist/` — static site generation, all at once. |
+| `package` | Assembles a render-only tree you can ship inside a plugin (see below). |
+| `serve` | Local server. Renders a page the first time it is asked for, serves the file after. |
+| `cache:clear` | Drops every cached page. |
 | `compare` | Renders every route under Node too and requires the HTML to match byte for byte. |
 | `bench` | Times one route both ways, interleaved, and prints the ratio. |
 
@@ -75,6 +77,82 @@ regressing would be invisible except in the timings.
 `<div id="phpjs-metrics">` and the server substitutes into it, because only the
 server knows how long the render took. An export leaves it empty, so `dist/` is
 deployable as-is.
+
+## Rendering on demand, then serving a file
+
+`serve` does what Next.js calls on-demand ISR, arranged for hosting that has PHP
+and nothing else — no daemon, no worker, no shared state beyond opcache:
+
+```console
+$ curl -sI localhost:8080/inventory/ | grep X-PhpJs
+X-PhpJs-Cache: MISS
+X-PhpJs-Render: 213.78ms
+
+$ curl -sI localhost:8080/inventory/ | grep X-PhpJs
+X-PhpJs-Cache: HIT
+X-PhpJs-Render: 0.04ms
+```
+
+Four properties are worth more here than any feature:
+
+- **A hit need not reach PHP at all.** `package` writes an `htaccess.example`
+  that hands a cached file straight to Apache, so after the first request the
+  runtime is out of the loop entirely. That is also why the cache lives under the
+  document root rather than somewhere tidier.
+- **What is cached has no toolbar in it.** A page is stored exactly as `export`
+  writes it, with the metrics element left empty, and the toolbar is substituted
+  in on the way out. So a cached file is deployable as-is — and with the rewrite
+  active, a hit shows no toolbar, which is the demonstration.
+- **A stampede renders once.** Concurrent misses contend on a lock; the losers
+  wait and serve the winner's output. A cold cache plus a burst of traffic is how
+  a shared host hits its process limit.
+- **A 404 is served but never stored**, and neither is a path with a character
+  that has no business in one. Otherwise any request for a nonexistent path
+  writes a file, and enough of those is a full disk.
+
+`?engine=` and `?items=` change the bytes, so a request carrying either renders
+and is not cached — which keeps the cache keyed by path alone, and that is what
+makes the file layout, and therefore the Apache bypass, possible.
+
+## Shipping it: `phpjs-ssg package`
+
+```console
+$ bin/phpjs-ssg package
+templates      1.8 MB  7 modules, paths relativized
+natives        760 KB  262 of 291 functions compiled to PHP
+polyfill       147 KB
+javascript     280 KB  7 files (of a 83.2 MB node_modules)
+
+12 files, 2.9 MB total
+```
+
+That directory is the deployable unit — drop it into a WordPress plugin, a theme,
+or a zip:
+
+```php
+$renderer = Renderer::fromDistribution(__DIR__ . '/phpjs');
+$html = $renderer->render('/docs/')->html;
+```
+
+Three things make it that small, all measured rather than assumed:
+
+- **Rendering needs no parser.** With every template precompiled, neither Peast
+  (compiles JavaScript) nor nikic/php-parser (emits PHP) is ever loaded — checked
+  by deleting both and rendering.
+- **Rendering needs almost no JavaScript.** The template keys are the exact list
+  of files the program loads: 7 files, 280 KB, against 83 MB of `node_modules`.
+- **The second template set is left out.** `templates.bytecode.php` exists only
+  so this demo can switch engines.
+
+Paths go in relative and come out absolute, because a build happens at one path
+and a plugin installs at another. The native IDs need no such treatment — they
+are hashes of module *contents*, so they survive relocation untouched. A test
+moves a package to a different directory and requires every route to come out
+byte-identical to the build it came from.
+
+The ahead-of-time compilation stays on your machine, which is the right split for
+the reason below: what lands on the server is data plus already-generated PHP, and
+the server itself compiles nothing.
 
 ## Why the site's own code stays interpreted
 

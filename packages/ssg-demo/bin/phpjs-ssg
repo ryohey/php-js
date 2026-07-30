@@ -21,17 +21,21 @@ Usage: bin/phpjs-ssg <command> [options]
 Commands:
   build              compile the bundle, React and the polyfills into build/
   export             render every route into dist/ (static site generation)
-  serve              start a local server that renders on every request
+  package            assemble a render-only tree for shipping (package/)
+  serve              start a local server that renders on demand and caches
+  cache:clear        drop every cached page
   compare            render every route under Node too and diff the two
   bench [--items N]  time one route both ways, interleaved
 
 Options:
-  --out DIR          export target (default dist/)
+  --out DIR          export/package target
   --port N           serve port (default 8080)
   --host H           serve host (default 127.0.0.1)
   --engine NAME      serve default engine: aot | bytecode (default aot)
   --no-jit           serve without PHP's tracing JIT
   --items N          rows on the inventory page, for bench
+  --ttl N            seconds a cached page stays fresh (default: forever)
+  --no-cache         serve without the on-demand cache
 
 TXT;
 
@@ -101,8 +105,15 @@ try {
             putenv('PHPJS_SSG_BUILD=' . Paths::buildDir());
             putenv('PHPJS_SSG_DIST=' . $out);
             putenv('PHPJS_SSG_ENGINE=' . $engine);
+            putenv('PHPJS_SSG_CACHE=' . (isset($flags['--no-cache']) ? '' : Paths::cacheDir()));
+            if (isset($flags['--ttl'])) {
+                putenv('PHPJS_SSG_TTL=' . (int)$flags['--ttl']);
+            }
 
             $log("php-js SSG demo on http://$host:$port/");
+            $log(isset($flags['--no-cache'])
+                ? '  rendering every request (cache off)'
+                : '  first request to a page renders it, the rest are served from ' . Paths::cacheDir());
             $log('  toolbar switches between ahead-of-time PHP, bytecode and the exported files');
             $log('  /inventory/?items=2000 makes the render cost impossible to miss');
             $log('  Ctrl-C to stop');
@@ -113,6 +124,24 @@ try {
             );
             $process = proc_open($cmd, [STDIN, STDOUT, STDERR], $pipes);
             exit(is_resource($process) ? proc_close($process) : 1);
+
+        case 'package': {
+            $target = (string)($flags['--out'] ?? Paths::distributionDir());
+            $result = (new PhpJs\Ssg\Distribution(Paths::buildDir(), Paths::appRoot()))
+                ->writeTo($target, $log);
+            $log(sprintf(
+                "\nready to ship: %s\n  Renderer::fromDistribution('%s')",
+                $target,
+                basename($target)
+            ));
+            break;
+        }
+
+        case 'cache:clear': {
+            $cache = new PhpJs\Ssg\PageCache(Paths::cacheDir());
+            $log(sprintf('%d cached files removed from %s', $cache->clear(), Paths::cacheDir()));
+            break;
+        }
 
         case 'compare':
             exit(compareWithNode($log));

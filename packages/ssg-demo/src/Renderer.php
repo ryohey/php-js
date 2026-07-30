@@ -31,38 +31,69 @@ final class Renderer
     private mixed $entry;
     private mixed $renderFn;
 
-    /** @param array<string, mixed> $manifest */
+    /**
+     * @param array<string, mixed> $manifest
+     * @param array<string, mixed> $templates path => template, already absolute
+     */
     private function __construct(
         public readonly string $engine,
         public readonly array $manifest,
-        string $buildDir,
+        string $polyfillFile,
+        ?string $nativesFile,
+        array $templates,
     ) {
         $started = microtime(true);
-        $engineFiles = $manifest['engines'][$engine]
-            ?? throw new \InvalidArgumentException("Unknown engine: $engine");
-
         // The generated PHP first: a template's natives have to be registered
         // before the JSFunction that would use them is instantiated.
-        if (isset($engineFiles['natives'])) {
-            Artifact::register($buildDir . '/' . $engineFiles['natives']);
+        if ($nativesFile !== null) {
+            Artifact::register($nativesFile);
         }
-        NodeHost::preloadPolyfillTemplate(require $buildDir . '/' . $manifest['polyfill']);
+        NodeHost::preloadPolyfillTemplate(require $polyfillFile);
 
         $this->host = new NodeHost($manifest['appRoot'], captureOutput: true);
-        $this->host->modules->preloadTemplates(require $buildDir . '/' . $engineFiles['templates']);
+        $this->host->modules->preloadTemplates($templates);
         $this->entry = $this->host->requireModule($manifest['entry']);
         $this->renderFn = $this->entry->get('renderPage', $this->host->vm());
         $this->bootMs = (microtime(true) - $started) * 1000;
         $this->modulesCompiled = $this->host->modules->compileCount;
     }
 
+    /** From a `phpjs-ssg build` directory, where both engines are available. */
     public static function fromBuild(string $buildDir, string $engine = 'aot'): self
     {
         $manifestPath = $buildDir . '/' . Builder::MANIFEST;
         if (!is_file($manifestPath)) {
             throw new \RuntimeException("No build in $buildDir — run `bin/phpjs-ssg build` first.");
         }
-        return new self($engine, require $manifestPath, $buildDir);
+        $manifest = require $manifestPath;
+        $files = $manifest['engines'][$engine]
+            ?? throw new \InvalidArgumentException("Unknown engine: $engine");
+        return new self(
+            $engine,
+            $manifest,
+            $buildDir . '/' . $manifest['polyfill'],
+            isset($files['natives']) ? $buildDir . '/' . $files['natives'] : null,
+            require $buildDir . '/' . $files['templates'],
+        );
+    }
+
+    /**
+     * From a `phpjs-ssg package` directory — the deployable shape.
+     *
+     * A distribution is ahead-of-time only and carries relative paths, which
+     * Distribution::load() rebases onto wherever it was installed. That is what
+     * makes it shippable inside a plugin.
+     */
+    public static function fromDistribution(string $dir): self
+    {
+        $loaded = Distribution::load($dir);
+        return new self(
+            'aot',
+            $loaded,
+            $loaded['polyfillFile'],
+            $loaded['nativesFile'],
+            $loaded['templatesInline'],
+        );
     }
 
     /** @return list<string> */

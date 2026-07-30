@@ -103,9 +103,9 @@ on it:
   JavaScript functions to PHP. Converts 262 of React's 291 functions with
   unchanged output; the bytecode stays as the fallback.
 - [`packages/ssg-demo`](packages/ssg-demo) — a small site written in TypeScript
-  and JSX, rendered to HTML by React inside PHP. Start it locally and the
-  toolbar on every page reports what the page cost and re-renders it the other
-  way.
+  and JSX, rendered to HTML by React inside PHP. Renders a page on first request
+  and serves the file after; `phpjs-ssg package` assembles a 2.9 MB render-only
+  tree you can ship inside a plugin.
 
 ## Performance
 

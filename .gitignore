@@ -12,3 +12,5 @@
 /packages/ssg-demo/bundle/
 /packages/ssg-demo/build/
 /packages/ssg-demo/dist/
+/packages/ssg-demo/package/
+/packages/ssg-demo/public/cache/
