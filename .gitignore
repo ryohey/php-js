@@ -9,3 +9,6 @@
 /packages/*/apps/*/node_modules/
 /packages/*/apps/*/package-lock.json
 /packages/*/.phpunit.cache/
+/packages/ssg-demo/bundle/
+/packages/ssg-demo/build/
+/packages/ssg-demo/dist/

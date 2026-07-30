@@ -111,6 +111,32 @@ final class SemanticsTest extends EvalTestCase
             'JSON.parse("1000000000000000128").toString()',
         ];
         yield 'toFixed stays exact' => ['1000000000000000128', '(1000000000000000128).toFixed(0)'];
+        // 15.7.4.5 takes |x| first, then picks the *larger* n on a tie: ties go
+        // away from zero, not to even. PHP's own sprintf('%F') rounds to even,
+        // and every one of these came out a digit low while it was used.
+        yield 'toFixed rounds an exact tie away from zero' => ['0.63', '(0.625).toFixed(2)'];
+        yield 'toFixed ties on a negative use the magnitude' => ['-0.63', '(-0.625).toFixed(2)'];
+        yield 'toFixed does not round to even' => ['3', '(2.5).toFixed(0)'];
+        yield 'toFixed rounds 0.5 up' => ['1', '(0.5).toFixed(0)'];
+        yield 'toFixed carries through nines' => ['10.00', '(9.999).toFixed(2)'];
+        yield 'toFixed carries into a new digit' => ['1.00', '(0.999).toFixed(2)'];
+        // 9.995 is *below* the tie -- the nearest double is 9.99499999999999921...
+        yield 'toFixed does not round up a near-tie' => ['9.99', '(9.995).toFixed(2)'];
+        // 1.005 is not a tie: the nearest double is 1.00499999999999989...,
+        // so rounding the *exact* value is what makes this "1.00".
+        yield 'toFixed rounds the double, not the literal' => ['1.00', '(1.005).toFixed(2)'];
+        // Past 53 fraction digits sprintf() padded with zeros; a double's
+        // expansion is exact and finite, so these digits are real.
+        yield 'toFixed keeps digits past sprintf precision' => [
+            '0.0000000000000000000008470329472543003390683225006796419620513916015625',
+            'Math.pow(2, -70).toFixed(70)',
+        ];
+        yield 'toFixed of the smallest subnormal' => [
+            '0.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
+            'Math.pow(2, -1074).toFixed(100)',
+        ];
+        yield 'toFixed of negative zero has no sign' => ['0.00', '(-0).toFixed(2)'];
+        yield 'toFixed of a small negative keeps the sign' => ['-0.00', '(-0.0001).toFixed(2)'];
         yield 'Number("-0") is -0' => [-INF, '1/Number("-0")'];
         yield 'toExponential without argument' => ['1.23456e+2', '(123.456).toExponential()'];
         yield 'toExponential rounds ties away from zero' => ['3e+1', '(25).toExponential(0)'];

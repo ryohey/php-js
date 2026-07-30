@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpJs\Builtins;
 
 use PhpJs\Runtime\Conversions;
+use PhpJs\Runtime\ExactDecimal;
 use PhpJs\Runtime\JSNativeFunction;
 use PhpJs\Runtime\JSObject;
 use PhpJs\Runtime\JSPrimitiveWrapper;
@@ -139,9 +140,13 @@ final class NumberBuiltins
         if (abs($n) >= 1e21) {
             return Conversions::numberToString($n);
         }
-        // %F rounds half away from zero on the exact binary value, which is
-        // what 15.7.4.5 asks for; number_format() loses digits on large values.
-        return sprintf('%.*F', $digits, (float)$n);
+        // 15.7.4.5 takes the absolute value first, then picks the larger n on a
+        // tie -- ties away from zero. `sprintf('%F')` cannot do this job: it
+        // rounds half to even, and it caps at 53 fraction digits. Both are
+        // observable, so the rounding happens on the double's exact decimal
+        // expansion instead (see ExactDecimal).
+        $sign = ($n < 0) ? '-' : '';
+        return $sign . ExactDecimal::toFixed((float)$n, $digits);
     }
 
     /**

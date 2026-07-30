@@ -60,6 +60,40 @@ final class ModuleLoader
         ];
     }
 
+    /**
+     * Seed the compiled-template cache from a precompiled bundle.
+     *
+     * Compiling a dependency tree the size of React costs a few hundred
+     * milliseconds, and PHP is shared-nothing: a server that boots the runtime
+     * per request would pay it per request. Templates are plain
+     * `var_export`-able arrays (DESIGN.md §11.1), so a build step can write
+     * them to a `<?php return [...];` file that opcache keeps in shared memory,
+     * and this is where that file goes back in.
+     *
+     * Keys are resolved absolute paths. A template already carries whatever
+     * `onCompileModule` stamped on it when it was built — including
+     * ahead-of-time `nativeId`s — so a preloaded module never reaches the
+     * compiler and never re-runs the hook.
+     *
+     * @param array<string, array<string, mixed>> $templates path => template
+     */
+    public function preloadTemplates(array $templates): void
+    {
+        foreach ($templates as $path => $template) {
+            $this->templates[$path] = $template;
+        }
+    }
+
+    /**
+     * The templates compiled or preloaded so far, for writing a bundle.
+     *
+     * @return array<string, array<string, mixed>> path => template
+     */
+    public function compiledTemplates(): array
+    {
+        return $this->templates;
+    }
+
     /** Register a synthetic module, e.g. `stream` or a stub for `util`. */
     public function define(string $name, mixed $exports): void
     {
@@ -71,11 +105,17 @@ final class ModuleLoader
      * They exist because bundles pull them in at load time even when the code
      * path that uses them is never taken.
      */
-    private const STUBS = ['stream', 'util', 'events', 'crypto', 'async_hooks'];
+    public const STUBS = ['stream', 'util', 'events', 'crypto', 'async_hooks'];
+
+    /** Where a shipped stub's source lives, whether or not it exists. */
+    public static function stubPath(string $name): string
+    {
+        return __DIR__ . '/../js/stubs/' . $name . '.js';
+    }
 
     private function loadStub(string $name, Vm $vm): mixed
     {
-        $file = __DIR__ . '/../js/stubs/' . $name . '.js';
+        $file = self::stubPath($name);
         if (!is_file($file)) {
             return null;
         }
@@ -83,9 +123,11 @@ final class ModuleLoader
         $exports = $realm->newObject();
         $module = $realm->newObject();
         $module->defineOwnData('exports', $exports);
-        $wrapped = '(function (exports, require, module, __filename, __dirname) {'
-            . file_get_contents($file) . "\n})";
-        $fn = $vm->runProgram(Compiler::compile($wrapped));
+        // Through the same template cache as a real module, so a stub is
+        // compiled once per process and can be preloaded from a bundle. It
+        // cannot go through the sandboxed filesystem, though -- these files
+        // ship with the package and live outside the module root.
+        $fn = $vm->runProgram($this->templateFor($file, (string)file_get_contents($file)));
         $vm->invoke($fn, JSUndefined::$undefined, [
             $exports,
             $this->makeRequire($this->root),
@@ -191,13 +233,17 @@ final class ModuleLoader
         return $result;
     }
 
-    /** @return array<string, mixed> */
-    private function templateFor(string $path): array
+    /**
+     * @param ?string $source the module text, when it does not come from the
+     *                        sandboxed filesystem (a shipped stub)
+     * @return array<string, mixed>
+     */
+    private function templateFor(string $path, ?string $source = null): array
     {
         if (isset($this->templates[$path])) {
             return $this->templates[$path];
         }
-        $source = $this->host->fs->read($path);
+        $source ??= $this->host->fs->read($path);
         // A trailing newline before the closing brace guards against a source
         // that ends inside a line comment.
         $wrapped = "(function (exports, require, module, __filename, __dirname) {"

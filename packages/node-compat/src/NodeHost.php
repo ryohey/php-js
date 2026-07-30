@@ -161,7 +161,38 @@ final class NodeHost
         MathExtras::install($realm, $this->engine->vm);
         CollectionBuiltins::install($realm);
 
-        $this->engine->evaluate(file_get_contents(__DIR__ . '/../js/polyfills.js'));
+        // Compiling this file is ~30 ms and it is the same file every time, so
+        // it is worth not doing per host: cached for the process, and a build
+        // step can hand over a precompiled template so it is never compiled at
+        // all (see preloadPolyfillTemplate).
+        self::$polyfillTemplate ??= \PhpJs\Compiler\Compiler::compile(self::polyfillSource());
+        $this->engine->runTemplate(self::$polyfillTemplate);
+    }
+
+    /** @var array<string, mixed>|null process-level cache of the polyfill template */
+    private static ?array $polyfillTemplate = null;
+
+    /** The ES2015+ library polyfills this package installs, as source. */
+    public static function polyfillSource(): string
+    {
+        return (string)file_get_contents(__DIR__ . '/../js/polyfills.js');
+    }
+
+    /**
+     * Supply a precompiled polyfill template, so constructing a host compiles
+     * no JavaScript at all.
+     *
+     * PHP is shared-nothing, so a server that builds a host per request pays
+     * every compile per request. Templates are plain `var_export`-able arrays
+     * (DESIGN.md §11.1), so a build step can write this one to a file that
+     * opcache keeps in shared memory and pass it back in here. Pass null to
+     * drop the cache and go back to compiling on first use.
+     *
+     * @param array<string, mixed>|null $template
+     */
+    public static function preloadPolyfillTemplate(?array $template): void
+    {
+        self::$polyfillTemplate = $template;
     }
 
     /** Load a CommonJS module and return its `exports`. */

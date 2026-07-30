@@ -1,0 +1,500 @@
+/*
+ * Hand-written, not built: it is the one part of this demo that has nothing to
+ * do with the runtime, and keeping it out of the bundle keeps the bundle exactly
+ * "the JavaScript php-js executes".
+ */
+
+:root {
+  --bg: #fbfbfa;
+  --panel: #ffffff;
+  --ink: #1a1a18;
+  --ink-soft: #5c5c56;
+  --line: #e3e2dd;
+  --accent: #1f6feb;
+  --accent-soft: #e8f0fe;
+  --ok: #1a7f45;
+  --ok-soft: #e3f4e9;
+  --warn: #9a5b00;
+  --warn-soft: #fdf1dd;
+  --muted: #55575c;
+  --muted-soft: #eceef1;
+  --code-bg: #f5f4f1;
+  --radius: 10px;
+  --measure: 68ch;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15161a;
+    --panel: #1d1f24;
+    --ink: #e8e8e4;
+    --ink-soft: #a4a5a0;
+    --line: #2e3138;
+    --accent: #6fa8ff;
+    --accent-soft: #1d2b45;
+    --ok: #6cd08f;
+    --ok-soft: #16301f;
+    --warn: #e0ae5c;
+    --warn-soft: #322613;
+    --muted: #a8abb3;
+    --muted-soft: #262a31;
+    --code-bg: #131418;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+code,
+pre {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.875em;
+}
+
+/* ---- the host's toolbar ------------------------------------------------- */
+
+.metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  padding: 9px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.metrics-mode {
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.metrics-aot .metrics-mode {
+  color: var(--ok);
+}
+
+.metrics-bytecode .metrics-mode {
+  color: var(--warn);
+}
+
+.metrics-static .metrics-mode,
+.metrics-warn .metrics-mode {
+  color: var(--muted);
+}
+
+.metrics-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.stat-name {
+  color: var(--ink-soft);
+}
+
+.stat-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.metrics-switch {
+  display: inline-flex;
+  margin-left: auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.metrics-link {
+  padding: 3px 12px;
+  color: var(--ink-soft);
+  border-left: 1px solid var(--line);
+}
+
+.metrics-link:first-child {
+  border-left: 0;
+}
+
+.metrics-link:hover {
+  background: var(--accent-soft);
+  text-decoration: none;
+}
+
+.metrics-link.current {
+  background: var(--accent);
+  color: #fff;
+}
+
+.metrics-react {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- page frame -------------------------------------------------------- */
+
+.masthead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 16px;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 34px 20px 18px;
+}
+
+.brand {
+  font-size: 21px;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+.tagline {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-left: auto;
+  font-size: 15px;
+}
+
+.nav-link {
+  color: var(--ink-soft);
+  padding-bottom: 2px;
+  border-bottom: 2px solid transparent;
+}
+
+.nav-link.current {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.main {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 8px 20px 64px;
+}
+
+.footer {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.footer p {
+  margin: 0;
+}
+
+/* ---- home -------------------------------------------------------------- */
+
+.hero {
+  padding: 28px 0 8px;
+}
+
+.hero h1 {
+  margin: 0 0 12px;
+  font-size: clamp(30px, 5vw, 44px);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.lede {
+  max-width: var(--measure);
+  color: var(--ink-soft);
+  font-size: 18px;
+}
+
+.cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 24px 0 8px;
+}
+
+.cta {
+  display: inline-block;
+  padding: 9px 18px;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.cta:hover {
+  text-decoration: none;
+  filter: brightness(1.08);
+}
+
+.cta.secondary {
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+.features {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin-top: 32px;
+}
+
+.card {
+  padding: 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.card h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.card p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 14.5px;
+}
+
+/* ---- prose ------------------------------------------------------------- */
+
+.prose {
+  max-width: var(--measure);
+  padding-top: 20px;
+}
+
+.prose.wide {
+  max-width: none;
+}
+
+.prose h1 {
+  margin: 0 0 10px;
+  font-size: clamp(26px, 4vw, 34px);
+  letter-spacing: -0.02em;
+}
+
+.prose h2 {
+  margin: 32px 0 8px;
+  font-size: 19px;
+}
+
+.prose p {
+  margin: 0 0 14px;
+}
+
+.breadcrumb {
+  margin: 0 0 10px;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+pre {
+  margin: 14px 0 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  line-height: 1.55;
+}
+
+.prose :not(pre) > code {
+  padding: 1px 5px;
+  background: var(--code-bg);
+  border-radius: 5px;
+  /* An inline snippet is one token; letting it wrap splits "?items=N" in two. */
+  white-space: nowrap;
+}
+
+.doc-list {
+  margin: 20px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.doc-list li {
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+
+.doc-list a {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.doc-summary {
+  display: block;
+  color: var(--ink-soft);
+  font-size: 14.5px;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin: 28px 0 0;
+}
+
+.fact {
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.fact dt {
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.fact dd {
+  margin: 4px 0 0;
+  font-weight: 600;
+}
+
+/* ---- inventory --------------------------------------------------------- */
+
+.inventory {
+  width: 100%;
+  margin-top: 24px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.inventory th,
+.inventory td {
+  padding: 7px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.inventory th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.row.even {
+  background: var(--panel);
+}
+
+.cell.id,
+.cell.price {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cell.price {
+  text-align: right;
+}
+
+.badge {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.badge-ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.badge-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.badge-muted {
+  background: var(--muted-soft);
+  color: var(--muted);
+}
+
+.meter {
+  position: relative;
+  display: inline-block;
+  width: 110px;
+  height: 16px;
+  background: var(--muted-soft);
+  border-radius: 999px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+  opacity: 0.35;
+}
+
+.meter-label {
+  position: relative;
+  display: block;
+  text-align: center;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+}
+
+@media (max-width: 720px) {
+  .metrics {
+    font-size: 12px;
+  }
+
+  .metrics-switch {
+    margin-left: 0;
+  }
+
+  .cell.category,
+  .inventory th:nth-child(3) {
+    display: none;
+  }
+}
