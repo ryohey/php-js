@@ -70,6 +70,17 @@ final class Op
      * only thing that list is needed for once parameters have their slots.
      */
     public const REST_ARGS = 89;   // n
+    /**
+     * The temporal dead zone, as a value. A `let` or `const` slot holds this
+     * from block entry until its declaration runs; JSHole is reused because it
+     * is already the "no value here" marker for array holes and can never be a
+     * JS value in its own right.
+     */
+    public const PUSH_TDZ = 90;
+    /** Throws ReferenceError if the value on top is still the dead-zone marker. */
+    public const TDZ_CHECK = 91;
+    /** Assignment to a `const` binding: always a TypeError. */
+    public const THROW_CONST = 92;
     public const NOT = 38;
     public const BNOT = 39;
     public const TYPEOF = 40;
@@ -164,6 +175,7 @@ final class Op
         self::NEG => '', self::TONUM => '', self::NOT => '', self::BNOT => '', self::TYPEOF => '',
         self::TOSTR => '',
         self::REST_ARGS => 'n',
+        self::PUSH_TDZ => '', self::TDZ_CHECK => 'k', self::THROW_CONST => '',
         self::BAND => '', self::BOR => '', self::BXOR => '',
         self::SHL => '', self::SHR => '', self::USHR => '',
         self::EQ => '', self::NEQ => '', self::SEQ => '', self::SNEQ => '',

@@ -479,6 +479,23 @@ final class Vm
                         break;
                     }
 
+                    case Op::PUSH_TDZ:
+                        $stack[$sp++] = JSHole::$hole;
+                        break;
+                    case Op::TDZ_CHECK:
+                        if ($stack[$sp - 1] === JSHole::$hole) {
+                            $this->sp = $sp;
+                            $this->throwError(
+                                'ReferenceError',
+                                "Cannot access '" . $consts[$code[$pc]] . "' before initialization"
+                            );
+                        }
+                        $pc++;
+                        break;
+                    case Op::THROW_CONST:
+                        $this->sp = $sp;
+                        $this->throwError('TypeError', 'Assignment to constant variable.');
+                        // no break (throwError does not return)
                     case Op::REST_ARGS: {
                         $from = $code[$pc++];
                         $args = $frame[self::F_ARGS] ?? [];

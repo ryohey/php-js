@@ -310,6 +310,124 @@ final class LanguageTest extends EvalTestCase
             '(function (a, ...rest) { return arguments.length; })(1, 2, 3)',
         ];
 
+        // --- let and const ---
+        // A block is a scope of its own, which is the whole difference from
+        // `var`: the outer binding is shadowed, not overwritten.
+        yield 'let is scoped to its block' => [1, 'var x = 1; { let x = 2; } x'];
+        yield 'let shadows an outer binding' => [
+            '2|1',
+            'var x = 1; var seen; { let x = 2; seen = x; } seen + "|" + x',
+        ];
+        yield 'a let block does not leak' => ['undefined', '{ let inner = 1; } typeof inner'];
+        yield 'let without an initializer is undefined' => ['undefined', '{ let a; typeof a }'];
+        yield 'nested blocks each get their own binding' => [
+            '1,2,1',
+            'var out = []; { let n = 1; out.push(n); { let n = 2; out.push(n); } out.push(n); }'
+                . ' out.join(",")',
+        ];
+        yield 'let at function-body level stays in the function' => [
+            '1|undefined',
+            'function f() { let g = 1; return g; } f() + "|" + typeof g',
+        ];
+        yield 'a for head binding does not leak' => [
+            'undefined',
+            'for (let i = 0; i < 3; i++) {} typeof i',
+        ];
+        yield 'let in a loop body is fine when nothing captures it' => [
+            6,
+            'var t = 0; for (var i = 0; i < 3; i++) { let j = i * 2; t += j; } t',
+        ];
+        yield 'a closure over a block-scoped let keeps it' => [
+            3,
+            'var f; { let v = 3; f = function () { return v; }; } f()',
+        ];
+        // Lexical bindings enter their dead zone before the body's functions are
+        // instantiated, so a hoisted function may close over one.
+        yield 'a hoisted function sees a let in the same body' => [
+            7,
+            'function outer() { let v = 7; function inner() { return v; } return inner(); } outer()',
+        ];
+
+        // Every statement list that can hold a `let` is a scope, not just a
+        // plain block.
+        yield 'a try block scopes its let' => ['undefined', 'try { let q = 1; } catch (e) {} typeof q'];
+        yield 'a catch body scopes its let' => [
+            'undefined',
+            'try { throw 1 } catch (e) { let q = 1; } typeof q',
+        ];
+        yield 'a finally block scopes its let' => ['undefined', 'try {} finally { let q = 1; } typeof q'];
+        yield 'a labelled block scopes its let' => ['undefined', 'lbl: { let z = 1; } typeof z'];
+        // A switch's cases share one scope, so a `let` in one case is visible to
+        // the next -- and may not be declared twice across them.
+        yield 'switch cases share one block scope' => [
+            'one',
+            'var r; switch (1) { case 1: let s = "one"; r = s; break; } r',
+        ];
+
+        yield 'const holds its value' => [5, 'const c = 5; c'];
+        yield 'assigning to a const is a TypeError' => [
+            'TypeError',
+            'const c = 1; try { c = 2; "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'const objects are still mutable' => [2, 'const o = { a: 1 }; o.a = 2; o.a'];
+        yield 'a const declaration needs an initializer' => [
+            'SyntaxError',
+            'try { eval("const c;"); "none" } catch (e) { e.constructor.name }',
+        ];
+
+        // The dead zone is what makes an early read observable rather than
+        // `undefined`, which is the reason `let` is not `var`.
+        yield 'reading a let before its declaration throws' => [
+            'ReferenceError',
+            '{ try { x; "none" } catch (e) { e.constructor.name } let x = 1; }',
+        ];
+        yield 'the dead zone ends at the declaration' => [1, '{ let x = 1; x }'];
+
+        // A lexical name may not collide with anything else that reaches the
+        // same scope. `var` hoists through blocks, so it reaches further than
+        // it looks.
+        yield 'let may not be declared twice in a block' => [
+            'SyntaxError',
+            'try { eval("{ let e = 1; let e = 2; }"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'a let may not share a name with a var' => [
+            'SyntaxError',
+            'try { eval("let d = 1; var d = 2;"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'a var in a nested block still collides' => [
+            'SyntaxError',
+            'try { eval("let h = 1; { var h = 2; }"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'a let may not share a name with a parameter' => [
+            'SyntaxError',
+            'try { eval("(function (p) { let p = 1; })"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'a nested block may reuse a parameter name' => [
+            9,
+            '(function (p) { { let p = 9; return p; } })(1)',
+        ];
+        yield 'a let may not share a name with the catch parameter' => [
+            'SyntaxError',
+            'try { eval("try {} catch (e) { let e = 1; }"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'a for head binding may not share a name with a body var' => [
+            'SyntaxError',
+            'try { eval("for (let i = 0; i < 1; i++) { var i = 2; }"); "none" }'
+                . ' catch (e) { e.constructor.name }',
+        ];
+        yield 'a switch may not declare the same let twice' => [
+            'SyntaxError',
+            'try { eval("switch(1){case 1: let s=1; case 2: let s=2;}"); "none" }'
+                . ' catch (e) { e.constructor.name }',
+        ];
+        // `let` is not a reserved word, so `var let` stays legal -- but a
+        // lexical declaration cannot bind it, because `let let` has no reading.
+        yield 'a lexical declaration may not be named let' => [
+            'SyntaxError',
+            'try { eval("let let = 1;"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'var let is still allowed' => [1, 'var let = 1; let'];
+
         yield 'number toFixed' => ['3.14', '(3.14159).toFixed(2)'];
         yield 'number toString radix' => ['ff', '(255).toString(16)'];
         yield 'json roundtrip' => ['{"a":[1,2],"b":"x"}', 'JSON.stringify(JSON.parse("{\"a\":[1,2],\"b\":\"x\"}"))'];
@@ -353,10 +471,30 @@ final class LanguageTest extends EvalTestCase
         $this->evalJs('class A {}');
     }
 
-    public function testLetIsRejected(): void
+    /**
+     * A `let` captured by a closure inside a loop needs a fresh binding each
+     * iteration. One slot is reused instead, which would hand every closure the
+     * last value, so the shape is refused rather than answered wrongly.
+     */
+    public function testLetCapturedInALoopIsRejected(): void
     {
         $this->expectException(CompileError::class);
-        $this->evalJs('let x = 1;');
+        $this->expectExceptionMessage('fresh binding per iteration');
+        $this->evalJs('var f = []; for (var i = 0; i < 3; i++) { let j = i; f.push(function () { return j; }); }');
+    }
+
+    /** A `for` head's binding is per-iteration too, so the same refusal applies. */
+    public function testLetInAForHeadCapturedByAClosureIsRejected(): void
+    {
+        $this->expectException(CompileError::class);
+        $this->expectExceptionMessage('fresh binding per iteration');
+        $this->evalJs('var f = []; for (let i = 0; i < 3; i++) { f.push(function () { return i; }); }');
+    }
+
+    public function testLetInAForInHeadIsRejected(): void
+    {
+        $this->expectException(CompileError::class);
+        $this->evalJs('for (let k in {a: 1}) {}');
     }
 
     public function testStackOverflowIsRangeError(): void

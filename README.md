@@ -23,29 +23,37 @@ says whether the syntax work is aimed at anything:
 
 ```console
 $ php tests/acceptance/run.php --dir path/to/node_modules
-  accepted   196   49.0%
-  rejected   204   51.0%
+  accepted   238   59.5%
+  rejected   162   40.5%
 
 what the rejections tripped on:
-  'const' declaration        141  35.2%
-  ArrowFunctionExpression      7   1.8%
+  Destructuring               88  22.0%
+  ForOfStatement              17   4.2%
+  SpreadElement               14   3.5%
   ...
 ```
+
+Template literals, arrow functions, default/rest parameters and `let`/`const`
+have landed since; destructuring is now the largest single item left.
 
 **Conformance** — the test262 pass rate over what is implemented. Against a
 current tc39/test262 checkout:
 
 | Area | Pass rate | Run |
 |---|---|---|
-| **overall** | **96.5%** | 13048 |
-| `language/` | 94.2% | 4398 |
-| `built-ins/` | 97.7% | 8650 |
+| **overall** | **95.9%** | 13420 |
+| `language/` | 93.9% | 4597 |
+| `built-ins/` | 97.0% | 8823 |
 
-A further ~22000 tests are skipped as out of scope: ES6+ features by front-matter
-tag, post-ES5 builtins by path, and — the largest group — tests whose *own source*
-is written in ES6 (arrow functions, `const`, template literals), which an ES5.1
-engine cannot run by construction. The runner reports those as skips rather than
-failures so the rate reflects engine defects only.
+A further ~22000 tests are skipped as out of scope: post-ES2015 features by
+front-matter tag, out-of-scope builtins by path, and tests whose *own source*
+uses syntax the compiler does not accept yet, which it cannot run by
+construction. The runner reports those as skips rather than failures so the rate
+reflects engine defects only.
+
+The rate moves *down* as the syntax surface grows, and that is the intended
+reading: each landed feature un-skips a batch of tests that were never passing,
+only unreachable. `let`/`const` alone moved 189 tests from skipped to run.
 
 ```console
 $ git clone --depth 1 https://github.com/tc39/test262.git ../test262
@@ -61,8 +69,9 @@ The core language works end to end:
 - **Compiler**: Peast (ESTree) → scope analysis (closure capture, strict-mode
   early errors) → stack bytecode → a peephole pass that fuses the opcode pairs
   a real workload actually executes. ES5.1 plus template literals, arrow
-  functions and default/rest parameters so far; DESIGN.md §2.5 has the order
-  for the rest
+  functions, default/rest parameters and `let`/`const` (block scopes, temporal
+  dead zone, redeclaration errors) so far; DESIGN.md §2.5 has the order for
+  the rest
 - **VM**: single `while/switch` dispatch loop, own frame stack (JS calls never
   consume the PHP call stack), in-VM exception handling, wall-clock execution
   limit

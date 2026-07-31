@@ -45,6 +45,7 @@ final class Compiler
 
     private function __construct()
     {
+        $this->blockScopes = new \SplObjectStorage();
         $this->fnCtx = new \SplObjectStorage();
         $this->catchBind = new \SplObjectStorage();
     }
@@ -179,8 +180,20 @@ final class Compiler
             $this->lexStack[] = ['ctx' => $ctx, 'names' => $selfNames];
         }
         $this->lexStack[] = ['ctx' => $ctx, 'names' => $ctx->bindings];
+        // A function body and a program are blocks too: `let` at their top
+        // level belongs to them, not to the surrounding var scope.
+        $bodyOwner = $isProgram ? $node : ($ctx->arrowBody !== null ? null : $node->getBody());
+        $paramNames = $ctx->params;
+        if ($ctx->restParam !== null) {
+            $paramNames[] = $ctx->restParam;
+        }
+        $bodyBlock = $bodyOwner !== null
+            && $this->enterBlock($bodyOwner, $body, $ctx, true, $paramNames);
         foreach ($body as $stmt) {
             $this->analyzeNode($stmt, $ctx);
+        }
+        if ($bodyBlock) {
+            array_pop($this->lexStack);
         }
         foreach ($ctx->paramInits as $index => $init) {
             $this->checkInitializerOrder($ctx, $index, $init);
@@ -192,6 +205,20 @@ final class Compiler
         array_pop($this->lexStack);
         if ($selfNames !== []) {
             array_pop($this->lexStack);
+        }
+
+        foreach ($ctx->extraBindings as $b) {
+            if ($b->inLoop && $b->captured && ($b->kind === 'let' || $b->kind === 'const')) {
+                // Each iteration should give `$b->name` a binding of its own, so
+                // that closures made in different iterations see different
+                // values. One slot is reused instead, which would hand every
+                // closure the last value -- a wrong answer, not a slow one.
+                $this->unsupported(
+                    null,
+                    "'{$b->kind} {$b->name}' is captured by a closure inside a loop, "
+                        . 'which needs a fresh binding per iteration (not supported yet)'
+                );
+            }
         }
 
         $this->assignSlots($ctx);
@@ -217,7 +244,9 @@ final class Compiler
         switch ($node->getType()) {
             case 'VariableDeclaration':
                 if ($node->getKind() !== 'var') {
-                    $this->unsupported($node, "'{$node->getKind()}' declarations are not supported (ES5 target; downlevel first)");
+                    // Block scoped, so nothing to hoist to the function: the
+                    // owning block binds it (see enterBlock).
+                    return;
                 }
                 foreach ($node->getDeclarations() as $d) {
                     $id = $d->getId();
@@ -326,6 +355,11 @@ final class Compiler
             case 'VariableDeclaration':
                 foreach ($node->getDeclarations() as $d) {
                     $this->analyzeNode($d->getInit(), $ctx);
+                    if ($node->getKind() !== 'var') {
+                        // Reaching the name binds it in the block that declared
+                        // it, which enterBlock already created.
+                        $this->analyzeReference($d->getId()->getName(), $ctx);
+                    }
                 }
                 return;
             case 'MemberExpression':
@@ -382,45 +416,87 @@ final class Compiler
                     $this->analyzeNode($a, $ctx);
                 }
                 return;
-            case 'BlockStatement':
+            case 'BlockStatement': {
+                $opened = $this->enterBlock($node, $node->getBody(), $ctx, true);
                 foreach ($node->getBody() as $s) {
                     $this->analyzeNode($s, $ctx);
                 }
+                if ($opened) {
+                    array_pop($this->lexStack);
+                }
                 return;
+            }
             case 'IfStatement':
                 $this->analyzeNode($node->getTest(), $ctx);
                 $this->analyzeNode($node->getConsequent(), $ctx);
                 $this->analyzeNode($node->getAlternate(), $ctx);
                 return;
-            case 'ForStatement':
-                $this->analyzeNode($node->getInit(), $ctx);
+            case 'ForStatement': {
+                // `for (let i …)` binds `i` to the loop, not to the enclosing
+                // scope, so the head gets a scope of its own around everything.
+                $init = $node->getInit();
+                $head = $init !== null && $init->getType() === 'VariableDeclaration'
+                    && $init->getKind() !== 'var';
+                // The head's binding is per-iteration too -- the loop counts as
+                // entered before it is created, so a closure over it is caught
+                // by the same check as one over a `let` in the body.
+                $this->loopDepth++;
+                // The body's vars land in the enclosing function but are visible
+                // through the head's scope, so they cannot share a name with it.
+                $opened = $head && $this->enterBlock(
+                    $node,
+                    [$init],
+                    $ctx,
+                    true,
+                    array_keys($this->varNamesIn([$node->getBody()], false))
+                );
+                $this->analyzeNode($init, $ctx);
                 $this->analyzeNode($node->getTest(), $ctx);
                 $this->analyzeNode($node->getUpdate(), $ctx);
                 $this->analyzeNode($node->getBody(), $ctx);
-                return;
-            case 'ForInStatement':
-                if ($node->getLeft()->getType() === 'VariableDeclaration') {
-                    $this->analyzeNode($node->getLeft(), $ctx);
-                } else {
-                    $this->analyzeNode($node->getLeft(), $ctx);
+                $this->loopDepth--;
+                if ($opened) {
+                    array_pop($this->lexStack);
                 }
-                $this->analyzeNode($node->getRight(), $ctx);
-                $this->analyzeNode($node->getBody(), $ctx);
                 return;
+            }
+            case 'ForInStatement': {
+                $left = $node->getLeft();
+                if ($left->getType() === 'VariableDeclaration' && $left->getKind() !== 'var') {
+                    $this->unsupported($left, "'{$left->getKind()}' in a for-in head is not supported yet");
+                }
+                $this->analyzeNode($left, $ctx);
+                $this->analyzeNode($node->getRight(), $ctx);
+                $this->loopDepth++;
+                $this->analyzeNode($node->getBody(), $ctx);
+                $this->loopDepth--;
+                return;
+            }
             case 'WhileStatement':
             case 'DoWhileStatement':
                 $this->analyzeNode($node->getTest(), $ctx);
+                $this->loopDepth++;
                 $this->analyzeNode($node->getBody(), $ctx);
+                $this->loopDepth--;
                 return;
-            case 'SwitchStatement':
+            case 'SwitchStatement': {
+                // The discriminant is evaluated before the case block is
+                // entered, so it sees the outer scope; the case tests do not.
+                // All the cases share one scope, which is why the lists are
+                // merged rather than entered one at a time.
                 $this->analyzeNode($node->getDiscriminant(), $ctx);
+                $opened = $this->enterBlock($node, $this->switchBody($node), $ctx, true);
                 foreach ($node->getCases() as $case) {
                     $this->analyzeNode($case->getTest(), $ctx);
                     foreach ($case->getConsequent() as $s) {
                         $this->analyzeNode($s, $ctx);
                     }
                 }
+                if ($opened) {
+                    array_pop($this->lexStack);
+                }
                 return;
+            }
             case 'ReturnStatement':
             case 'ThrowStatement':
                 $this->analyzeNode($node->getArgument(), $ctx);
@@ -438,7 +514,14 @@ final class Compiler
                     $this->catchBind[$handler] = $b;
                     $ctx->catchBindings[$handler] = $b;
                     $this->lexStack[] = ['ctx' => $ctx, 'names' => [$param->getName() => $b]];
-                    $this->analyzeNode($handler->getBody(), $ctx);
+                    $body = $handler->getBody();
+                    $opened = $this->enterBlock($body, $body->getBody(), $ctx, true, [$param->getName()]);
+                    foreach ($body->getBody() as $s) {
+                        $this->analyzeNode($s, $ctx);
+                    }
+                    if ($opened) {
+                        array_pop($this->lexStack);
+                    }
                     array_pop($this->lexStack);
                 }
                 $this->analyzeNode($node->getFinalizer(), $ctx);
@@ -496,6 +579,236 @@ final class Compiler
             }
         });
         $traverser->traverse($init);
+    }
+
+    /**
+     * Block-scoped bindings, keyed by the statement list that owns them.
+     *
+     * Both passes walk the same tree and must agree exactly on what is in
+     * scope where, so the bindings are created once during analysis and looked
+     * up again during code generation rather than rebuilt. This is the same
+     * arrangement catch parameters already use.
+     */
+    private \SplObjectStorage $blockScopes;
+    /** Loop nesting during analysis; see Binding::$inLoop. */
+    private int $loopDepth = 0;
+
+    /**
+     * The `let` and `const` names declared directly in a statement list.
+     *
+     * Only directly: a nested block owns its own, and `var` is not lexical.
+     *
+     * @param  list<object> $stmts
+     * @return array<string, string> name => 'let' | 'const'
+     */
+    private function lexicalNames(array $stmts): array
+    {
+        $names = [];
+        foreach ($stmts as $stmt) {
+            if ($stmt->getType() !== 'VariableDeclaration') {
+                continue;
+            }
+            $kind = $stmt->getKind();
+            if ($kind !== 'let' && $kind !== 'const') {
+                continue;
+            }
+            foreach ($stmt->getDeclarations() as $d) {
+                $id = $d->getId();
+                if ($id->getType() !== 'Identifier') {
+                    $this->unsupported($id, 'Destructuring declarations are not supported yet');
+                }
+                $name = $id->getName();
+                if ($name === 'let') {
+                    // `let` is not a reserved word, but a lexical declaration
+                    // may not bind it: `let let` has no unambiguous reading.
+                    $this->fail($id, "'let' is not a valid name for a lexical declaration");
+                }
+                if (isset($names[$name])) {
+                    $this->fail($id, "Identifier '$name' has already been declared");
+                }
+                if ($kind === 'const' && $d->getInit() === null) {
+                    $this->fail($id, "Missing initializer in const declaration");
+                }
+                $names[$name] = $kind;
+            }
+        }
+        return $names;
+    }
+
+    /**
+     * The names a statement list contributes to the enclosing var scope.
+     *
+     * A lexical name may not collide with one of these, and `var` hoists
+     * straight through blocks, so the whole subtree counts -- but not nested
+     * functions, which start a var scope of their own.
+     *
+     * Function declarations count only at the top of the list: a nested block
+     * owns its own, so `let g; { function g() {} }` is legal while
+     * `{ let g; function g() {} }` is not.
+     *
+     * @param  list<object>       $stmts
+     * @return array<string, true>
+     */
+    private function varNamesIn(array $stmts, bool $top = true): array
+    {
+        $names = [];
+        foreach ($stmts as $stmt) {
+            $names += $this->varNamesInStmt($stmt, $top);
+        }
+        return $names;
+    }
+
+    /** @return array<string, true> */
+    private function varNamesInStmt(?object $node, bool $top): array
+    {
+        if ($node === null) {
+            return [];
+        }
+        switch ($node->getType()) {
+            case 'VariableDeclaration':
+                if ($node->getKind() !== 'var') {
+                    return [];
+                }
+                $names = [];
+                foreach ($node->getDeclarations() as $d) {
+                    $id = $d->getId();
+                    if ($id->getType() === 'Identifier') {
+                        $names[$id->getName()] = true;
+                    }
+                }
+                return $names;
+            case 'FunctionDeclaration':
+                return $top ? [$node->getId()->getName() => true] : [];
+            case 'BlockStatement':
+                return $this->varNamesIn($node->getBody(), false);
+            case 'IfStatement':
+                return $this->varNamesInStmt($node->getConsequent(), false)
+                    + $this->varNamesInStmt($node->getAlternate(), false);
+            case 'ForStatement':
+                return $this->varNamesInStmt($node->getInit(), false)
+                    + $this->varNamesInStmt($node->getBody(), false);
+            case 'ForInStatement':
+            case 'ForOfStatement':
+                return $this->varNamesInStmt($node->getLeft(), false)
+                    + $this->varNamesInStmt($node->getBody(), false);
+            case 'WhileStatement':
+            case 'DoWhileStatement':
+            case 'LabeledStatement':
+                return $this->varNamesInStmt($node->getBody(), false);
+            case 'SwitchStatement':
+                $names = [];
+                foreach ($node->getCases() as $case) {
+                    $names += $this->varNamesIn($case->getConsequent(), false);
+                }
+                return $names;
+            case 'TryStatement':
+                $names = $this->varNamesIn($node->getBlock()->getBody(), false);
+                if ($node->getHandler() !== null) {
+                    $names += $this->varNamesIn($node->getHandler()->getBody()->getBody(), false);
+                }
+                if ($node->getFinalizer() !== null) {
+                    $names += $this->varNamesIn($node->getFinalizer()->getBody(), false);
+                }
+                return $names;
+            default:
+                return [];
+        }
+    }
+
+    /**
+     * A switch's cases as one statement list: they share a single block scope,
+     * so `case 1: let x;` and `case 2: let x;` collide.
+     *
+     * @return list<object>
+     */
+    private function switchBody(object $node): array
+    {
+        $stmts = [];
+        foreach ($node->getCases() as $case) {
+            foreach ($case->getConsequent() as $s) {
+                $stmts[] = $s;
+            }
+        }
+        return $stmts;
+    }
+
+    /**
+     * Open a block scope for a statement list, if it declares anything.
+     *
+     * Returns whether a frame was pushed, so the caller can pop symmetrically.
+     * During analysis the bindings are created and remembered; during code
+     * generation the remembered ones are pushed again.
+     *
+     * `$reserved` names already occupy this scope without appearing in
+     * `$stmts` -- parameters for a function body, the catch parameter for a
+     * catch body, the loop body's vars for a `for` head.
+     *
+     * @param list<object> $stmts
+     * @param list<string> $reserved
+     */
+    private function enterBlock(object $owner, array $stmts, Ctx $ctx, bool $analysing, array $reserved = []): bool
+    {
+        if ($analysing) {
+            $names = $this->lexicalNames($stmts);
+            if ($names === []) {
+                return false;
+            }
+            $taken = $this->varNamesIn($stmts) + array_fill_keys($reserved, true);
+            $bindings = [];
+            foreach ($names as $name => $kind) {
+                if (isset($taken[$name])) {
+                    $this->fail($owner, "Identifier '$name' has already been declared");
+                }
+                $this->checkBindingName($ctx, $name, $owner);
+                $b = new Binding($ctx, $name, $kind);
+                $b->inLoop = $this->loopDepth > 0;
+                $ctx->extraBindings[] = $b;
+                $bindings[$name] = $b;
+            }
+            $this->blockScopes[$owner] = $bindings;
+        } elseif (!$this->blockScopes->contains($owner)) {
+            return false;
+        }
+        $this->lexStack[] = ['ctx' => $ctx, 'names' => $this->blockScopes[$owner]];
+        return true;
+    }
+
+    /**
+     * Put every binding of a freshly entered block into its dead zone.
+     *
+     * Reads before the declaration runs are the whole reason `let` is not
+     * `var`, and the marker is what makes them observable rather than
+     * `undefined`.
+     */
+    private function emitBlockPrologue(object $owner): void
+    {
+        if (!$this->blockScopes->contains($owner)) {
+            return;
+        }
+        foreach ($this->blockScopes[$owner] as $b) {
+            $this->cur->emit(Op::PUSH_TDZ);
+            $this->emitStoreBinding($b);
+            $this->cur->emit(Op::POP);
+        }
+    }
+
+    /**
+     * Generate a statement list inside the block scope its owner was analysed
+     * with. Every list that can hold a `let` goes through here, so that the two
+     * passes stay in step about what is in scope.
+     *
+     * @param list<object> $stmts
+     */
+    private function genScopedList(object $owner, array $stmts): void
+    {
+        $opened = $this->enterBlock($owner, $stmts, $this->cur, false);
+        $this->emitBlockPrologue($owner);
+        foreach ($stmts as $s) {
+            $this->genStmt($s);
+        }
+        if ($opened) {
+            array_pop($this->lexStack);
+        }
     }
 
     private function checkBindingName(Ctx $ctx, string $name, ?object $node): void
@@ -665,6 +978,12 @@ final class Compiler
             }
         }
         // Hoisted function declarations.
+        $bodyOwner = $isProgram ? $node : ($ctx->arrowBody !== null ? null : $node->getBody());
+        $bodyBlock = $bodyOwner !== null && $this->enterBlock($bodyOwner, $body, $ctx, false);
+        if ($bodyOwner !== null) {
+            $this->emitBlockPrologue($bodyOwner);
+        }
+
         foreach ($ctx->fnDecls as $fn) {
             $childCtx = $this->fnCtx[$fn];
             $idx = $this->compileChild($childCtx, $fn);
@@ -681,6 +1000,12 @@ final class Compiler
 
         foreach ($body as $stmt) {
             $this->genStmt($stmt);
+        }
+        if ($bodyBlock) {
+            array_pop($this->lexStack);
+        }
+        if ($bodyBlock) {
+            array_pop($this->lexStack);
         }
         if ($ctx->arrowBody !== null) {
             // `x => expr` returns the expression; there is no other statement.
@@ -758,15 +1083,24 @@ final class Compiler
                 $this->genExpr($node->getExpression());
                 $c->emit($c->isProgram ? Op::SET_COMPLETION : Op::POP);
                 return;
-            case 'VariableDeclaration':
+            case 'VariableDeclaration': {
+                $lexical = $node->getKind() !== 'var';
                 foreach ($node->getDeclarations() as $d) {
                     if ($d->getInit() !== null) {
                         $this->genExpr($d->getInit());
-                        $this->emitStoreName($d->getId()->getName());
-                        $c->emit(Op::POP);
+                    } elseif ($lexical) {
+                        // `let x;` is undefined, but it must still *leave* the
+                        // dead zone -- a later read is legal and answers
+                        // undefined rather than throwing.
+                        $c->emit(Op::PUSH_UNDEF);
+                    } else {
+                        continue;
                     }
+                    $this->emitStoreName($d->getId()->getName(), $lexical);
+                    $c->emit(Op::POP);
                 }
                 return;
+            }
             case 'FunctionDeclaration':
                 return; // hoisted in the prologue
             case 'EmptyStatement':
@@ -777,9 +1111,7 @@ final class Compiler
                     $this->genLabeledBlock($node, $labels);
                     return;
                 }
-                foreach ($node->getBody() as $s) {
-                    $this->genStmt($s);
-                }
+                $this->genScopedList($node, $node->getBody());
                 return;
             case 'IfStatement':
                 $this->requireStatementBody($node->getConsequent());
@@ -824,6 +1156,10 @@ final class Compiler
             case 'ForStatement': {
                 $this->requireStatementBody($node->getBody());
                 $init = $node->getInit();
+                $headScope = $this->enterBlock($node, $init === null ? [] : [$init], $this->cur, false);
+                if ($headScope) {
+                    $this->emitBlockPrologue($node);
+                }
                 if ($init !== null) {
                     if ($init->getType() === 'VariableDeclaration') {
                         $this->genStmt($init);
@@ -853,6 +1189,9 @@ final class Compiler
                     $c->patch($jEnd);
                 }
                 $this->popLoop($loop);
+                if ($headScope) {
+                    array_pop($this->lexStack);
+                }
                 return;
             }
             case 'ForInStatement': {
@@ -897,6 +1236,8 @@ final class Compiler
                 $t = $c->tempAlloc();
                 $c->emit(Op::SET_LOCAL, $t);
                 $c->emit(Op::POP);
+                $cases = $this->enterBlock($node, $this->switchBody($node), $c, false);
+                $this->emitBlockPrologue($node);
                 $loop = $this->pushLoop($labels, false);
                 $caseJumps = [];
                 $defaultIndex = -1;
@@ -926,6 +1267,9 @@ final class Compiler
                     $c->patch($jDefault);
                 }
                 $this->popLoop($loop);
+                if ($cases) {
+                    array_pop($this->lexStack);
+                }
                 $c->tempFree($t);
                 return;
             }
@@ -1046,9 +1390,7 @@ final class Compiler
     {
         $c = $this->cur;
         $loop = $this->pushLoop($labels, false);
-        foreach ($node->getBody() as $s) {
-            $this->genStmt($s);
-        }
+        $this->genScopedList($node, $node->getBody());
         $this->popLoop($loop);
     }
 
@@ -1084,17 +1426,14 @@ final class Compiler
     private function genTryCatchPart(object $node, ?object $handler): void
     {
         $c = $this->cur;
+        $block = $node->getBlock();
         if ($handler === null) {
-            foreach ($node->getBlock()->getBody() as $s) {
-                $this->genStmt($s);
-            }
+            $this->genScopedList($block, $block->getBody());
             return;
         }
         $jCatch = $c->emitJump(Op::TRY_ENTER);
         $c->tryStack[] = ['finalizer' => null];
-        foreach ($node->getBlock()->getBody() as $s) {
-            $this->genStmt($s);
-        }
+        $this->genScopedList($block, $block->getBody());
         array_pop($c->tryStack);
         $c->emit(Op::TRY_LEAVE);
         $jEnd = $c->emitJump(Op::JMP);
@@ -1102,10 +1441,10 @@ final class Compiler
         $b = $this->catchBind[$handler];
         $this->emitStoreBinding($b);
         $c->emit(Op::POP);
+        // The catch parameter sits outside the body's block scope, so a `let`
+        // in the body may not reuse its name (see the analysis pass).
         $this->lexStack[] = ['ctx' => $c, 'names' => [$b->name => $b]];
-        foreach ($handler->getBody()->getBody() as $s) {
-            $this->genStmt($s);
-        }
+        $this->genScopedList($handler->getBody(), $handler->getBody()->getBody());
         array_pop($this->lexStack);
         $c->patch($jEnd);
     }
@@ -1116,9 +1455,7 @@ final class Compiler
      */
     private function genFinalizerInline(object $finalizer): void
     {
-        foreach ($finalizer->getBody() as $s) {
-            $this->genStmt($s);
-        }
+        $this->genScopedList($finalizer, $finalizer->getBody());
     }
 
     /**
@@ -1943,13 +2280,27 @@ final class Compiler
         } else {
             $c->emit(Op::GET_LOCAL, $b->slot);
         }
+        if ($b->kind === 'let' || $b->kind === 'const') {
+            // Unconditional for now. Most reads are provably past their
+            // declaration, but proving it needs flow analysis this compiler
+            // does not have, and answering `undefined` inside the dead zone
+            // would be wrong rather than slow.
+            $c->emit(Op::TDZ_CHECK, $c->constIndex($b->name));
+        }
     }
 
-    private function emitStoreName(string $name): void
+    /** @param bool $declaring true for the declaration itself, which a const allows */
+    private function emitStoreName(string $name, bool $declaring = false): void
     {
         $c = $this->cur;
         $b = $this->resolve($name);
         if ($b instanceof Binding) {
+            if ($b->kind === 'const' && !$declaring) {
+                // The value is evaluated first and then discarded, because the
+                // spec evaluates the right-hand side before it complains.
+                $c->emit(Op::THROW_CONST);
+                return;
+            }
             $this->emitStoreBinding($b);
             return;
         }

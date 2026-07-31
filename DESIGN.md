@@ -126,6 +126,30 @@ for code you control; it is no longer the *only* way in.
   which is retained for exactly that reason. A parameter list carrying either is
   never mapped onto `arguments` (9.2.12), and may not repeat a name.
 
+- **`let` and `const`.** Block scopes are frames on the existing `lexStack`, and
+  the bindings go into `Ctx::$extraBindings`, so slot assignment is untouched and
+  a block-scoped name is an ordinary slot or environment index. Both passes must
+  agree exactly on what is in scope where, so `enterBlock` creates the bindings
+  once during analysis, keyed by the statement list that owns them, and pushes the
+  remembered ones again during codegen. **Every statement list that can hold a
+  `let` goes through it** — a plain block, a labelled block, a function body, a
+  program, a `try`/`catch`/`finally` block, a `for` head, and a switch's cases
+  (which share one scope, so the case lists are merged into one). A list reached
+  by any other route silently loses its scope, which is why codegen funnels them
+  all through a single `genScopedList`.
+
+  TDZ is a sentinel written by `PUSH_TDZ` and read by `TDZ_CHECK`; `THROW_CONST`
+  is the assignment guard. A lexical name may not collide with anything else that
+  reaches the same scope, and `var` hoists straight through blocks, so the check
+  looks at the whole subtree (`varNamesIn`) plus the names that occupy the scope
+  without appearing in it: parameters for a function body, the catch parameter for
+  a catch body, the body's `var`s for a `for` head.
+
+  **Refused rather than approximated:** a `let` or `const` captured by a closure
+  inside a loop — including one declared in the `for` head — needs a fresh binding
+  per iteration, and one slot is reused instead. Answering would hand every
+  closure the last value. `for (let x in …)` is refused for the same reason.
+
 **Known gaps in what has landed**, all visible as test262 failures rather than
 as silence: `var f = () => {}` does not take the name `f` (NamedEvaluation is
 not implemented for any form), and two malformed-unicode-escape cases in
@@ -142,8 +166,8 @@ Both go away when TDZ lands with `let`.
 Defaults and rest also brought in tests for something not implemented: with a
 non-simple parameter list the parameters and the body's `var`s occupy *separate*
 scopes, so `function f(a = 1) { var a; }` has two `a`s. Seven test262 cases cover
-it and fail. It is the same second-scope machinery `let` needs, and it is queued
-with it rather than approximated.
+it and fail. `let` gave the compiler block scopes but not a second *var* scope,
+so this is still open.
 
 Widening the denominator also *exposed* four pre-existing builtin bugs —
 `Array.prototype` `pop`/`push`/`unshift` with a string receiver, and `shift`
@@ -151,13 +175,10 @@ against a non-writable `length`. Those tests had been skipped because their own
 source is written in ES6, not because the engine passed them. That is the second
 argument for growing the surface: the skips were hiding real defects.
 
-**Next, in this order:** destructuring, then `let`/`const`. The last is the one with real design content, and the plan is:
-block scopes as frames on the existing `lexStack` (both passes already push and
-pop it symmetrically), bindings into `Ctx::$extraBindings` so slot assignment is
-unchanged — **so the VM does not change at all**, slots being slots. TDZ needs a
-sentinel and a checked read; `JSHole` already exists for array holes. The
-per-iteration binding of `for (let i …)` captured by a closure is the fiddly
-part, and until it is right it will be refused rather than approximated.
+**Next:** destructuring, which is now 22.0% of all rejections and the largest
+single item left by a wide margin. Then `for…of` (4.2%) and spread (3.5%).
+Queued behind them: per-iteration loop bindings (which retires the refusal
+above), the separate parameter scope, and NamedEvaluation.
 
 **Deliberately out of scope for now:** ES modules (node-compat resolves
 CommonJS, and published packages overwhelmingly ship it), Proxy and Reflect
