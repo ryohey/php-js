@@ -390,6 +390,11 @@ final class Compiler
             case 'LabeledStatement':
                 $this->analyzeNode($node->getBody(), $ctx);
                 return;
+            case 'TemplateLiteral':
+                foreach ($node->getExpressions() as $expr) {
+                    $this->analyzeNode($expr, $ctx);
+                }
+                return;
             case 'WithStatement':
                 $this->unsupported($node, "'with' statements are not supported");
                 // no break (fail throws)
@@ -1194,6 +1199,9 @@ final class Compiler
             case 'AssignmentExpression':
                 $this->genAssignment($node);
                 return;
+            case 'TemplateLiteral':
+                $this->genTemplate($node);
+                return;
             case 'SequenceExpression': {
                 $exprs = $node->getExpressions();
                 $n = count($exprs);
@@ -1207,6 +1215,53 @@ final class Compiler
             }
             default:
                 $this->unsupported($node, "Unsupported expression: $type (ES5 target; downlevel first)");
+        }
+    }
+
+    /**
+     * A template literal is string concatenation, with one wrinkle that stops
+     * it being a plain rewrite to `+`: each substitution is converted with
+     * ToString (13.2.8.5), while `+` converts with ToPrimitive under the
+     * default hint. An object carrying both `valueOf` and `toString` tells the
+     * two apart, so the substitutions get an explicit TOSTR.
+     *
+     * Once the accumulator is a string every later ADD takes the string fast
+     * path, which is why an empty quasi can simply be skipped.
+     */
+    private function genTemplate(object $node): void
+    {
+        $c = $this->cur;
+        $quasis = $node->getQuasis();
+        $exprs = $node->getExpressions();
+
+        if ($exprs === []) {
+            $c->emit(Op::PUSH_CONST, $c->constIndex($quasis[0]->getValue()));
+            return;
+        }
+
+        $started = false;
+        foreach ($quasis as $i => $quasi) {
+            $text = $quasi->getValue();
+            if ($text !== '') {
+                $c->emit(Op::PUSH_CONST, $c->constIndex($text));
+                if ($started) {
+                    $c->emit(Op::ADD);
+                }
+                $started = true;
+            }
+            if (!isset($exprs[$i])) {
+                continue;
+            }
+            $this->genExpr($exprs[$i]);
+            $c->emit(Op::TOSTR);
+            if ($started) {
+                $c->emit(Op::ADD);
+            }
+            $started = true;
+        }
+        if (!$started) {
+            // Every quasi empty and no substitutions left: `` produces "".
+            $c->emit(Op::PUSH_CONST, $c->constIndex(''));
         }
     }
 

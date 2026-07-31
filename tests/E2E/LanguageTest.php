@@ -175,6 +175,28 @@ final class LanguageTest extends EvalTestCase
         yield 'math round negative half' => [-3, 'Math.round(-3.5)'];
         yield 'math max nan' => [NAN, 'Math.max(1, NaN)'];
         yield 'math pow' => [8, 'Math.pow(2,3)'];
+        // ---- ES2015 syntax (DESIGN.md §2.5) --------------------------------
+        yield 'template literal, no substitution' => ['plain', '`plain`'];
+        yield 'template literal substitution' => ['a2b', 'var x = 2; `a${x}b`'];
+        yield 'template literal is a string' => ['string', 'var x = 2; typeof `${x}`'];
+        yield 'template literal, adjacent substitutions' => ['22', 'var x = 2; `${x}${x}`'];
+        yield 'empty template' => ['', '``'];
+        yield 'template with an expression' => ['a2bc', '`a${1 + 1}b${"c"}`'];
+        yield 'nested template' => ['outer inner 2', 'var x = 2; `outer ${`inner ${x}`}`'];
+        yield 'template escapes' => ["a\nb\t`\${", '`a\nb\t\`\${`'];
+        // A template converts with ToString; `+` converts with ToPrimitive under
+        // the default hint. An object with both methods tells them apart, which
+        // is why this cannot be a rewrite to `+`.
+        yield 'template uses ToString, not ToPrimitive' => [
+            'S|1',
+            'var o = { valueOf: function () { return 1; }, toString: function () { return "S"; } };'
+                . ' `${o}` + "|" + ("" + o)',
+        ];
+        yield 'template stringifies null and undefined' => [
+            'null-undefined',
+            'var n = null, u; `${n}-${u}`',
+        ];
+
         yield 'number toFixed' => ['3.14', '(3.14159).toFixed(2)'];
         yield 'number toString radix' => ['ff', '(255).toString(16)'];
         yield 'json roundtrip' => ['{"a":[1,2],"b":"x"}', 'JSON.stringify(JSON.parse("{\"a\":[1,2],\"b\":\"x\"}"))'];

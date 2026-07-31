@@ -471,6 +471,12 @@ final class Vm
                         break;
                     }
 
+                    case Op::TOSTR:
+                        if (!is_string($stack[$sp - 1])) {
+                            $this->sp = $sp;
+                            $stack[$sp - 1] = Conversions::toString($this, $stack[$sp - 1]);
+                        }
+                        break;
                     case Op::ADD: {
                         $b = $stack[--$sp];
                         $a = $stack[$sp - 1];

@@ -57,6 +57,13 @@ final class Op
     public const MOD = 35;
     public const NEG = 36;
     public const TONUM = 37;       // unary plus / ToNumber
+    /**
+     * ToString, for a template literal's substitutions. Not the same as
+     * `"" + x`: a template converts with ToString (string hint), while `+`
+     * uses ToPrimitive with the default hint, and an object carrying both
+     * valueOf and toString tells the two apart.
+     */
+    public const TOSTR = 88;
     public const NOT = 38;
     public const BNOT = 39;
     public const TYPEOF = 40;
@@ -149,6 +156,7 @@ final class Op
         self::DEFINE_DATA => 'k', self::DEFINE_GETTER => 'k', self::DEFINE_SETTER => 'k',
         self::ADD => '', self::SUB => '', self::MUL => '', self::DIV => '', self::MOD => '',
         self::NEG => '', self::TONUM => '', self::NOT => '', self::BNOT => '', self::TYPEOF => '',
+        self::TOSTR => '',
         self::BAND => '', self::BOR => '', self::BXOR => '',
         self::SHL => '', self::SHR => '', self::USHR => '',
         self::EQ => '', self::NEQ => '', self::SEQ => '', self::SNEQ => '',
