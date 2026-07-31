@@ -329,6 +329,7 @@ final class Compiler
                 $this->hoistStmt($node->getBody(), $ctx);
                 break;
             case 'ForInStatement':
+            case 'ForOfStatement':
                 if ($node->getLeft()->getType() === 'VariableDeclaration') {
                     $this->hoistStmt($node->getLeft(), $ctx);
                 }
@@ -522,6 +523,34 @@ final class Compiler
                 $this->loopDepth--;
                 return;
             }
+            case 'ForOfStatement': {
+                if ($node->getAwait()) {
+                    $this->unsupported($node, "'for await' is not supported yet");
+                }
+                // The iterable is evaluated before the loop's scope exists, so
+                // the head's binding cannot be in scope for it.
+                $this->analyzeNode($node->getRight(), $ctx);
+                $left = $node->getLeft();
+                $head = $left->getType() === 'VariableDeclaration' && $left->getKind() !== 'var';
+                // A for-of head binds afresh on every pass, so it counts as
+                // being inside the loop for the capture check.
+                $this->loopDepth++;
+                $opened = $head && $this->enterBlock(
+                    $node,
+                    [$left],
+                    $ctx,
+                    true,
+                    array_keys($this->varNamesIn([$node->getBody()], false)),
+                    false
+                );
+                $this->analyzeForTarget($left, $ctx);
+                $this->analyzeNode($node->getBody(), $ctx);
+                $this->loopDepth--;
+                if ($opened) {
+                    array_pop($this->lexStack);
+                }
+                return;
+            }
             case 'WhileStatement':
             case 'DoWhileStatement':
                 $this->analyzeNode($node->getTest(), $ctx);
@@ -651,7 +680,7 @@ final class Compiler
      * @param  list<object> $stmts
      * @return array<string, string> name => 'let' | 'const'
      */
-    private function lexicalNames(array $stmts): array
+    private function lexicalNames(array $stmts, bool $requireInit = true): array
     {
         $names = [];
         foreach ($stmts as $stmt) {
@@ -664,7 +693,9 @@ final class Compiler
             }
             foreach ($stmt->getDeclarations() as $d) {
                 $id = $d->getId();
-                if ($kind === 'const' && $d->getInit() === null) {
+                if ($requireInit && $kind === 'const' && $d->getInit() === null) {
+                    // A `for (const x of …)` head has no initializer: the
+                    // iteration supplies one on every pass.
                     $this->fail($id, "Missing initializer in const declaration");
                 }
                 foreach ($this->patternNames($id) as $name) {
@@ -736,6 +767,31 @@ final class Compiler
                     . ' is not supported yet (the parser loses the target)'
             );
         }
+    }
+
+    /**
+     * The head of a `for…of` or `for…in`: either a declaration, whose names the
+     * enclosing block already bound, or an assignment target.
+     */
+    private function analyzeForTarget(object $left, Ctx $ctx): void
+    {
+        if ($left->getType() === 'VariableDeclaration') {
+            foreach ($left->getDeclarations() as $d) {
+                $this->analyzePattern($d->getId(), $ctx);
+                if ($left->getKind() !== 'var') {
+                    foreach ($this->patternNames($d->getId()) as $name) {
+                        $this->analyzeReference($name, $ctx);
+                    }
+                }
+            }
+            return;
+        }
+        $left = self::unwrapParens($left);
+        if (self::isPattern($left)) {
+            $this->analyzePattern($left, $ctx, true);
+            return;
+        }
+        $this->analyzeNode($left, $ctx);
     }
 
     /**
@@ -938,10 +994,16 @@ final class Compiler
      * @param list<object> $stmts
      * @param list<string> $reserved
      */
-    private function enterBlock(object $owner, array $stmts, Ctx $ctx, bool $analysing, array $reserved = []): bool
-    {
+    private function enterBlock(
+        object $owner,
+        array $stmts,
+        Ctx $ctx,
+        bool $analysing,
+        array $reserved = [],
+        bool $requireInit = true,
+    ): bool {
         if ($analysing) {
-            $names = $this->lexicalNames($stmts);
+            $names = $this->lexicalNames($stmts, $requireInit);
             if ($names === []) {
                 return false;
             }
@@ -1471,6 +1533,10 @@ final class Compiler
                 $c->tempFree($iterSlot);
                 return;
             }
+            case 'ForOfStatement': {
+                $this->genForOf($node, $labels);
+                return;
+            }
             case 'SwitchStatement': {
                 $this->genExpr($node->getDiscriminant());
                 $t = $c->tempAlloc();
@@ -1568,6 +1634,7 @@ final class Compiler
         'DoWhileStatement' => true,
         'ForStatement' => true,
         'ForInStatement' => true,
+        'ForOfStatement' => true,
         'SwitchStatement' => true,
         'BlockStatement' => true,
         'LabeledStatement' => true,
@@ -1578,6 +1645,7 @@ final class Compiler
         'DoWhileStatement' => true,
         'ForStatement' => true,
         'ForInStatement' => true,
+        'ForOfStatement' => true,
         'IfStatement' => true,
         'SwitchStatement' => true,
         'TryStatement' => true,
@@ -1615,6 +1683,11 @@ final class Compiler
         if (!$binding instanceof Binding || $binding->captured) {
             return false;
         }
+        if ($binding->kind === 'let' || $binding->kind === 'const') {
+            // The fused form is a bare slot bump: it would skip the dead-zone
+            // check on the read and the TypeError on writing a `const`.
+            return false;
+        }
         if ($this->cur->strict) {
             $this->checkAssignmentTarget($arg->getName(), $arg);
         }
@@ -1632,6 +1705,98 @@ final class Compiler
         $loop = $this->pushLoop($labels, false);
         $this->genScopedList($node, $node->getBody());
         $this->popLoop($loop);
+    }
+
+    /**
+     * `for…of`, over the iteration protocol rather than over an index.
+     *
+     * The whole loop sits inside a protected region so that a throw from the
+     * body closes the iterator; `break` and `return` close it on their way out
+     * (through emitExitCleanup, or at the break target below), and `continue`
+     * deliberately does not. Running to exhaustion does not close it either --
+     * the iterator already finished, and the spec does not ask twice.
+     */
+    private function genForOf(object $node, array $labels): void
+    {
+        $c = $this->cur;
+        $this->requireStatementBody($node->getBody());
+        $left = $node->getLeft();
+
+        $this->genExpr($node->getRight());
+        $iterSlot = $c->tempAlloc();
+        $nextSlot = $c->tempAlloc();
+        $c->emit(Op::ITER_GET);                 // -> [iterator, nextMethod]
+        $c->emit(Op::SET_LOCAL, $nextSlot);
+        $c->emit(Op::POP);
+        $c->emit(Op::SET_LOCAL, $iterSlot);
+        $c->emit(Op::POP);
+
+        $jThrow = $c->emitJump(Op::TRY_ENTER);
+        $c->tryStack[] = ['finalizer' => null, 'iterSlot' => $iterSlot];
+        // Pushed after the region, so the loop's own break and continue do not
+        // unwind it: continue must not close, and break closes at its target.
+        $loop = $this->pushLoop($labels, true);
+        $headScope = $this->enterBlock($node, [$left], $c, false);
+
+        $lNext = $c->here();
+        if ($headScope) {
+            // A fresh dead zone every pass: the head binds anew each iteration.
+            $this->emitBlockPrologue($node);
+        }
+        $c->emit(Op::GET_LOCAL, $nextSlot);     // [func, this] for CALL
+        $c->emit(Op::GET_LOCAL, $iterSlot);
+        $c->emit(Op::CALL, 0);
+        $jDone = $c->emitJump(Op::ITER_NEXT);   // -> [value], or jump when done
+        $valSlot = $c->tempAlloc();
+        $c->emit(Op::SET_LOCAL, $valSlot);
+        $c->emit(Op::POP);
+        $this->genForTarget($left, static fn () => $c->emit(Op::GET_LOCAL, $valSlot));
+        $c->tempFree($valSlot);
+        $this->genStmt($node->getBody());
+        $this->patchContinues($loop, $lNext);
+        $c->emit(Op::JMP, $lNext);
+
+        $c->patch($jDone);                      // exhausted: nothing to close
+        array_pop($c->tryStack);
+        $c->emit(Op::TRY_LEAVE);
+        $jEndDone = $c->emitJump(Op::JMP);
+
+        $this->popLoop($loop);                  // every `break` lands here
+        $c->emit(Op::TRY_LEAVE);
+        $c->emit(Op::GET_LOCAL, $iterSlot);
+        $c->emit(Op::ITER_CLOSE, 0);
+        $jEndBreak = $c->emitJump(Op::JMP);
+
+        $c->patch($jThrow);                     // the exception is on the stack
+        $excSlot = $c->tempAlloc();
+        $c->emit(Op::SET_LOCAL, $excSlot);
+        $c->emit(Op::POP);
+        $c->emit(Op::GET_LOCAL, $iterSlot);
+        $c->emit(Op::ITER_CLOSE, 1);            // quiet: the throw in flight wins
+        $c->emit(Op::GET_LOCAL, $excSlot);
+        $c->emit(Op::THROW);
+        $c->tempFree($excSlot);
+
+        $c->patch($jEndDone);
+        $c->patch($jEndBreak);
+        if ($headScope) {
+            array_pop($this->lexStack);
+        }
+        $c->tempFree($nextSlot);
+        $c->tempFree($iterSlot);
+    }
+
+    /** Bind one iteration's value to a `for…of` / `for…in` head. */
+    private function genForTarget(object $left, callable $pushValue): void
+    {
+        $c = $this->cur;
+        if ($left->getType() === 'VariableDeclaration') {
+            $id = $left->getDeclarations()[0]->getId();
+            $this->genPattern($id, $pushValue, $left->getKind() !== 'var');
+            return;
+        }
+        $left = self::unwrapParens($left);
+        $this->genPattern($left, $pushValue, false);
     }
 
     private function genTry(object $node): void
@@ -1708,6 +1873,13 @@ final class Compiler
         for ($i = count($c->tryStack) - 1; $i >= $targetTryDepth; $i--) {
             $entry = $c->tryStack[$i];
             $c->emit(Op::TRY_LEAVE);
+            if (($entry['iterSlot'] ?? null) !== null) {
+                // Leaving a `for…of` other than by exhausting it: the iterator
+                // is told, so a generator's `finally` runs (7.4.9).
+                $c->emit(Op::GET_LOCAL, $entry['iterSlot']);
+                $c->emit(Op::ITER_CLOSE, 0);
+                continue;
+            }
             if ($entry['finalizer'] !== null) {
                 // Inline a copy with the outer regions only, so exits inside
                 // this copy don't re-run the same finalizer.

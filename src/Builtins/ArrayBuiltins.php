@@ -61,6 +61,7 @@ final class ArrayBuiltins
         ] as $name => $arity) {
             $r->defineMethod($proto, $name, "Array.prototype.$name", $arity);
         }
+        IteratorBuiltins::populateArrayProto($r, $proto);
     }
 
     public static function makeConstructor(Realm $r): JSNativeFunction

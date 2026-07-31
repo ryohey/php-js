@@ -23,29 +23,30 @@ says whether the syntax work is aimed at anything:
 
 ```console
 $ php tests/acceptance/run.php --dir path/to/node_modules
-  accepted   272   68.0%
-  rejected   128   32.0%
+  accepted   291   72.8%
+  rejected   109   27.2%
 
 what the rejections tripped on:
-  ForOfStatement              37   9.2%
-  SpreadElement               19   4.8%
-  ClassDeclaration            12   3.0%
+  SpreadElement               21   5.2%
+  ClassDeclaration            13   3.2%
+  TaggedTemplateExpression    12   3.0%
+  Array destructuring         12   3.0%
   ...
 ```
 
-Template literals, arrow functions, default/rest parameters, `let`/`const` and
-object destructuring have landed since. `for…of`, spread and array destructuring
-are one feature wearing three hats — all three reduce to the iterator protocol —
-and they are next.
+Template literals, arrow functions, default/rest parameters, `let`/`const`,
+object destructuring and `for…of` have landed since. Spread and array
+destructuring are next — they consume the iteration protocol `for…of` just
+brought in.
 
 **Conformance** — the test262 pass rate over what is implemented. Against a
 current tc39/test262 checkout:
 
 | Area | Pass rate | Run |
 |---|---|---|
-| **overall** | **96.3%** | 14412 |
-| `language/` | 95.3% | 5496 |
-| `built-ins/` | 96.9% | 8916 |
+| **overall** | **96.2%** | 14458 |
+| `language/` | 95.3% | 5500 |
+| `built-ins/` | 96.7% | 8958 |
 
 A further ~21000 tests are skipped as out of scope: features the engine cannot
 attempt at all by front-matter tag, out-of-scope builtins by path, and — the
@@ -74,8 +75,8 @@ The core language works end to end:
   early errors) → stack bytecode → a peephole pass that fuses the opcode pairs
   a real workload actually executes. ES5.1 plus template literals, arrow
   functions, default/rest parameters, `let`/`const` (block scopes, temporal dead
-  zone, redeclaration errors) and object destructuring so far; DESIGN.md §2.5
-  has the order for the rest
+  zone, redeclaration errors), object destructuring and `for…of` so far;
+  DESIGN.md §2.5 has the order for the rest
 - **VM**: single `while/switch` dispatch loop, own frame stack (JS calls never
   consume the PHP call stack), in-VM exception handling, wall-clock execution
   limit
@@ -90,6 +91,9 @@ The core language works end to end:
   `Function` constructor), Array (generic over array-likes, sparse-aware),
   String, Number, Boolean, Math, JSON (spec `Walk`/`Str` with reviver and
   replacer), Error family, console, RegExp (translated to PCRE2), Date
+- **Iteration**: `%IteratorPrototype%`, the array and string iterators (the
+  string one steps by code point), and `@@iterator` on Array, String and
+  `arguments`. `IteratorClose` runs on every abrupt exit from a `for…of`
 - **Promise** + microtask queue (native state machine, VM re-entry only for
   user callbacks; combinators build their result through `NewPromiseCapability`)
 - **Bytecode files**: emitted as `<?php return [...];` — plain arrays that
@@ -97,8 +101,8 @@ The core language works end to end:
 
 Known gaps, all tracked in DESIGN.md §15: direct `eval` inherits the caller's
 strict mode but cannot inject bindings into the enclosing scope, `with` is
-unimplemented, the well-known symbols exist but nothing consults them (so
-`@@species` still selects nothing), and local time is
+unimplemented, the well-known symbols other than `@@iterator` exist but nothing
+consults them (so `@@species` still selects nothing), and local time is
 fixed to UTC. The regexp translator accepts some patterns the spec rejects,
 since PCRE does the parsing. Syntax newer than what §2.5 lists is refused with a
 message naming the construct — downlevelling first still works, and is still the

@@ -10,6 +10,7 @@ use PhpJs\Builtins\ConsoleBuiltins;
 use PhpJs\Builtins\DateBuiltins;
 use PhpJs\Builtins\ErrorBuiltins;
 use PhpJs\Builtins\FunctionBuiltins;
+use PhpJs\Builtins\IteratorBuiltins;
 use PhpJs\Builtins\JsonBuiltins;
 use PhpJs\Builtins\MathBuiltins;
 use PhpJs\Builtins\NumberBuiltins;
@@ -331,6 +332,40 @@ final class Realm
     public function symbolForKey(string $key): JSSymbol
     {
         return $this->symbolRegistry[$key] ??= $this->newSymbol($key, $key);
+    }
+
+    /**
+     * %IteratorPrototype% — the shared ancestor that makes every iterator
+     * iterable, so `for (const x of arr.values())` works.
+     */
+    public function iteratorPrototype(): JSObject
+    {
+        if (!isset($this->memo['%IteratorPrototype%'])) {
+            $proto = new JSObject($this->objectPrototype());
+            $this->memo['%IteratorPrototype%'] = $proto;
+            IteratorBuiltins::populateIteratorProto($this, $proto);
+        }
+        return $this->memo['%IteratorPrototype%'];
+    }
+
+    public function arrayIteratorPrototype(): JSObject
+    {
+        if (!isset($this->memo['%ArrayIteratorPrototype%'])) {
+            $proto = new JSObject($this->iteratorPrototype());
+            $this->memo['%ArrayIteratorPrototype%'] = $proto;
+            IteratorBuiltins::populateArrayIteratorProto($this, $proto);
+        }
+        return $this->memo['%ArrayIteratorPrototype%'];
+    }
+
+    public function stringIteratorPrototype(): JSObject
+    {
+        if (!isset($this->memo['%StringIteratorPrototype%'])) {
+            $proto = new JSObject($this->iteratorPrototype());
+            $this->memo['%StringIteratorPrototype%'] = $proto;
+            IteratorBuiltins::populateStringIteratorProto($this, $proto);
+        }
+        return $this->memo['%StringIteratorPrototype%'];
     }
 
     /** `Symbol.iterator` and the rest; described in SymbolBuiltins. */

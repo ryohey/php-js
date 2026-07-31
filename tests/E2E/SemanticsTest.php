@@ -187,10 +187,15 @@ final class SemanticsTest extends EvalTestCase
                 . ' o[s] + "," + Object.keys(o).length',
         ];
         yield 'a well-known symbol is a symbol' => ['symbol', 'typeof Symbol.iterator'];
-        // It exists so feature detection works; this is an ES5.1 realm and there
-        // is no iteration protocol behind it, same as @@species (DESIGN.md §15).
         yield 'a well-known symbol is stable' => [true, 'Symbol.iterator === Symbol.iterator'];
-        yield 'arrays have no iterator' => ['undefined', 'typeof [][Symbol.iterator]'];
+        // @@iterator now has a protocol behind it. The others still do not, and
+        // @@species in particular selects nothing (DESIGN.md §15).
+        yield 'arrays are iterable' => ['function', 'typeof [][Symbol.iterator]'];
+        yield 'the array iterator is Array.prototype.values' => [
+            true,
+            '[][Symbol.iterator] === [].values',
+        ];
+        yield 'strings are iterable' => ['function', 'typeof ""[Symbol.iterator]'];
 
         // Early errors the new syntax brings with it. Accepting an invalid
         // program is the one failure mode worse than refusing a valid one.

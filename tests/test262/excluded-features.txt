@@ -19,7 +19,6 @@ generators
 async-functions
 async-iteration
 tail-call-optimization
-Symbol.iterator
 Symbol.asyncIterator
 Symbol.hasInstance
 Symbol.isConcatSpreadable
@@ -59,7 +58,6 @@ exponentiation
 spread
 object-spread
 object-rest
-for-of
 new.target
 super
 generators

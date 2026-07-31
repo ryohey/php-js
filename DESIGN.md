@@ -181,6 +181,27 @@ for code you control; it is no longer the *only* way in.
   parameters parse correctly. The compiler asserts the invariant — a shorthand's
   target is its key — and refuses when the tree does not match the source.
 
+- **The iteration protocol, and `for…of`.** `%IteratorPrototype%`, the array and
+  string iterators, `Array.prototype.values`/`keys`/`entries`, and
+  `@@iterator` on Array, String and `arguments`. A string iterator steps by code
+  point, which is the whole difference from indexing it.
+
+  `for…of` reads `next` **once**, with the iterator, because the spec captures it
+  there and a getter makes re-reading observable. `ITER_GET` does that and leaves
+  `[iterator, nextMethod]` on the stack in call order, so each step is
+  `GET_LOCAL next; GET_LOCAL iter; CALL 0` — the ordinary call path, no VM
+  re-entry per iteration. `ITER_NEXT` validates the result object and branches on
+  `done`.
+
+  `IteratorClose` is the part with real content. The loop sits inside a protected
+  region, so a throw from the body closes the iterator and rethrows; `break`
+  closes at its break target; `return` and a labelled break crossing the loop
+  close through `emitExitCleanup`, which grew a case for it beside the `finally`
+  one. `continue` deliberately does not close, and neither does running to
+  exhaustion — the iterator already finished and the spec does not ask twice.
+  While unwinding a throw, an error from `return` is discarded in favour of the
+  exception in flight (7.4.9).
+
 **Known gaps in what has landed**, all visible as test262 failures rather than
 as silence: `var f = () => {}` does not take the name `f` (NamedEvaluation is
 not implemented for any form, and it is now the single largest failure group at
@@ -208,16 +229,12 @@ against a non-writable `length`. Those tests had been skipped because their own
 source is written in ES6, not because the engine passed them. That is the second
 argument for growing the surface: the skips were hiding real defects.
 
-**Next: the iterator protocol.** `for…of` (9.2% of all rejections), spread
-(4.8%) and array destructuring (1.2%) are one feature wearing three hats — they
-all reduce to `GetIterator` / `IteratorStep` / `IteratorValue` / `IteratorClose`
-plus `Symbol.iterator` on Array, String and `arguments`. Doing them together is
-the difference between implementing the protocol once and approximating it three
-times, and the shares understate it: most of the files that need array patterns
-trip on `for…of` first.
+**Next:** spread (5.2% of all rejections) and array destructuring (3.0%), the
+other two consumers of the protocol that just landed. Then classes (3.2%) and
+tagged templates (3.0%).
 
-Queued behind that: classes (3.0%), per-iteration loop bindings (which retires
-the refusal above), the separate parameter scope, and NamedEvaluation.
+Queued behind those: per-iteration loop bindings (which retires the refusal
+above), the separate parameter scope, and NamedEvaluation.
 
 **Deliberately out of scope for now:** ES modules (node-compat resolves
 CommonJS, and published packages overwhelmingly ship it), Proxy and Reflect

@@ -58,6 +58,7 @@ final class StringBuiltins
         ] as $name => $arity) {
             $r->defineMethod($proto, $name, "String.prototype.$name", $arity);
         }
+        IteratorBuiltins::populateStringProto($r, $proto);
     }
 
     public static function makeConstructor(Realm $r): JSNativeFunction

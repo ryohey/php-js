@@ -102,6 +102,27 @@ final class Op
      * user-supplied `toString` twice.
      */
     public const TO_KEY = 95;
+    /**
+     * GetIterator: `[obj] -> [iterator, nextMethod]`.
+     *
+     * `next` is read once here rather than on every step, which is observable
+     * through a getter or a mutated iterator. The two results stay on the stack
+     * in call order, so a step is `GET_LOCAL next; GET_LOCAL iter; CALL 0` and
+     * goes through the ordinary call path with no VM re-entry.
+     */
+    public const ITER_GET = 96;
+    /**
+     * IteratorStep + IteratorValue: `[result] -> [value]`, or jump to `a` when
+     * the result says done. The result must be an Object, which is the check
+     * that separates a broken iterator from an empty one.
+     */
+    public const ITER_NEXT = 97;  // a
+    /**
+     * IteratorClose: pops the iterator and calls its `return` method if it has
+     * one. The operand is 1 while unwinding a throw, where an error from
+     * `return` is swallowed in favour of the original (7.4.9).
+     */
+    public const ITER_CLOSE = 98; // q
     public const NOT = 38;
     public const BNOT = 39;
     public const TYPEOF = 40;
@@ -198,6 +219,7 @@ final class Op
         self::REST_ARGS => 'n',
         self::PUSH_TDZ => '', self::TDZ_CHECK => 'k', self::THROW_CONST => '',
         self::REQ_COERCIBLE => '', self::COPY_REST => 'n', self::TO_KEY => '',
+        self::ITER_GET => '', self::ITER_NEXT => 'a', self::ITER_CLOSE => 'n',
         self::BAND => '', self::BOR => '', self::BXOR => '',
         self::SHL => '', self::SHR => '', self::USHR => '',
         self::EQ => '', self::NEQ => '', self::SEQ => '', self::SNEQ => '',

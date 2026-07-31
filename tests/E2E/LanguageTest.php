@@ -588,6 +588,165 @@ final class LanguageTest extends EvalTestCase
             '{ try { x = 1; "none" } catch (e) { e.constructor.name } let x; }',
         ];
 
+        // --- for...of and the iteration protocol ---
+        yield 'for-of iterates an array' => [6, 'var t = 0; for (var x of [1,2,3]) t += x; t'];
+        yield 'a const for-of head' => [6, 'var t = 0; for (const x of [1,2,3]) t += x; t'];
+        yield 'the for-of head does not leak' => ['undefined', 'for (const x of [1]) {} typeof x'];
+        yield 'a for-of body may declare a let' => [
+            '24',
+            'var s = ""; for (const x of [1,2]) { let y = x * 2; s += y; } s',
+        ];
+        // A string iterates by code point, which is the whole difference from
+        // indexing it: a surrogate pair is one step, of length 2.
+        yield 'a string iterates by code point' => [
+            '121',
+            'var s = ""; for (const c of "a😀b") s += c.length; s',
+        ];
+        yield 'for-of over arguments' => [
+            6,
+            '(function () { var t = 0; for (const a of arguments) t += a; return t; })(1,2,3)',
+        ];
+        yield 'entries yields index and value' => [
+            '0a1b',
+            'var s = ""; for (const e of ["a","b"].entries()) s += e[0] + e[1]; s',
+        ];
+        yield 'keys yields indices' => ['01', 'var s = ""; for (const k of ["a","b"].keys()) s += k; s'];
+        yield 'an iterator is itself iterable' => [
+            '12',
+            'var s = ""; for (const v of [1,2].values()) s += v; s',
+        ];
+        yield 'destructuring in a for-of head' => [
+            3,
+            'var t = 0; for (const {v} of [{v:1},{v:2}]) t += v; t',
+        ];
+        yield 'an existing binding is a valid for-of target' => [
+            '3:2',
+            'var y, t = 0; for (y of [1,2]) t += y; t + ":" + y',
+        ];
+        yield 'a member expression is a valid for-of target' => [
+            2,
+            'var o = {}; for (o.k of [1,2]) {} o.k',
+        ];
+
+        yield 'break stops a for-of' => [
+            1,
+            'var t = 0; for (const x of [1,2,3]) { if (x === 2) break; t += x; } t',
+        ];
+        yield 'continue skips one iteration' => [
+            4,
+            'var t = 0; for (const x of [1,2,3]) { if (x === 2) continue; t += x; } t',
+        ];
+        yield 'return leaves a for-of' => [
+            2,
+            'function f() { for (const x of [1,2,3]) { if (x === 2) return x; } return 0; } f()',
+        ];
+        yield 'a labelled continue crosses a for-of' => [
+            3,
+            'var t = 0; outer: for (const a of [1,2]) { for (const b of [1,2]) {'
+                . ' if (b === 2) continue outer; t += a * b; } } t',
+        ];
+        yield 'try/finally inside a for-of' => [
+            '1f2f',
+            'var s = ""; for (const x of [1,2]) { try { s += x; } finally { s += "f"; } } s',
+        ];
+        yield 'break out of a try inside a for-of' => [
+            '1ff',
+            'var s = ""; for (const x of [1,2,3]) { try { if (x === 2) break; s += x; }'
+                . ' finally { s += "f"; } } s',
+        ];
+
+        yield 'a non-iterable throws' => [
+            'TypeError',
+            'try { for (const x of 5) {} "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'an object without Symbol.iterator throws' => [
+            'TypeError',
+            'try { for (const x of {a:1}) {} "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'a bad iterator result throws' => [
+            'TypeError',
+            'var o = {}; o[Symbol.iterator] = function () { return { next: function () { return 1; } }; };'
+                . ' try { for (const v of o) {} "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'a custom iterable' => [
+            15,
+            'var o = { a: [7,8] };'
+                . ' o[Symbol.iterator] = function () { var i = 0, a = this.a; return { next: function () {'
+                . ' return i < a.length ? {value: a[i++], done: false} : {value: undefined, done: true}; } }; };'
+                . ' var t = 0; for (const v of o) t += v; t',
+        ];
+        // `next` is captured with the iterator, not re-read each step, which a
+        // getter makes observable.
+        yield 'next is read once' => [
+            1,
+            'var reads = 0; var o = {}; o[Symbol.iterator] = function () { var n = 0; var it = {};'
+                . ' Object.defineProperty(it, "next", { get: function () { reads++; return function () {'
+                . ' return n++ < 3 ? {value: 1, done: false} : {done: true}; }; } }); return it; };'
+                . ' for (const v of o) {} reads',
+        ];
+
+        // IteratorClose: every abrupt exit tells the iterator, exhaustion does
+        // not, and `continue` is not an exit.
+        yield 'break closes the iterator' => [
+            true,
+            'var closed = false; var o = {}; o[Symbol.iterator] = function () { return {'
+                . ' next: function () { return {value: 1, done: false}; },'
+                . ' return: function () { closed = true; return {}; } }; };'
+                . ' for (const v of o) break; closed',
+        ];
+        yield 'return closes the iterator' => [
+            true,
+            'var closed = false; var o = {}; o[Symbol.iterator] = function () { return {'
+                . ' next: function () { return {value: 1, done: false}; },'
+                . ' return: function () { closed = true; return {}; } }; };'
+                . ' (function () { for (const v of o) return; })(); closed',
+        ];
+        yield 'a throw closes the iterator' => [
+            true,
+            'var closed = false; var o = {}; o[Symbol.iterator] = function () { return {'
+                . ' next: function () { return {value: 1, done: false}; },'
+                . ' return: function () { closed = true; return {}; } }; };'
+                . ' try { for (const v of o) throw new Error("x"); } catch (e) {} closed',
+        ];
+        yield 'exhaustion does not close the iterator' => [
+            false,
+            'var closed = false; var o = {}; o[Symbol.iterator] = function () { var n = 0; return {'
+                . ' next: function () { return n++ < 1 ? {value: 1, done: false} : {value: undefined, done: true}; },'
+                . ' return: function () { closed = true; return {}; } }; };'
+                . ' for (const v of o) {} closed',
+        ];
+        yield 'continue does not close the iterator' => [
+            false,
+            'var closed = false; var o = {}; o[Symbol.iterator] = function () { var n = 0; return {'
+                . ' next: function () { return n++ < 2 ? {value: 1, done: false} : {value: undefined, done: true}; },'
+                . ' return: function () { closed = true; return {}; } }; };'
+                . ' for (const v of o) { continue; } closed',
+        ];
+        // While unwinding a throw, an error from `return` loses to the one
+        // already in flight.
+        yield 'a throw from return is swallowed' => [
+            'outer',
+            'var o = {}; o[Symbol.iterator] = function () { return {'
+                . ' next: function () { return {value: 1, done: false}; },'
+                . ' return: function () { throw new Error("inner"); } }; };'
+                . ' try { for (const v of o) throw new Error("outer"); } catch (e) { e.message }',
+        ];
+
+        // The fused INC_LOCAL form is a bare slot bump, so a lexical binding
+        // must not take it: it would skip both of these.
+        yield 'incrementing a const is a TypeError' => [
+            'TypeError',
+            '(function () { const c = 1; try { c++; return "none" } catch (e) { return e.constructor.name } })()',
+        ];
+        yield 'incrementing a for-of const is a TypeError' => [
+            'TypeError',
+            'try { for (const x of [1,2,3]) { x++ } "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'incrementing a let in its dead zone throws' => [
+            'ReferenceError',
+            '{ try { x++; "none" } catch (e) { e.constructor.name } let x = 1; }',
+        ];
+
         yield 'number toFixed' => ['3.14', '(3.14159).toFixed(2)'];
         yield 'number toString radix' => ['ff', '(255).toString(16)'];
         yield 'json roundtrip' => ['{"a":[1,2],"b":"x"}', 'JSON.stringify(JSON.parse("{\"a\":[1,2],\"b\":\"x\"}"))'];

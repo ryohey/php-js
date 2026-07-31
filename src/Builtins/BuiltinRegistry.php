@@ -62,6 +62,7 @@ final class BuiltinRegistry
             NumberBuiltins::entries(),
             BooleanBuiltins::entries(),
             SymbolBuiltins::entries(),
+            IteratorBuiltins::entries(),
             MathBuiltins::entries(),
             JsonBuiltins::entries(),
             ErrorBuiltins::entries(),

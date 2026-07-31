@@ -534,6 +534,36 @@ final class Vm
                         $stack[$sp++] = $rest;
                         break;
                     }
+                    case Op::ITER_GET: {
+                        $obj = $stack[--$sp];
+                        $this->sp = $sp;
+                        [$iter, $next] = $this->getIterator($obj);
+                        $stack[$sp++] = $iter;
+                        $stack[$sp++] = $next;
+                        break;
+                    }
+                    case Op::ITER_NEXT: {
+                        $target = $code[$pc++];
+                        $result = $stack[--$sp];
+                        if (!$result instanceof JSObject) {
+                            $this->sp = $sp;
+                            $this->throwError('TypeError', 'Iterator result is not an object');
+                        }
+                        $this->sp = $sp;
+                        if (Conversions::toBoolean($result->get('done', $this))) {
+                            $pc = $target;
+                            break;
+                        }
+                        $stack[$sp++] = $result->get('value', $this);
+                        break;
+                    }
+                    case Op::ITER_CLOSE: {
+                        $quiet = $code[$pc++];
+                        $iter = $stack[--$sp];
+                        $this->sp = $sp;
+                        $this->closeIterator($iter, $quiet === 1);
+                        break;
+                    }
                     case Op::TO_KEY:
                         // A string is already a key; anything else converts,
                         // and a symbol becomes the private string it is stored
@@ -1106,6 +1136,14 @@ final class Vm
                                 $obj->props[(string)$i] = $v;
                             }
                             $obj->defineOwnData('length', count($args), JSObject::W | JSObject::C);
+                            // `arguments` is iterable, and with the very same
+                            // function object as `Array.prototype.values`
+                            // (10.4.4.6), which is observable by identity.
+                            $obj->defineOwnData(
+                                $realm->wellKnownSymbol('iterator')->propertyKey,
+                                $realm->arrayPrototype()->get('values', $this),
+                                JSObject::W | JSObject::C
+                            );
                             if ($strict) {
                                 // Strict arguments objects are unmapped and
                                 // poison callee/caller.
@@ -1314,6 +1352,78 @@ final class Vm
             $this->throwError('TypeError', 'Cannot convert ' . ($obj === null ? 'null' : 'undefined') . ' to object');
         }
         return true;
+    }
+
+    /**
+     * GetIterator (7.4.2). Returns [iterator, nextMethod].
+     *
+     * `next` is read once, here, because a step must not re-read it: the spec
+     * captures it with the iterator, and a getter or a mutated iterator makes
+     * the difference observable.
+     *
+     * @return array{0: JSObject, 1: mixed}
+     */
+    public function getIterator(mixed $obj): array
+    {
+        $key = $this->realm->wellKnownSymbol('iterator')->propertyKey;
+        $method = ($obj === null || $obj instanceof JSUndefined)
+            ? JSUndefined::$undefined
+            : $this->getMember($obj, $key);
+        if ($method === null || $method instanceof JSUndefined) {
+            $this->throwError(
+                'TypeError',
+                Conversions::toString($this, TypeOps::typeofOp($obj)) === 'undefined'
+                    ? 'undefined is not iterable'
+                    : $this->describe($obj) . ' is not iterable'
+            );
+        }
+        $iter = $this->invoke($method, $obj, []);
+        if (!$iter instanceof JSObject) {
+            $this->throwError('TypeError', 'Result of the Symbol.iterator method is not an object');
+        }
+        return [$iter, $iter->get('next', $this)];
+    }
+
+    /**
+     * IteratorClose (7.4.9). A missing `return` is not an error, and while
+     * unwinding a throw an error from `return` is discarded in favour of the
+     * exception already in flight.
+     */
+    public function closeIterator(mixed $iter, bool $unwindingThrow): void
+    {
+        if (!$iter instanceof JSObject) {
+            return;
+        }
+        try {
+            $ret = $iter->get('return', $this);
+            if ($ret === null || $ret instanceof JSUndefined) {
+                return;
+            }
+            $result = $this->invoke($ret, $iter, []);
+            if (!$unwindingThrow && !$result instanceof JSObject) {
+                $this->throwError('TypeError', 'Iterator result is not an object');
+            }
+        } catch (\Throwable $e) {
+            if (!$unwindingThrow) {
+                throw $e;
+            }
+            // Swallowed: the completion that started the unwind wins.
+        }
+    }
+
+    /** A short description of a value for a "not iterable" message. */
+    private function describe(mixed $v): string
+    {
+        if ($v === null) {
+            return 'null';
+        }
+        if (is_string($v)) {
+            return '"' . $v . '"';
+        }
+        if ($v instanceof JSObject) {
+            return $v instanceof JSFunctionBase ? 'function' : ($v->className ?? 'object');
+        }
+        return Conversions::toString($this, $v);
     }
 
     /**
