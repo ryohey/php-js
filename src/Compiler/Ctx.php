@@ -15,6 +15,13 @@ final class Ctx
     public bool $isProgram = false;
     public bool $strict = false;
     public bool $usesArguments = false;
+    /**
+     * An arrow function: no `this` of its own, no `prototype`, not
+     * constructible. See DESIGN.md §2.5.
+     */
+    public bool $isArrow = false;
+    /** For `x => expr`, the expression standing in for a body. */
+    public ?object $arrowBody = null;
     public string $name = '';
     /** @var list<string> parameter names in positional order */
     public array $params = [];
@@ -151,6 +158,7 @@ final class Ctx
             'nlocals' => $this->nlocals,
             'nenv' => $this->nenv,
             'usesArgs' => $this->usesArguments,
+            'arrow' => $this->isArrow,
             'argMap' => $this->argMap,
             'code' => $this->code,
             'consts' => $this->consts,

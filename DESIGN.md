@@ -5,8 +5,8 @@ Design document for a JS runtime that executes JavaScript directly on PHP. Build
 Settled premises:
 
 - The "PHP → WASM → QuickJS" approach was measured and discarded. There is exactly one interpretation layer.
-- Target spec is **ES5.1 + Promise/microtask queue**. Class syntax, destructuring, generators, template literals, and the iterator protocol are not implemented. Input code is assumed to be downleveled to ES5 with SWC or similar beforehand.
-- Progress is measured by the pass rate of test262 (ES5.1 subset).
+- The language target is **growing from ES5.1 + Promise towards the ES2015+ syntax real code is written in**. See §2.5 for why, what has landed, and what the order is. Symbol is already a primitive type (§3.4).
+- Progress is measured two ways, because they answer different questions: the test262 pass rate for **conformance** on what is implemented, and `tests/acceptance/run.php` for **reach** — the share of published npm files that compile at all (§12).
 
 How the reference implementations are used: goja = blueprint for the overall architecture / QuickJS = vocabulary for the instruction set / engine262 = source of truth for spec semantics (abstract operations) / Peast = adopted as the parser. Neither the regexp engine nor the GC is ported from any of them.
 
@@ -74,6 +74,77 @@ Composed exclusively of `var_export`-able plain arrays (**a precondition for the
 ```
 
 `code` is a flat array of ints for both opcodes and immediate operands. Strings and floats are referenced by index into `consts`. Operand counts are fixed per opcode; a disassembler/verifier exists from day one.
+
+### 2.5 Growing the syntax surface
+
+The compiler used to refuse ES6+ syntax outright, on the grounds that
+downlevelling belongs in the toolchain. That reasoning holds for code you author
+and fails for code you install. Measured against a real `node_modules`, sampling
+400 published `.js`/`.cjs` files, the ES5.1 compiler accepted **46.8%**. The
+rejections were not exotic:
+
+| tripped on | share of all files |
+|---|---|
+| `const` | 35.0% |
+| arrow functions | 8.2% |
+| `let` | 2.2% |
+| `export` / `import` / `from` | 3.0% |
+| everything else | ~5% |
+
+Three features account for the bulk. Half of npm was unreadable for want of
+them, and no amount of build-time cleverness fixes a library you did not write.
+So the target grows.
+
+**What this does not change.** The bytecode stays plain `var_export`-able arrays,
+the JS heap stays free of foreign PHP objects, and every feature must arrive with
+its semantics intact or not at all — a silently wrong answer is worse than a
+refusal, and refusal is already how this compiler declines what it cannot do.
+Downlevelling in the toolchain remains supported and is still the right choice
+for code you control; it is no longer the *only* way in.
+
+**Landed:**
+
+- **Template literals.** Not a rewrite to `+`: a substitution converts with
+  ToString (13.2.8.5) while `+` converts with ToPrimitive under the default hint,
+  and an object carrying both `valueOf` and `toString` tells them apart. Hence
+  the `TOSTR` opcode.
+- **Arrow functions.** `this` travels on the function object as `lexicalThis`,
+  captured by `NEW_FUNC` from the creating frame, rather than being threaded
+  through the scope analyser as a synthetic binding. Nested arrows chain for
+  free: the inner one closes over the outer one's frame, whose `this` is already
+  the captured value. An arrow has no `prototype` and is not constructible.
+  `arguments` inside an arrow is refused — it means the *enclosing* function's,
+  and handing back the arrow's own would be silently wrong.
+
+**Known gaps in what has landed**, all visible as test262 failures rather than
+as silence: `var f = () => {}` does not take the name `f` (NamedEvaluation is
+not implemented for any form), and two malformed-unicode-escape cases in
+templates are still accepted where they should be early errors.
+
+Widening the denominator also *exposed* four pre-existing builtin bugs —
+`Array.prototype` `pop`/`push`/`unshift` with a string receiver, and `shift`
+against a non-writable `length`. Those tests had been skipped because their own
+source is written in ES6, not because the engine passed them. That is the second
+argument for growing the surface: the skips were hiding real defects.
+
+**Next, in this order:** default and rest parameters, destructuring, then
+`let`/`const`. The last is the one with real design content, and the plan is:
+block scopes as frames on the existing `lexStack` (both passes already push and
+pop it symmetrically), bindings into `Ctx::$extraBindings` so slot assignment is
+unchanged — **so the VM does not change at all**, slots being slots. TDZ needs a
+sentinel and a checked read; `JSHole` already exists for array holes. The
+per-iteration binding of `for (let i …)` captured by a closure is the fiddly
+part, and until it is right it will be refused rather than approximated.
+
+**Deliberately out of scope for now:** ES modules (node-compat resolves
+CommonJS, and published packages overwhelmingly ship it), Proxy and Reflect
+(an object-model change), and private fields. Generators and `async`/`await` are
+*not* dismissed: because JS frames are the VM's own data rather than PHP's call
+stack (§4), suspending one is copying a frame plus its operand-stack slice and
+resuming is restoring it at a new base with `base`, `retsp` and the handler
+stack shifted by the delta. That is mechanical here in a way it is not in an
+engine built on the host stack, and `async` then falls out of generators plus the
+Promise machinery that already exists.
 
 ### 2.4 Peephole pass (superinstructions)
 
@@ -346,12 +417,35 @@ The idea: export an initialized realm (builtins + heap after the user's initiali
 3. Because the heap contains cycles, `var_export` cannot be applied directly. Snapshots are exported as a flat table with an ID assigned to every object (references are IDs), reconstructed in two passes at restore time. The table itself is a plain array, so it rides opcache.
 4. Whether restore cost (O(heap size) object recreation) beats lazy initialization is **decided by measurement**. If it loses, phase 2 is discarded and lazy init alone remains in production (the structural constraints stay regardless — they remain useful for debug dumps and testing).
 
-## 12. test262 Operation
+## 12. Measuring progress: conformance and reach
 
-- A runner lives in `tests/test262/`: front-matter parsing (negative / includes / flags), harness injection (`sta.js`, `assert.js`, …), and execution in both strict and non-strict modes.
-- Target filter: an include list selects the ES5.1-equivalent portions of `language/` and `built-ins/`; out-of-scope features (class, generator, Symbol, Proxy, …) are excluded by feature tag + path.
-- The skip list (known compromises such as the regexp surrogate cases in §8) is a single file where a reason comment is mandatory for every entry.
-- CI emits the pass rate as a number, and **the pass-rate trend is the sole progress metric** ("does framework X run" is not a metric). Regressions are detected mechanically as a drop in the pass count.
+Two numbers, because they answer different questions and neither substitutes for
+the other.
+
+**Conformance — test262.** A runner lives in `tests/test262/`: front-matter
+parsing (negative / includes / flags), harness injection (`sta.js`, `assert.js`,
+…), and execution in both strict and non-strict modes. An include list selects
+the portions of `language/` and `built-ins/` covering what is implemented;
+features that are not are excluded by tag and path. The skip list (known
+compromises such as the regexp surrogate cases in §8) is a single file where a
+reason comment is mandatory for every entry. Regressions are detected
+mechanically as a drop in the pass count.
+
+As §2.5 lands syntax, the include list grows with it, and the headline
+percentage will move for two reasons at once — real progress and a widening
+denominator. When it does, the honest comparison is the **failure set**, not the
+percentage: a feature is done when the tests it brought in pass and nothing that
+passed before stopped.
+
+**Reach — `tests/acceptance/run.php`.** Point it at a `node_modules` and it
+reports the share of published files that compile, plus a histogram of what the
+rest tripped on. Sampling is seeded, so two runs are comparable. This is the
+number that says whether the syntax work is aimed at anything, and the histogram
+is the work queue in priority order.
+
+Neither is "does framework X run", which remains not a metric. What React does
+is measured separately and byte-for-byte against Node (`packages/react-ssr-bench`,
+`packages/ssg-demo`).
 
 ## 13. Directory Layout
 

@@ -12,6 +12,8 @@ abstract class JSFunctionBase extends JSObject
 {
     public string $name = '';
     public int $arity = 0;
+    /** Arrow functions are callable but not constructible (DESIGN.md §2.5). */
+    public bool $isArrow = false;
     protected bool $lengthMade = false;
     protected bool $nameMade = false;
 

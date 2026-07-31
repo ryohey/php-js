@@ -9,6 +9,7 @@ use PhpJs\Runtime\Conversions;
 use PhpJs\Runtime\JSArray;
 use PhpJs\Runtime\JSBoundFunction;
 use PhpJs\Runtime\JSFunction;
+use PhpJs\Runtime\JSFunctionBase;
 use PhpJs\Runtime\JSHole;
 use PhpJs\Runtime\JSNativeFunction;
 use PhpJs\Runtime\JSObject;
@@ -114,7 +115,9 @@ final class Vm
         if ($fn->nativeId !== null) {
             return (BuiltinRegistry::get($fn->nativeId))(
                 $this,
-                $ctorObj ?? ($fn->template['strict'] ? $thisVal : $this->coerceThis($thisVal)),
+                $fn->isArrow
+                    ? $fn->lexicalThis
+                    : ($ctorObj ?? ($fn->template['strict'] ? $thisVal : $this->coerceThis($thisVal))),
                 $args,
                 $fn
             );
@@ -147,8 +150,9 @@ final class Vm
             }
             return (BuiltinRegistry::get($ctor->ctorId))($this, $args, $ctor);
         }
-        if (!$ctor instanceof JSFunction) {
-            $this->throwError('TypeError', 'not a constructor');
+        if (!$ctor instanceof JSFunction || $ctor->isArrow) {
+            $this->throwError('TypeError', ($ctor instanceof JSFunctionBase && $ctor->name !== ''
+                ? $ctor->name : 'value') . ' is not a constructor');
         }
         $proto = $ctor->get('prototype', $this);
         $obj = new JSObject($proto instanceof JSObject ? $proto : $this->realm->objectPrototype());
@@ -174,7 +178,11 @@ final class Vm
         }
         $this->sp = $base + $tpl['nlocals'];
         $env = $tpl['nenv'] > 0 ? new \PhpJs\Runtime\JSEnv($func->env, $tpl['nenv']) : $func->env;
-        if ($ctorObj !== null) {
+        if ($func->isArrow) {
+            // Whatever the caller passed is ignored, and no coercion applies:
+            // an arrow has no `this` binding, it reads the one it closed over.
+            $thisVal = $func->lexicalThis;
+        } elseif ($ctorObj !== null) {
             $thisVal = $ctorObj;
         } elseif (!$tpl['strict']) {
             $thisVal = $this->coerceThis($thisVal);
@@ -784,9 +792,13 @@ final class Vm
                                 for ($i = 0; $i < $argc; $i++) {
                                     $args[] = $stack[$funcPos + 2 + $i];
                                 }
-                                $thisVal = $stack[$funcPos + 1];
-                                if (!$func->template['strict']) {
-                                    $thisVal = $this->coerceThis($thisVal);
+                                if ($func->isArrow) {
+                                    $thisVal = $func->lexicalThis;
+                                } else {
+                                    $thisVal = $stack[$funcPos + 1];
+                                    if (!$func->template['strict']) {
+                                        $thisVal = $this->coerceThis($thisVal);
+                                    }
                                 }
                                 $sp = $funcPos;
                                 $this->sp = $sp;
@@ -812,12 +824,18 @@ final class Vm
                                 $stack[$nbase + $i] = $und;
                             }
                             $sp = $nbase + $nlocals;
-                            $thisVal = $stack[$funcPos + 1];
-                            if (!$ntpl['strict']) {
-                                if ($thisVal === null || $thisVal instanceof JSUndefined) {
-                                    $thisVal = $realm->globalObject;
-                                } elseif (!$thisVal instanceof JSObject) {
-                                    $thisVal = Conversions::toObject($this, $thisVal);
+                            if ($func->isArrow) {
+                                // No `this` binding of its own, and no coercion:
+                                // the arrow reads the one it closed over.
+                                $thisVal = $func->lexicalThis;
+                            } else {
+                                $thisVal = $stack[$funcPos + 1];
+                                if (!$ntpl['strict']) {
+                                    if ($thisVal === null || $thisVal instanceof JSUndefined) {
+                                        $thisVal = $realm->globalObject;
+                                    } elseif (!$thisVal instanceof JSObject) {
+                                        $thisVal = Conversions::toObject($this, $thisVal);
+                                    }
                                 }
                             }
                             $nenv = $ntpl['nenv'] > 0 ? new \PhpJs\Runtime\JSEnv($func->env, $ntpl['nenv']) : $func->env;
@@ -859,7 +877,7 @@ final class Vm
                         $argc = $code[$pc++];
                         $ctorPos = $sp - $argc - 1;
                         $ctor = $stack[$ctorPos];
-                        if ($ctor instanceof JSFunction && $ctor->nativeId === null) { // NEW_OP fast path
+                        if ($ctor instanceof JSFunction && $ctor->nativeId === null && !$ctor->isArrow) {
                             if ($fi + 1 >= self::MAX_FRAMES) {
                                 $this->throwError('RangeError', 'Maximum call stack size exceeded');
                             }
@@ -983,9 +1001,14 @@ final class Vm
                         $stack[$sp++] = $arr;
                         break;
                     }
-                    case Op::NEW_FUNC:
-                        $stack[$sp++] = new JSFunction($tpl['children'][$code[$pc++]], $env, $realm);
+                    case Op::NEW_FUNC: {
+                        $fn = new JSFunction($tpl['children'][$code[$pc++]], $env, $realm);
+                        if ($fn->isArrow) {
+                            $fn->lexicalThis = $frame[self::F_THIS];
+                        }
+                        $stack[$sp++] = $fn;
                         break;
+                    }
                     case Op::NEW_REGEXP: {
                         $pattern = $consts[$code[$pc++]];
                         $flags = $consts[$code[$pc++]];

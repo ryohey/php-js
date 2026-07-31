@@ -1,16 +1,39 @@
 # php-js
 
-Experimental JS runtime on pure PHP: an ES5.1 subset compiled to bytecode and
-executed by a PHP VM. No WASM, no extensions — one interpretation layer,
-designed around PHP's runtime characteristics (refcount GC, opcache,
-shared-nothing request model).
+Experimental JS runtime on pure PHP: JavaScript compiled to bytecode and executed
+by a PHP VM. No WASM, no extensions — one interpretation layer, designed around
+PHP's runtime characteristics (refcount GC, opcache, shared-nothing request
+model).
+
+It started as an ES5.1 engine on the assumption that anything newer would be
+downlevelled by a toolchain first. That holds for code you author and not for
+code you install: of 400 published files sampled from a real `node_modules`, the
+ES5.1 compiler accepted 46.8%, and `const` alone accounted for 35% of the
+refusals. So the language target is growing — see [DESIGN.md §2.5](./DESIGN.md)
+for what has landed and in what order the rest is coming.
 
 - Design document: [DESIGN.md](./DESIGN.md)
 
-## test262
+## Progress
 
-The project's progress metric is the test262 pass rate over the ES5.1 subset
-(DESIGN.md §12). Against a current tc39/test262 checkout:
+Two numbers, because they answer different questions (DESIGN.md §12).
+
+**Reach** — how much published JavaScript compiles at all. This is the one that
+says whether the syntax work is aimed at anything:
+
+```console
+$ php tests/acceptance/run.php --dir path/to/node_modules
+  accepted   196   49.0%
+  rejected   204   51.0%
+
+what the rejections tripped on:
+  'const' declaration        141  35.2%
+  ArrowFunctionExpression      7   1.8%
+  ...
+```
+
+**Conformance** — the test262 pass rate over what is implemented. Against a
+current tc39/test262 checkout:
 
 | Area | Pass rate | Run |
 |---|---|---|
@@ -37,7 +60,8 @@ The core language works end to end:
 
 - **Compiler**: Peast (ESTree) → scope analysis (closure capture, strict-mode
   early errors) → stack bytecode → a peephole pass that fuses the opcode pairs
-  a real workload actually executes
+  a real workload actually executes. ES5.1 plus template literals and arrow
+  functions so far; DESIGN.md §2.5 has the order for the rest
 - **VM**: single `while/switch` dispatch loop, own frame stack (JS calls never
   consume the PHP call stack), in-VM exception handling, wall-clock execution
   limit
@@ -62,8 +86,9 @@ strict mode but cannot inject bindings into the enclosing scope, `with` is
 unimplemented, the well-known symbols exist but nothing consults them (so
 `@@species` still selects nothing), and local time is
 fixed to UTC. The regexp translator accepts some patterns the spec rejects,
-since PCRE does the parsing. ES6+ syntax is intentionally out of scope —
-downlevel with SWC first.
+since PCRE does the parsing. Syntax newer than what §2.5 lists is refused with a
+message naming the construct — downlevelling first still works, and is still the
+right choice for code you control.
 
 ## Usage
 
@@ -95,7 +120,9 @@ on it:
 
 - [`packages/node-compat`](packages/node-compat) — CommonJS module loading,
   a read-only filesystem confined to a root, `process`, virtual-clock timers,
-  and ES2015+ *library* polyfills (the syntax stays ES5).
+  and the ES2015+ *library* surface the engine does not own (Map, Set, typed
+  arrays, `Object.assign`); `Symbol` and collection iteration moved into the
+  engine, because a primitive type cannot be polyfilled.
 - [`packages/react-ssr-bench`](packages/react-ssr-bench) — renders a React app
   server-side from React's own published CommonJS build, asserts the HTML is
   byte-identical to Node, and reports boot and render separately.

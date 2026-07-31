@@ -192,6 +192,28 @@ final class SemanticsTest extends EvalTestCase
         yield 'a well-known symbol is stable' => [true, 'Symbol.iterator === Symbol.iterator'];
         yield 'arrays have no iterator' => ['undefined', 'typeof [][Symbol.iterator]'];
 
+        // Early errors the new syntax brings with it. Accepting an invalid
+        // program is the one failure mode worse than refusing a valid one.
+        yield 'arrow rejects duplicate parameters' => [
+            'SyntaxError',
+            'try { eval("((a, a) => 1)"); "none" } catch (e) { e.constructor.name }',
+        ];
+        // ...while a sloppy function may still repeat one.
+        yield 'a sloppy function may repeat a parameter' => [
+            2,
+            'eval("(function (a, a) { return a; })(1, 2)")',
+        ];
+        yield 'template rejects backslash-8' => [
+            'SyntaxError',
+            'try { eval("`\\\\8`"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'template rejects a legacy octal escape' => [
+            'SyntaxError',
+            'try { eval("`\\\\01`"); "none" } catch (e) { e.constructor.name }',
+        ];
+        // \0 not followed by a digit is the NUL escape and stays legal.
+        yield 'template keeps the NUL escape' => [1, 'eval("`\\\\0`").length'];
+
         yield 'toFixed stays exact' => ['1000000000000000128', '(1000000000000000128).toFixed(0)'];
         // 15.7.4.5 takes |x| first, then picks the *larger* n on a tie: ties go
         // away from zero, not to even. PHP's own sprintf('%F') rounds to even,

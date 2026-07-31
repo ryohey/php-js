@@ -86,12 +86,19 @@ final class Compiler
             if (method_exists($node, 'getAsync') && $node->getAsync()) {
                 $this->unsupported($node, 'Async functions are not supported (ES5 target)');
             }
-            $ctx->name = $node->getId() !== null ? $node->getId()->getName() : '';
+            $ctx->isArrow = $node->getType() === 'ArrowFunctionExpression';
+            $ctx->name = (!$ctx->isArrow && $node->getId() !== null) ? $node->getId()->getName() : '';
             $bodyNode = $node->getBody();
-            if ($bodyNode->getType() !== 'BlockStatement') {
-                $this->unsupported($node, 'Expression-bodied functions are not supported (ES5 target)');
+            if ($bodyNode->getType() === 'BlockStatement') {
+                $body = $bodyNode->getBody();
+            } elseif ($ctx->isArrow) {
+                // `x => expr` is `x => { return expr; }`; the expression is
+                // analysed here and re-found by genFunction.
+                $body = [];
+                $ctx->arrowBody = $bodyNode;
+            } else {
+                $this->unsupported($node, 'Expression-bodied functions are not supported');
             }
-            $body = $bodyNode->getBody();
             // A body directive makes the parameter list strict too, so
             // strictness has to be known before the parameters are bound.
             $ctx->strict = $ctx->strict || $this->hasUseStrict($body);
@@ -105,9 +112,14 @@ final class Compiler
                 $name = $p->getName();
                 if ($ctx->strict) {
                     $this->checkBindingName($ctx, $name, $p);
-                    if (in_array($name, $ctx->params, true)) {
-                        $this->fail($p, "Duplicate parameter name '$name' not allowed in strict mode");
-                    }
+                }
+                if (($ctx->strict || $ctx->isArrow) && in_array($name, $ctx->params, true)) {
+                    // Sloppy functions may repeat a parameter name; strict ones
+                    // and arrows may not, and an arrow may not regardless of
+                    // the surrounding strictness (14.2.1).
+                    $this->fail($p, $ctx->isArrow
+                        ? "Duplicate parameter name '$name' not allowed in an arrow function"
+                        : "Duplicate parameter name '$name' not allowed in strict mode");
                 }
                 $ctx->params[] = $name;
                 $ctx->bindings[$name] = new Binding($ctx, $name, 'param', $i);
@@ -133,6 +145,9 @@ final class Compiler
         $this->lexStack[] = ['ctx' => $ctx, 'names' => $ctx->bindings];
         foreach ($body as $stmt) {
             $this->analyzeNode($stmt, $ctx);
+        }
+        if ($ctx->arrowBody !== null) {
+            $this->analyzeNode($ctx->arrowBody, $ctx);
         }
         array_pop($this->lexStack);
         if ($selfNames !== []) {
@@ -265,6 +280,7 @@ final class Compiler
                 return;
             case 'FunctionDeclaration':
             case 'FunctionExpression':
+            case 'ArrowFunctionExpression':
                 $this->analyzeFunction($node, $ctx, false);
                 return;
             case 'VariableDeclaration':
@@ -427,6 +443,12 @@ final class Compiler
             }
         }
         if ($name === 'arguments' && !$ctx->isProgram) {
+            if ($ctx->isArrow) {
+                // An arrow has no `arguments` of its own -- it means the
+                // enclosing function's. Handing back the arrow's own would be
+                // silently wrong, so refuse until it is captured properly.
+                $this->unsupported(null, "'arguments' inside an arrow function is not supported yet");
+            }
             $ctx->usesArguments = true;
         }
     }
@@ -517,7 +539,7 @@ final class Compiler
         }
         $this->lexStack[] = ['ctx' => $ctx, 'names' => $ctx->bindings];
 
-        $body = $isProgram ? $node->getBody() : $node->getBody()->getBody();
+        $body = $isProgram ? $node->getBody() : ($ctx->arrowBody !== null ? [] : $node->getBody()->getBody());
 
         // Prologue: copy captured params into the environment record.
         foreach ($ctx->bindings as $b) {
@@ -556,6 +578,11 @@ final class Compiler
 
         foreach ($body as $stmt) {
             $this->genStmt($stmt);
+        }
+        if ($ctx->arrowBody !== null) {
+            // `x => expr` returns the expression; there is no other statement.
+            $this->genExpr($ctx->arrowBody);
+            $ctx->emit(Op::RETURN);
         }
 
         if ($isProgram) {
@@ -1086,7 +1113,8 @@ final class Compiler
             case 'ThisExpression':
                 $c->emit(Op::PUSH_THIS);
                 return;
-            case 'FunctionExpression': {
+            case 'FunctionExpression':
+            case 'ArrowFunctionExpression': {
                 $childCtx = $this->fnCtx[$node];
                 $idx = $this->compileChild($childCtx, $node);
                 $c->emit(Op::NEW_FUNC, $idx);
@@ -1234,14 +1262,19 @@ final class Compiler
         $quasis = $node->getQuasis();
         $exprs = $node->getExpressions();
 
+        $cooked = [];
+        foreach ($quasis as $i => $quasi) {
+            $cooked[$i] = $this->cookTemplate($quasi);
+        }
+
         if ($exprs === []) {
-            $c->emit(Op::PUSH_CONST, $c->constIndex($quasis[0]->getValue()));
+            $c->emit(Op::PUSH_CONST, $c->constIndex($cooked[0]));
             return;
         }
 
         $started = false;
         foreach ($quasis as $i => $quasi) {
-            $text = $quasi->getValue();
+            $text = $cooked[$i];
             if ($text !== '') {
                 $c->emit(Op::PUSH_CONST, $c->constIndex($text));
                 if ($started) {
@@ -1263,6 +1296,46 @@ final class Compiler
             // Every quasi empty and no substitutions left: `` produces "".
             $c->emit(Op::PUSH_CONST, $c->constIndex(''));
         }
+    }
+
+    /**
+     * A template rejects the escapes a sloppy string tolerates.
+     *
+     * `\8`, `\9` and legacy octals are errors here whatever the surrounding
+     * strictness (12.9.6), because a template's cooked value is only allowed to
+     * be undefined in a *tagged* template, and this compiler has no tagged form
+     * yet. Peast catches the malformed unicode escapes; these are the rest.
+     */
+    private function cookTemplate(object $quasi): string
+    {
+        $raw = $quasi->getRawValue();
+        $length = strlen($raw);
+        for ($i = 0; $i < $length; $i++) {
+            if ($raw[$i] !== '\\') {
+                continue;
+            }
+            $next = $raw[++$i] ?? '';
+            if ($next === '8' || $next === '9') {
+                $this->fail($quasi, "'\\$next' is not a valid escape in a template literal");
+            }
+            if ($next >= '0' && $next <= '7') {
+                // \0 not followed by a digit is the NUL escape and is fine;
+                // anything else in that range is a legacy octal.
+                $following = $raw[$i + 1] ?? '';
+                if ($next !== '0' || ($following >= '0' && $following <= '9')) {
+                    $this->fail($quasi, 'Octal escapes are not allowed in a template literal');
+                }
+            }
+        }
+
+        // Cooked here rather than taken from the parser, which leaves `\0`
+        // undecoded. Correcting the parser's cooked value afterwards is not
+        // possible: `\\0` legitimately cooks to a backslash and a zero, so by
+        // then the two are indistinguishable. decodeStringLiteral strips one
+        // delimiter from each end, so any delimiter will do -- and a line
+        // terminator is normalised first, which a string literal never has to
+        // do because it cannot contain one.
+        return self::decodeStringLiteral('`' . str_replace(["\r\n", "\r"], "\n", $raw) . '`');
     }
 
     private function genLiteral(object $node): void

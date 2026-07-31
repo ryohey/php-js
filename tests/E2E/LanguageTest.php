@@ -197,6 +197,39 @@ final class LanguageTest extends EvalTestCase
             'var n = null, u; `${n}-${u}`',
         ];
 
+        yield 'arrow, expression body' => [3, 'var f = (a, b) => a + b; f(1, 2)'];
+        yield 'arrow, block body' => [42, 'var f = (x) => { return x * 2; }; f(21)'];
+        yield 'arrow, no parameters' => [7, '(() => 7)()'];
+        yield 'arrow returning an object literal' => [1, '(() => ({ a: 1 }))().a'];
+        yield 'curried arrows' => [3, '((a) => (b) => a + b)(1)(2)'];
+        yield 'arrow as a callback' => ['1,4,9', '[1, 2, 3].map(x => x * x).join(",")'];
+        // The whole point of the form: `this` is the enclosing function's, and
+        // no receiver the caller supplies can change it.
+        yield 'arrow takes this from its enclosing function' => [
+            42,
+            'var o = { v: 42, get: function () { return (() => this.v)(); } }; o.get()',
+        ];
+        yield 'nested arrows chain this' => [
+            9,
+            'var f = function () { return () => () => this.v; }; f.call({ v: 9 })()()',
+        ];
+        yield 'arrow this survives a callback' => [
+            3,
+            'var o = { n: 0, inc: function () { [1,2,3].forEach(() => { this.n++; }); return this.n; } }; o.inc()',
+        ];
+        yield 'arrow ignores an explicit receiver' => [
+            42,
+            'var o = { v: 42, get: function () { return (() => this.v).call({ v: 0 }); } }; o.get()',
+        ];
+        // No prototype, so `new` on one is a TypeError rather than a call.
+        yield 'arrow has no prototype' => [true, '(() => 1).prototype === undefined'];
+        yield 'arrow is not a constructor' => [
+            'TypeError',
+            'try { new (() => 1); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'arrow length and name' => ['2|', '((a, b) => a + b).length + "|" + ((a, b) => a + b).name'];
+        yield 'arrow is a function' => ['function', 'typeof (() => 1)'];
+
         yield 'number toFixed' => ['3.14', '(3.14159).toFixed(2)'];
         yield 'number toString radix' => ['ff', '(255).toString(16)'];
         yield 'json roundtrip' => ['{"a":[1,2],"b":"x"}', 'JSON.stringify(JSON.parse("{\"a\":[1,2],\"b\":\"x\"}"))'];
