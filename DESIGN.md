@@ -150,10 +150,43 @@ for code you control; it is no longer the *only* way in.
   per iteration, and one slot is reused instead. Answering would hand every
   closure the last value. `for (let x in …)` is refused for the same reason.
 
+- **Object destructuring**, in declarations, assignments and parameters, with
+  nesting, defaults, computed keys and a rest element. The source arrives at
+  `genPattern` as a *thunk* rather than as a value already on the stack, because
+  the spec fixes an order the stack cannot express: in `{a: obj.x} = src` the
+  reference `obj.x` is evaluated before `src.a` is read, and a default is applied
+  after the reference and before the store. Handing each leaf a thunk lets it
+  pull the value at its own moment, and folding a default *into* the thunk keeps
+  it in the right place with no special case at the leaf.
+
+  Three opcodes: `REQ_COERCIBLE` (an opcode of its own because `const {} = null`
+  throws with no property to read, and reading one anyway would be observable
+  through a getter), `COPY_REST` for `CopyDataProperties`, and `TO_KEY` so a
+  computed key that also feeds a rest element's exclusion list converts once.
+
+  A pattern parameter takes its position under a name no source can reach and is
+  unpacked by the prologue after the defaults have run. It makes the list
+  non-simple — so no mapped `arguments`, no `'use strict'` after it — but it does
+  not stop `length`, which only a default or a rest element does.
+
+  **Array destructuring is refused.** It is defined over the iterator protocol
+  (`GetIterator` / `IteratorStep` / `IteratorClose`), which the engine does not
+  have; reading by index instead would answer `undefined` for a Set, a Map or a
+  generator rather than iterating it. That protocol is the next increment, and it
+  carries `for…of` and spread with it.
+
+  One shape is refused for a parser defect rather than a design one: Peast
+  returns the wrong target for a shorthand whose default is itself an assignment
+  (`({x = f = 1} = v)` comes back bound to `f`, having lost `x`). Declarations and
+  parameters parse correctly. The compiler asserts the invariant — a shorthand's
+  target is its key — and refuses when the tree does not match the source.
+
 **Known gaps in what has landed**, all visible as test262 failures rather than
 as silence: `var f = () => {}` does not take the name `f` (NamedEvaluation is
-not implemented for any form), and two malformed-unicode-escape cases in
-templates are still accepted where they should be early errors.
+not implemented for any form, and it is now the single largest failure group at
+48 of them, since a destructuring default names a function too), and two
+malformed-unicode-escape cases in templates are still accepted where they should
+be early errors.
 
 One refusal is deliberately wider than the spec: a parameter default that
 reaches a parameter declared after it is rejected at compile time, where the
@@ -175,10 +208,16 @@ against a non-writable `length`. Those tests had been skipped because their own
 source is written in ES6, not because the engine passed them. That is the second
 argument for growing the surface: the skips were hiding real defects.
 
-**Next:** destructuring, which is now 22.0% of all rejections and the largest
-single item left by a wide margin. Then `for…of` (4.2%) and spread (3.5%).
-Queued behind them: per-iteration loop bindings (which retires the refusal
-above), the separate parameter scope, and NamedEvaluation.
+**Next: the iterator protocol.** `for…of` (9.2% of all rejections), spread
+(4.8%) and array destructuring (1.2%) are one feature wearing three hats — they
+all reduce to `GetIterator` / `IteratorStep` / `IteratorValue` / `IteratorClose`
+plus `Symbol.iterator` on Array, String and `arguments`. Doing them together is
+the difference between implementing the protocol once and approximating it three
+times, and the shares understate it: most of the files that need array patterns
+trip on `for…of` first.
+
+Queued behind that: classes (3.0%), per-iteration loop bindings (which retires
+the refusal above), the separate parameter scope, and NamedEvaluation.
 
 **Deliberately out of scope for now:** ES modules (node-compat resolves
 CommonJS, and published packages overwhelmingly ship it), Proxy and Reflect

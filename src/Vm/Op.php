@@ -81,6 +81,27 @@ final class Op
     public const TDZ_CHECK = 91;
     /** Assignment to a `const` binding: always a TypeError. */
     public const THROW_CONST = 92;
+    /**
+     * RequireObjectCoercible on the value on top, which it leaves in place.
+     * Destructuring needs it as an opcode of its own because `const {} = null`
+     * still throws with no property to read, and reading one anyway would be
+     * observable through a getter.
+     */
+    public const REQ_COERCIBLE = 93;
+    /**
+     * CopyDataProperties for an object rest element: `n` -> pops n already
+     * matched keys and the source, pushes a fresh object carrying the source's
+     * remaining own enumerable properties. The keys are on the stack rather
+     * than in the operand because a computed one is only known at run time.
+     */
+    public const COPY_REST = 94;   // n
+    /**
+     * ToPropertyKey on the value on top, in place. A computed key in a pattern
+     * is converted once and then used twice -- to read the property and to
+     * exclude it from a rest element -- and converting twice would run a
+     * user-supplied `toString` twice.
+     */
+    public const TO_KEY = 95;
     public const NOT = 38;
     public const BNOT = 39;
     public const TYPEOF = 40;
@@ -176,6 +197,7 @@ final class Op
         self::TOSTR => '',
         self::REST_ARGS => 'n',
         self::PUSH_TDZ => '', self::TDZ_CHECK => 'k', self::THROW_CONST => '',
+        self::REQ_COERCIBLE => '', self::COPY_REST => 'n', self::TO_KEY => '',
         self::BAND => '', self::BOR => '', self::BXOR => '',
         self::SHL => '', self::SHR => '', self::USHR => '',
         self::EQ => '', self::NEQ => '', self::SEQ => '', self::SNEQ => '',

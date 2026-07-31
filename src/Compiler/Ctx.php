@@ -32,6 +32,13 @@ final class Ctx
     /** Name of the rest parameter, which takes no positional slot. */
     public ?string $restParam = null;
     /**
+     * Parameter index => its destructuring pattern. The position holds the
+     * argument under a name no source can reach; the prologue unpacks it into
+     * the names the pattern declares.
+     * @var array<int, object>
+     */
+    public array $paramPatterns = [];
+    /**
      * Reported `length`: parameters before the first default or rest. Distinct
      * from nparams, which is how many slots receive positional arguments.
      */

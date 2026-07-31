@@ -147,6 +147,12 @@ function summarize(string $message): string
     if (preg_match('/^(Generators|Async functions|Expression-bodied functions|Destructuring)/', $message, $m)) {
         return $m[1];
     }
+    if (preg_match('/^(Array destructuring|A rest parameter cannot be a pattern)/', $message, $m)) {
+        return $m[1];
+    }
+    if (preg_match("/'(const|let|var)' in a for-in head/", $message)) {
+        return 'lexical for-in head';
+    }
     if (preg_match('/(Parameter patterns|Spread properties|Spread arguments|Catch parameter patterns)/', $message, $m)) {
         return $m[1];
     }

@@ -496,6 +496,53 @@ final class Vm
                         $this->sp = $sp;
                         $this->throwError('TypeError', 'Assignment to constant variable.');
                         // no break (throwError does not return)
+                    case Op::REQ_COERCIBLE:
+                        if ($stack[$sp - 1] === null || $stack[$sp - 1] instanceof JSUndefined) {
+                            $this->sp = $sp;
+                            $this->throwError(
+                                'TypeError',
+                                'Cannot destructure ' . ($stack[$sp - 1] === null ? 'null' : 'undefined')
+                            );
+                        }
+                        break;
+                    case Op::COPY_REST: {
+                        $nkeys = $code[$pc++];
+                        $excluded = [];
+                        for ($i = 0; $i < $nkeys; $i++) {
+                            $excluded[$stack[--$sp]] = true;
+                        }
+                        $src = $stack[--$sp];
+                        $this->sp = $sp;
+                        $rest = new JSObject($realm->objectPrototype());
+                        // null and undefined contribute nothing rather than
+                        // throwing: the pattern that reached here already ran
+                        // RequireObjectCoercible if the spec asked for it.
+                        if ($src !== null && !($src instanceof JSUndefined)) {
+                            $from = Conversions::toObject($this, $src);
+                            foreach ($from->ownEnumerableKeys() as $k) {
+                                if (!isset($excluded[$k])) {
+                                    $rest->defineOwnData($k, $from->get($k, $this));
+                                }
+                            }
+                            foreach ($from->ownSymbolKeys() as $k) {
+                                $d = $from->ownDescriptor($k);
+                                if ($d !== null && ($d[2] & JSObject::E) && !isset($excluded[$k])) {
+                                    $rest->defineOwnData($k, $from->get($k, $this));
+                                }
+                            }
+                        }
+                        $stack[$sp++] = $rest;
+                        break;
+                    }
+                    case Op::TO_KEY:
+                        // A string is already a key; anything else converts,
+                        // and a symbol becomes the private string it is stored
+                        // under, which GET_ELEM and COPY_REST both accept.
+                        if (!is_string($stack[$sp - 1])) {
+                            $this->sp = $sp;
+                            $stack[$sp - 1] = $this->propertyKey($stack[$sp - 1]);
+                        }
+                        break;
                     case Op::REST_ARGS: {
                         $from = $code[$pc++];
                         $args = $frame[self::F_ARGS] ?? [];

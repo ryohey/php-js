@@ -106,7 +106,11 @@ final class Compiler
             if ($ctx->strict && $node->getId() !== null) {
                 $this->checkBindingName($ctx, $node->getId()->getName(), $node);
             }
-            $simple = true;      // no defaults, no rest: `length` == nparams
+            // No default and no rest seen yet, which is exactly the rule for
+            // `length`: a pattern parameter does not stop the count, it only
+            // makes the list non-simple (which $strictList tracks separately).
+            $simple = true;
+            $boundNames = [];    // every name the list binds, patterns included
             foreach ($node->getParams() as $p) {
                 $init = null;
                 $isRest = false;
@@ -120,18 +124,44 @@ final class Compiler
                         $this->fail($p, 'Only one rest parameter is allowed');
                     }
                 }
-                if ($p->getType() !== 'Identifier') {
-                    $this->unsupported($p, 'Destructuring parameters are not supported yet');
-                }
-                $name = $p->getName();
-                if ($ctx->strict) {
-                    $this->checkBindingName($ctx, $name, $p);
+                // A pattern parameter binds names of its own and takes the
+                // position under a name no source can reach, which the prologue
+                // unpacks. A rest element still has to be a plain name: its
+                // array is built by REST_ARGS, not destructured.
+                $pattern = null;
+                if (self::isPattern($p)) {
+                    if ($isRest) {
+                        $this->unsupported($p, 'A rest parameter cannot be a pattern');
+                    }
+                    $pattern = $p;
+                    $name = "\0param" . count($ctx->params);
+                } else {
+                    if ($p->getType() !== 'Identifier') {
+                        $this->unsupported($p, 'Unsupported parameter: ' . $p->getType());
+                    }
+                    $name = $p->getName();
                 }
                 // A sloppy function may repeat a parameter name, but only while
                 // its list stays simple; an arrow never may (14.2.1, 15.1.3).
-                $strictList = $ctx->strict || $ctx->isArrow || !$simple || $init !== null || $isRest;
-                if ($strictList && in_array($name, $ctx->params, true)) {
-                    $this->fail($p, "Duplicate parameter name '$name' is not allowed here");
+                // A pattern anywhere makes the list non-simple.
+                $strictList = $ctx->strict || $ctx->isArrow || !$simple || $init !== null || $isRest
+                    || $ctx->paramPatterns !== [] || $pattern !== null;
+                foreach ($pattern !== null ? $this->patternNames($pattern) : [$name] as $bound) {
+                    if ($strictList && in_array($bound, $boundNames, true)) {
+                        $this->fail($p, "Duplicate parameter name '$bound' is not allowed here");
+                    }
+                    // checkBindingName gates its own strict-only rules, so the
+                    // reserved-word check runs in both modes.
+                    $this->checkBindingName($ctx, $bound, $p);
+                    $boundNames[] = $bound;
+                }
+                if ($pattern !== null) {
+                    $ctx->paramPatterns[count($ctx->params)] = $pattern;
+                    foreach ($this->patternNames($pattern) as $bound) {
+                        // Not positional: filled by the prologue, like the rest
+                        // parameter's array.
+                        $ctx->bindings[$bound] = new Binding($ctx, $bound, 'var');
+                    }
                 }
                 if ($isRest) {
                     $simple = false;
@@ -158,7 +188,8 @@ final class Compiler
         // A body directive may not follow a parameter list carrying defaults or
         // a rest element (14.1.2): the directive would change how the list is
         // read after it has already been read.
-        if (!$isProgram && ($ctx->paramInits !== [] || $ctx->restParam !== null)
+        if (!$isProgram
+            && ($ctx->paramInits !== [] || $ctx->restParam !== null || $ctx->paramPatterns !== [])
             && $this->hasUseStrict($body)) {
             $this->fail($node, "'use strict' is not allowed in a function with a non-simple parameter list");
         }
@@ -183,7 +214,7 @@ final class Compiler
         // A function body and a program are blocks too: `let` at their top
         // level belongs to them, not to the surrounding var scope.
         $bodyOwner = $isProgram ? $node : ($ctx->arrowBody !== null ? null : $node->getBody());
-        $paramNames = $ctx->params;
+        $paramNames = $boundNames ?? [];
         if ($ctx->restParam !== null) {
             $paramNames[] = $ctx->restParam;
         }
@@ -198,6 +229,11 @@ final class Compiler
         foreach ($ctx->paramInits as $index => $init) {
             $this->checkInitializerOrder($ctx, $index, $init);
             $this->analyzeNode($init, $ctx);
+        }
+        // A pattern's own computed keys and defaults are expressions evaluated
+        // in the function's scope, like a parameter default.
+        foreach ($ctx->paramPatterns as $pattern) {
+            $this->analyzePattern($pattern, $ctx);
         }
         if ($ctx->arrowBody !== null) {
             $this->analyzeNode($ctx->arrowBody, $ctx);
@@ -250,19 +286,17 @@ final class Compiler
                 }
                 foreach ($node->getDeclarations() as $d) {
                     $id = $d->getId();
-                    if ($id->getType() !== 'Identifier') {
-                        $this->unsupported($id, 'Destructuring is not supported (ES5 target)');
-                    }
-                    $name = $id->getName();
-                    $this->checkBindingName($ctx, $name, $id);
-                    if ($ctx->isProgram) {
-                        // Program-level vars are global object properties,
-                        // not frame slots (visible across scripts).
-                        if (!in_array($name, $ctx->globalDecls, true)) {
-                            $ctx->globalDecls[] = $name;
+                    foreach ($this->patternNames($id) as $name) {
+                        $this->checkBindingName($ctx, $name, $id);
+                        if ($ctx->isProgram) {
+                            // Program-level vars are global object properties,
+                            // not frame slots (visible across scripts).
+                            if (!in_array($name, $ctx->globalDecls, true)) {
+                                $ctx->globalDecls[] = $name;
+                            }
+                        } elseif (!isset($ctx->bindings[$name])) {
+                            $ctx->bindings[$name] = new Binding($ctx, $name, 'var');
                         }
-                    } elseif (!isset($ctx->bindings[$name])) {
-                        $ctx->bindings[$name] = new Binding($ctx, $name, 'var');
                     }
                 }
                 break;
@@ -334,7 +368,7 @@ final class Compiler
         $type = $node->getType();
         switch ($type) {
             case 'Identifier':
-                $this->analyzeReference($node->getName(), $ctx);
+                $this->analyzeReference($node->getName(), $ctx, $node);
                 return;
             case 'ParenthesizedExpression':
                 $this->analyzeNode($node->getExpression(), $ctx);
@@ -355,10 +389,15 @@ final class Compiler
             case 'VariableDeclaration':
                 foreach ($node->getDeclarations() as $d) {
                     $this->analyzeNode($d->getInit(), $ctx);
+                    // A pattern carries expressions of its own -- computed keys
+                    // and defaults -- which are evaluated where the pattern is.
+                    $this->analyzePattern($d->getId(), $ctx);
                     if ($node->getKind() !== 'var') {
                         // Reaching the name binds it in the block that declared
                         // it, which enterBlock already created.
-                        $this->analyzeReference($d->getId()->getName(), $ctx);
+                        foreach ($this->patternNames($d->getId()) as $name) {
+                            $this->analyzeReference($name, $ctx);
+                        }
                     }
                 }
                 return;
@@ -394,7 +433,18 @@ final class Compiler
                     $this->analyzeNode($e, $ctx);
                 }
                 return;
-            case 'AssignmentExpression':
+            case 'AssignmentExpression': {
+                $left = self::unwrapParens($node->getLeft());
+                if (self::isPattern($left)) {
+                    // Destructuring assignment: the leaves are references to
+                    // existing bindings, not declarations of new ones.
+                    $this->analyzePattern($left, $ctx, true);
+                } else {
+                    $this->analyzeNode($left, $ctx);
+                }
+                $this->analyzeNode($node->getRight(), $ctx);
+                return;
+            }
             case 'BinaryExpression':
             case 'LogicalExpression':
                 $this->analyzeNode($node->getLeft(), $ctx);
@@ -614,25 +664,168 @@ final class Compiler
             }
             foreach ($stmt->getDeclarations() as $d) {
                 $id = $d->getId();
-                if ($id->getType() !== 'Identifier') {
-                    $this->unsupported($id, 'Destructuring declarations are not supported yet');
-                }
-                $name = $id->getName();
-                if ($name === 'let') {
-                    // `let` is not a reserved word, but a lexical declaration
-                    // may not bind it: `let let` has no unambiguous reading.
-                    $this->fail($id, "'let' is not a valid name for a lexical declaration");
-                }
-                if (isset($names[$name])) {
-                    $this->fail($id, "Identifier '$name' has already been declared");
-                }
                 if ($kind === 'const' && $d->getInit() === null) {
                     $this->fail($id, "Missing initializer in const declaration");
                 }
-                $names[$name] = $kind;
+                foreach ($this->patternNames($id) as $name) {
+                    if ($name === 'let') {
+                        // `let` is not a reserved word, but a lexical
+                        // declaration may not bind it: `let let` has no
+                        // unambiguous reading.
+                        $this->fail($id, "'let' is not a valid name for a lexical declaration");
+                    }
+                    if (isset($names[$name])) {
+                        $this->fail($id, "Identifier '$name' has already been declared");
+                    }
+                    $names[$name] = $kind;
+                }
             }
         }
         return $names;
+    }
+
+    /**
+     * Every name a binding target declares: the target itself when it is a
+     * plain identifier, and otherwise the leaves of the pattern.
+     *
+     * This is the one place that decides what a pattern binds, so the four
+     * callers that need it -- `var` hoisting, lexical declarations, the
+     * var/lexical collision check and the parameter list -- cannot drift apart.
+     * It is also where an unsupported pattern shape is refused, so a shape that
+     * cannot be bound never reaches codegen.
+     *
+     * @return list<string>
+     */
+    private function patternNames(object $target): array
+    {
+        $names = [];
+        $this->collectPatternNames($target, $names);
+        return $names;
+    }
+
+    private static function isPattern(object $node): bool
+    {
+        $t = $node->getType();
+        return $t === 'ObjectPattern' || $t === 'ArrayPattern';
+    }
+
+    /**
+     * A shorthand property binds the key itself, so `{x = d}` must arrive as
+     * key `x` with target `x`.
+     *
+     * Peast breaks that for a destructuring *assignment* whose default is
+     * itself an assignment: `({x = f = 1} = v)` comes back with the target
+     * `f`, having lost `x`. Declarations and parameters are parsed correctly,
+     * so this only guards the assignment path -- but it is written as the
+     * invariant rather than as the special case, because the tree is wrong
+     * either way and unpacking it would produce a confidently wrong answer.
+     */
+    private function checkShorthand(object $prop): void
+    {
+        if (!$prop->getShorthand()) {
+            return;
+        }
+        $target = $prop->getValue();
+        if ($target->getType() === 'AssignmentPattern') {
+            $target = $target->getLeft();
+        }
+        if ($target->getType() !== 'Identifier' || $target->getName() !== $prop->getKey()->getName()) {
+            $this->unsupported(
+                $prop,
+                "Shorthand '{$prop->getKey()->getName()}' with an assignment as its default"
+                    . ' is not supported yet (the parser loses the target)'
+            );
+        }
+    }
+
+    /**
+     * Analyse the expressions a pattern carries: computed keys and defaults,
+     * which are ordinary expressions evaluated where the pattern sits.
+     *
+     * With `$assigning` the leaves are assignment targets rather than
+     * declarations, so they are references to bindings that already exist.
+     */
+    private function analyzePattern(?object $target, Ctx $ctx, bool $assigning = false): void
+    {
+        if ($target === null) {
+            return;
+        }
+        switch ($target->getType()) {
+            case 'ObjectPattern':
+                foreach ($target->getProperties() as $p) {
+                    if ($p->getType() === 'RestElement') {
+                        $this->analyzePattern($p->getArgument(), $ctx, $assigning);
+                        continue;
+                    }
+                    $this->checkShorthand($p);
+                    if ($p->getComputed()) {
+                        $this->analyzeNode($p->getKey(), $ctx);
+                    }
+                    $this->analyzePattern($p->getValue(), $ctx, $assigning);
+                }
+                return;
+            case 'AssignmentPattern':
+                $this->analyzePattern($target->getLeft(), $ctx, $assigning);
+                $this->analyzeNode($target->getRight(), $ctx);
+                return;
+            case 'RestElement':
+                $this->analyzePattern($target->getArgument(), $ctx, $assigning);
+                return;
+            case 'Identifier':
+                if ($assigning) {
+                    $this->analyzeReference($target->getName(), $ctx, $target);
+                }
+                return;
+            case 'MemberExpression':
+                if (!$assigning) {
+                    $this->unsupported($target, 'A member expression cannot be declared');
+                }
+                $this->analyzeNode($target, $ctx);
+                return;
+            case 'ArrayPattern':
+                $this->unsupported($target, 'Array destructuring is not supported yet');
+                // no break (unsupported throws)
+            default:
+                $this->unsupported($target, 'Unsupported binding target: ' . $target->getType());
+        }
+    }
+
+    /** @param list<string> $names */
+    private function collectPatternNames(?object $target, array &$names): void
+    {
+        if ($target === null) {
+            return;                      // an elision, which binds nothing
+        }
+        switch ($target->getType()) {
+            case 'Identifier':
+                $names[] = $target->getName();
+                return;
+            case 'ObjectPattern':
+                foreach ($target->getProperties() as $p) {
+                    if ($p->getType() === 'RestElement') {
+                        $this->collectPatternNames($p->getArgument(), $names);
+                        continue;
+                    }
+                    $this->checkShorthand($p);
+                    $this->collectPatternNames($p->getValue(), $names);
+                }
+                return;
+            case 'AssignmentPattern':
+                $this->collectPatternNames($target->getLeft(), $names);
+                return;
+            case 'RestElement':
+                $this->collectPatternNames($target->getArgument(), $names);
+                return;
+            case 'ArrayPattern':
+                // An array pattern is defined over the iterator protocol
+                // (GetIterator / IteratorStep / IteratorClose), which the engine
+                // does not have yet. Reading by index instead would answer for a
+                // Set, a Map or a generator by handing back undefined.
+                $this->unsupported($target, 'Array destructuring is not supported yet');
+                // no break (unsupported throws)
+            default:
+                $this->unsupported($target, 'Unsupported binding target: ' . $target->getType());
+        }
     }
 
     /**
@@ -671,9 +864,8 @@ final class Compiler
                 }
                 $names = [];
                 foreach ($node->getDeclarations() as $d) {
-                    $id = $d->getId();
-                    if ($id->getType() === 'Identifier') {
-                        $names[$id->getName()] = true;
+                    foreach ($this->patternNames($d->getId()) as $name) {
+                        $names[$name] = true;
                     }
                 }
                 return $names;
@@ -811,15 +1003,50 @@ final class Compiler
         }
     }
 
+    /**
+     * Reserved in every mode (11.6.2.1). A keyword written with a unicode
+     * escape is still the keyword, so it may not be an identifier -- and the
+     * escape is exactly how one reaches here, because the parser turns an
+     * unescaped keyword into a keyword token and never into an Identifier.
+     */
+    private const RESERVED_WORDS = [
+        'break' => true, 'case' => true, 'catch' => true, 'class' => true,
+        'const' => true, 'continue' => true, 'debugger' => true, 'default' => true,
+        'delete' => true, 'do' => true, 'else' => true, 'enum' => true,
+        'export' => true, 'extends' => true, 'false' => true, 'finally' => true,
+        'for' => true, 'function' => true, 'if' => true, 'import' => true,
+        'in' => true, 'instanceof' => true, 'new' => true, 'null' => true,
+        'return' => true, 'super' => true, 'switch' => true, 'this' => true,
+        'throw' => true, 'true' => true, 'try' => true, 'typeof' => true,
+        'var' => true, 'void' => true, 'while' => true, 'with' => true,
+    ];
+
+    /** Reserved only in strict code (11.6.2.2); ordinary identifiers otherwise. */
+    private const STRICT_RESERVED_WORDS = [
+        'implements' => true, 'interface' => true, 'let' => true, 'package' => true,
+        'private' => true, 'protected' => true, 'public' => true, 'static' => true,
+        'yield' => true,
+    ];
+
+    private function checkIdentifierName(string $name, bool $strict, ?object $node): void
+    {
+        if (isset(self::RESERVED_WORDS[$name])
+            || ($strict && isset(self::STRICT_RESERVED_WORDS[$name]))) {
+            $this->fail($node, "'$name' is a reserved word and cannot be used as an identifier");
+        }
+    }
+
     private function checkBindingName(Ctx $ctx, string $name, ?object $node): void
     {
+        $this->checkIdentifierName($name, $ctx->strict, $node);
         if ($ctx->strict && ($name === 'eval' || $name === 'arguments')) {
             $this->fail($node, "Binding '$name' is not allowed in strict mode");
         }
     }
 
-    private function analyzeReference(string $name, Ctx $ctx): void
+    private function analyzeReference(string $name, Ctx $ctx, ?object $node = null): void
     {
+        $this->checkIdentifierName($name, $ctx->strict, $node);
         for ($i = count($this->lexStack) - 1; $i >= 0; $i--) {
             $names = $this->lexStack[$i]['names'];
             if (isset($names[$name])) {
@@ -845,7 +1072,8 @@ final class Compiler
     {
         $ctx->nparams = count($ctx->params);
         $ctx->nlocals = $ctx->nparams;
-        $simpleList = $ctx->paramInits === [] && $ctx->restParam === null;
+        $simpleList = $ctx->paramInits === [] && $ctx->restParam === null
+            && $ctx->paramPatterns === [];
         if ($simpleList) {
             $ctx->length = $ctx->nparams;
         }
@@ -956,6 +1184,12 @@ final class Compiler
             $ctx->emit(Op::REST_ARGS, $ctx->nparams);
             $this->emitStoreBinding($ctx->bindings[$ctx->restParam]);
             $ctx->emit(Op::POP);
+        }
+        // After the defaults, so a pattern parameter destructures the value the
+        // default supplied rather than the `undefined` it replaced.
+        foreach ($ctx->paramPatterns as $index => $pattern) {
+            $slot = $ctx->bindings[$ctx->params[$index]]->slot;
+            $this->genPattern($pattern, static fn () => $ctx->emit(Op::GET_LOCAL, $slot), true);
         }
 
         foreach ($ctx->bindings as $b) {
@@ -1086,6 +1320,12 @@ final class Compiler
             case 'VariableDeclaration': {
                 $lexical = $node->getKind() !== 'var';
                 foreach ($node->getDeclarations() as $d) {
+                    if (self::isPattern($d->getId())) {
+                        // The parser already rejects a pattern without one.
+                        $init = $d->getInit();
+                        $this->genPattern($d->getId(), fn () => $this->genExpr($init), $lexical);
+                        continue;
+                    }
                     if ($d->getInit() !== null) {
                         $this->genExpr($d->getInit());
                     } elseif ($lexical) {
@@ -2121,8 +2361,23 @@ final class Compiler
         $op = $node->getOperator();
         $left = self::unwrapParens($node->getLeft());
         $right = $node->getRight();
+        if (self::isPattern($left)) {
+            if ($op !== '=') {
+                $this->fail($node, "A destructuring assignment may not use '$op'");
+            }
+            // The expression's value is the right-hand side, not the pattern,
+            // so it is materialised once and handed back at the end.
+            $t = $c->tempAlloc();
+            $this->genExpr($right);
+            $c->emit(Op::SET_LOCAL, $t);
+            $c->emit(Op::POP);
+            $this->genPattern($left, static fn () => $c->emit(Op::GET_LOCAL, $t), false);
+            $c->emit(Op::GET_LOCAL, $t);
+            $c->tempFree($t);
+            return;
+        }
         if ($left->getType() !== 'Identifier' && $left->getType() !== 'MemberExpression') {
-            $this->unsupported($left, 'Destructuring assignment is not supported (ES5 target)');
+            $this->unsupported($left, 'Unsupported assignment target: ' . $left->getType());
         }
         if ($left->getType() === 'Identifier' && $c->strict) {
             $this->checkAssignmentTarget($left->getName(), $left);
@@ -2172,6 +2427,126 @@ final class Compiler
         if ($name === 'eval' || $name === 'arguments') {
             $this->fail($node, "Cannot assign to '$name' in strict mode");
         }
+    }
+
+    /**
+     * Destructure into $target. `$pushSource` emits code leaving the value to
+     * destructure on the stack; nothing is left behind when this returns.
+     *
+     * The source is a thunk rather than a value already on the stack because
+     * the spec fixes an order the stack cannot express: for `{a: obj.x} = src`
+     * the reference `obj.x` is evaluated *before* `src.a` is read, and a
+     * default is applied after the reference and before the store. Handing the
+     * leaf a thunk lets it pull the value at its own moment.
+     *
+     * `$declaring` separates a binding pattern, which initialises fresh
+     * bindings and so may write a `const`, from an assignment pattern, whose
+     * leaves are ordinary assignment targets.
+     */
+    private function genPattern(object $target, callable $pushSource, bool $declaring): void
+    {
+        $c = $this->cur;
+        switch ($target->getType()) {
+            case 'Identifier':
+                if (!$declaring && $c->strict) {
+                    $this->checkAssignmentTarget($target->getName(), $target);
+                }
+                $pushSource();
+                $this->emitStoreName($target->getName(), $declaring);
+                $c->emit(Op::POP);
+                return;
+            case 'MemberExpression':
+                $this->genAssignToMember($target, $pushSource);
+                $c->emit(Op::POP);
+                return;
+            case 'AssignmentPattern': {
+                // A default applies to `undefined` only. Folding it into the
+                // thunk keeps it after the target's own evaluation.
+                $init = $target->getRight();
+                $withDefault = function () use ($c, $pushSource, $init): void {
+                    $pushSource();
+                    $c->emit(Op::DUP);
+                    $c->emit(Op::PUSH_UNDEF);
+                    $c->emit(Op::SEQ);
+                    $skip = $c->emitJump(Op::JF);
+                    $c->emit(Op::POP);
+                    $this->genExpr($init);
+                    $c->patch($skip);
+                };
+                $this->genPattern($target->getLeft(), $withDefault, $declaring);
+                return;
+            }
+            case 'ObjectPattern':
+                $this->genObjectPattern($target, $pushSource, $declaring);
+                return;
+            default:
+                $this->unsupported($target, 'Unsupported binding target: ' . $target->getType());
+        }
+    }
+
+    private function genObjectPattern(object $pattern, callable $pushSource, bool $declaring): void
+    {
+        $c = $this->cur;
+        // Read once into a temp: the properties all come from the same value,
+        // and re-running the source expression would run its effects again.
+        $src = $c->tempAlloc();
+        $pushSource();
+        $c->emit(Op::SET_LOCAL, $src);
+        $c->emit(Op::POP);
+        // RequireObjectCoercible happens before any property is read, and still
+        // happens when there is no property to read at all.
+        $c->emit(Op::GET_LOCAL, $src);
+        $c->emit(Op::REQ_COERCIBLE);
+        $c->emit(Op::POP);
+
+        /** @var list<callable> $pushKey emits each matched key, for a rest element */
+        $pushKey = [];
+        $keyTemps = [];
+        $rest = null;
+        foreach ($pattern->getProperties() as $p) {
+            if ($p->getType() === 'RestElement') {
+                $rest = $p;                 // always last; the parser enforces it
+                continue;
+            }
+            if ($p->getComputed()) {
+                // Converted once here and reused for the rest element, so a
+                // user-supplied `toString` runs exactly once.
+                $kt = $c->tempAlloc();
+                $keyTemps[] = $kt;
+                $this->genExpr($p->getKey());
+                $c->emit(Op::TO_KEY);
+                $c->emit(Op::SET_LOCAL, $kt);
+                $c->emit(Op::POP);
+                $pushKey[] = static fn () => $c->emit(Op::GET_LOCAL, $kt);
+                $read = static function () use ($c, $src, $kt): void {
+                    $c->emit(Op::GET_LOCAL, $src);
+                    $c->emit(Op::GET_LOCAL, $kt);
+                    $c->emit(Op::GET_ELEM);
+                };
+            } else {
+                $key = $this->propertyKeyString($p->getKey());
+                $kidx = $c->constIndex($key);
+                $pushKey[] = static fn () => $c->emit(Op::PUSH_CONST, $kidx);
+                $read = static function () use ($c, $src, $kidx): void {
+                    $c->emit(Op::GET_LOCAL, $src);
+                    $c->emit(Op::GET_PROP, $kidx);
+                };
+            }
+            $this->genPattern($p->getValue(), $read, $declaring);
+        }
+        if ($rest !== null) {
+            $this->genPattern($rest->getArgument(), function () use ($c, $src, $pushKey): void {
+                $c->emit(Op::GET_LOCAL, $src);
+                foreach ($pushKey as $push) {
+                    $push();
+                }
+                $c->emit(Op::COPY_REST, count($pushKey));
+            }, $declaring);
+        }
+        foreach ($keyTemps as $kt) {
+            $c->tempFree($kt);
+        }
+        $c->tempFree($src);
     }
 
     /** Assign to obj.prop / obj[key]; $pushValue emits the RHS. Leaves value on stack. */
@@ -2300,6 +2675,13 @@ final class Compiler
                 // spec evaluates the right-hand side before it complains.
                 $c->emit(Op::THROW_CONST);
                 return;
+            }
+            if ($b->kind === 'let' && !$declaring) {
+                // Writing to a `let` before its declaration runs is a
+                // ReferenceError just as reading one is, so the dead zone is
+                // checked on the way in too. A load already carries the check.
+                $this->emitLoadBinding($b);
+                $c->emit(Op::POP);
             }
             $this->emitStoreBinding($b);
             return;

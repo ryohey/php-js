@@ -1,5 +1,12 @@
-# Features (front-matter `features:` tags) outside the ES5.1 + Promise scope.
+# Features (front-matter `features:` tags) the engine cannot attempt at all.
 # One per line. Tests tagged with any of these are counted as skipped.
+#
+# A tag belongs here only when the feature is genuinely absent -- a builtin that
+# does not exist, an object-model change. Syntax the compiler refuses does NOT
+# belong here: the runner already reports a refusal as a skip (see
+# CompileError::$unsupportedSyntax), and that mechanism keeps itself honest as
+# the syntax surface grows, while a tag silently hides results that have started
+# to pass. Tags are removed from this list as DESIGN.md 2.5 lands the feature.
 class
 class-fields-public
 class-fields-private
@@ -8,19 +15,10 @@ class-static-fields-public
 class-static-fields-private
 class-static-methods-private
 class-static-block
-let
-const
-default-parameters
-rest-parameters
-destructuring-binding
-destructuring-assignment
-arrow-function
 generators
 async-functions
 async-iteration
-template
 tail-call-optimization
-Symbol
 Symbol.iterator
 Symbol.asyncIterator
 Symbol.hasInstance
@@ -61,8 +59,6 @@ exponentiation
 spread
 object-spread
 object-rest
-computed-property-names
-shorthand-properties
 for-of
 new.target
 super
@@ -108,7 +104,6 @@ Object.is
 Object.hasOwn
 Object.groupBy
 object-rest
-Object.getOwnPropertySymbols
 Object.setPrototypeOf
 Number.isInteger
 Number.isSafeInteger

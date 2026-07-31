@@ -428,6 +428,166 @@ final class LanguageTest extends EvalTestCase
         ];
         yield 'var let is still allowed' => [1, 'var let = 1; let'];
 
+        // --- object destructuring ---
+        yield 'basic object pattern' => [3, 'var {a, b} = {a: 1, b: 2}; a + b'];
+        yield 'a property may be renamed' => [5, 'var {a: x} = {a: 5}; x'];
+        yield 'a missing property is undefined' => ['undefined', 'var {q} = {}; typeof q'];
+        yield 'nested patterns' => [7, 'var {a: {b}} = {a: {b: 7}}; b'];
+        yield 'const declares through a pattern' => [1, 'const {a} = {a: 1}; a'];
+        yield 'let declares through a pattern' => [2, '{ let {a} = {a: 2}; a }'];
+        yield 'a pattern let does not leak' => ['undefined', '{ let {a} = {a: 1}; } typeof a'];
+        yield 'assigning a const from a pattern is a TypeError' => [
+            'TypeError',
+            'const {a} = {a: 1}; try { a = 2; "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'a var pattern hoists' => [
+            'undefined',
+            'function f() { return typeof a; var {a} = {a: 1}; } f()',
+        ];
+
+        // A default applies to `undefined` only, exactly as a parameter's does.
+        yield 'a default fills a missing property' => [3, 'var {a = 3} = {}; a'];
+        yield 'a default yields to a present property' => [1, 'var {a = 3} = {a: 1}; a'];
+        yield 'explicit undefined takes the default' => [3, 'var {a = 3} = {a: undefined}; a'];
+        yield 'null does not take a pattern default' => ['null', 'var {a = 3} = {a: null}; String(a)'];
+        yield 'a default may reference an earlier name' => [2, 'var {a, b = a + 1} = {a: 1}; b'];
+        yield 'nested with a default' => [2, 'var {a: {b = 2} = {}} = {}; b'];
+
+        yield 'a computed key' => [9, 'var k = "z"; var {[k]: v} = {z: 9}; v'];
+        // The key is converted once and reused, so a user `toString` runs once.
+        yield 'a computed key converts once' => [
+            1,
+            'var n = 0; var k = { toString: function () { n++; return "z"; } };'
+                . ' var {[k]: v} = {z: 1}; n',
+        ];
+
+        yield 'object rest' => [
+            '1:{"b":2,"c":3}',
+            'var {a, ...r} = {a: 1, b: 2, c: 3}; a + ":" + JSON.stringify(r)',
+        ];
+        yield 'object rest is a plain object' => [
+            true,
+            'var {...r} = {a: 1}; Object.getPrototypeOf(r) === Object.prototype',
+        ];
+        yield 'object rest excludes a computed key' => [
+            '2:{"a":1}',
+            'var k = "b"; var {[k]: v, ...r} = {a: 1, b: 2}; v + ":" + JSON.stringify(r)',
+        ];
+        yield 'object rest skips non-enumerable' => [
+            '{"a":1}',
+            'var o = {a: 1}; Object.defineProperty(o, "h", {value: 2, enumerable: false});'
+                . ' var {...r} = o; JSON.stringify(r)',
+        ];
+        yield 'object rest does not copy the prototype chain' => [
+            '{}',
+            'function P() {} P.prototype.x = 1; var {...r} = new P(); JSON.stringify(r)',
+        ];
+
+        // RequireObjectCoercible runs before any property is read, and still
+        // runs when the pattern has no property to read.
+        yield 'destructuring null throws' => [
+            'TypeError',
+            'try { var {a} = null; "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'destructuring undefined throws' => [
+            'TypeError',
+            'try { var {a} = undefined; "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'an empty pattern still checks null' => [
+            'TypeError',
+            'try { var {} = null; "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'an empty pattern accepts an object' => ['ok', 'var {} = {}; "ok"'];
+        yield 'a string source reads its properties' => [3, 'var {length} = "abc"; length'];
+        yield 'a number source is coercible' => [true, 'var {constructor} = 5; constructor === Number'];
+
+        yield 'a parameter pattern' => [3, 'function f({a, b}) { return a + b; } f({a: 1, b: 2})'];
+        yield 'a parameter pattern with a default' => [4, 'function f({a} = {a: 4}) { return a; } f()'];
+        yield 'a default inside a parameter pattern' => [9, 'function f({a = 9}) { return a; } f({})'];
+        yield 'a parameter pattern beside a plain one' => [
+            3,
+            'function f({a}, b) { return a + b; } f({a: 1}, 2)',
+        ];
+        yield 'an arrow parameter pattern' => [3, '(({a}) => a)({a: 3})'];
+        yield 'a parameter pattern is captured by a closure' => [
+            6,
+            'function f({a}) { return function () { return a; }; } f({a: 6})()',
+        ];
+        // A pattern makes the list non-simple, but it does not stop `length`:
+        // only a default or a rest element does.
+        yield 'length counts a pattern before any default' => [2, '(function ({a}, b) {}).length'];
+        yield 'length stops at a pattern default' => [0, '(function ({a} = {}, b) {}).length'];
+        yield 'a pattern parameter list is never mapped' => [
+            7,
+            '(function ({a}) { arguments[0] = 1; return a; })({a: 7})',
+        ];
+
+        yield 'destructuring assignment' => [8, 'var a; ({a} = {a: 8}); a'];
+        // The expression's value is the source, not the pattern.
+        yield 'a destructuring assignment evaluates to its source' => [
+            '{"a":1}',
+            'var a; JSON.stringify(({a} = {a: 1}))',
+        ];
+        yield 'assignment into a member expression' => [6, 'var o = {}; ({a: o.x} = {a: 6}); o.x'];
+        yield 'assignment with a default' => [5, 'var a; ({a = 5} = {}); a'];
+        yield 'shorthand with a default in an assignment' => [2, 'var x; ({x = 2} = {}); x'];
+        yield 'assignment to an existing binding in a block' => [
+            3,
+            'var a = 0; { ({a} = {a: 3}); } a',
+        ];
+        yield 'nested assignment' => [4, 'var b; ({a: {b}} = {a: {b: 4}}); b'];
+
+        yield 'a getter on the source runs once' => [
+            1,
+            'var n = 0; var o = { get a() { n++; return 1; } }; var {a} = o; n',
+        ];
+        // Properties are read in the pattern's order, not the source's.
+        yield 'properties are read in order' => [
+            'b,a',
+            'var log = []; var o = { get a() { log.push("a"); return 1; },'
+                . ' get b() { log.push("b"); return 2; } }; var {b, a} = o; log.join(",")',
+        ];
+        yield 'a pattern in a for body' => [
+            1,
+            'var t = 0; for (var i = 0; i < 2; i++) { var {a} = {a: i}; t += a; } t',
+        ];
+
+        yield 'repeated names across patterns are rejected' => [
+            'SyntaxError',
+            'try { eval("(function ({a}, {a}) {})"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'a pattern may not collide with a body let' => [
+            'SyntaxError',
+            'try { eval("(function ({a}) { let a = 1; })"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'use strict is refused after a pattern' => [
+            'SyntaxError',
+            'try { eval("(function ({a}) { \'use strict\'; return a; })"); "none" }'
+                . ' catch (e) { e.constructor.name }',
+        ];
+
+        // An escaped keyword is still a keyword, and the escape is the only way
+        // one reaches the compiler as an identifier at all.
+        yield 'an escaped keyword may not be bound' => [
+            'SyntaxError',
+            'try { eval("var br\\\\u0065ak = 1;"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'an escaped keyword may not be a shorthand target' => [
+            'SyntaxError',
+            'try { eval("var x = { bre\\\\u0061k } = { break: 42 };"); "none" }'
+                . ' catch (e) { e.constructor.name }',
+        ];
+        yield 'a strict-only reserved word is bindable in sloppy code' => [
+            1,
+            'var package = 1; package',
+        ];
+        // Writing to a `let` before its declaration is a ReferenceError just as
+        // reading one is.
+        yield 'assigning to a let in its dead zone throws' => [
+            'ReferenceError',
+            '{ try { x = 1; "none" } catch (e) { e.constructor.name } let x; }',
+        ];
+
         yield 'number toFixed' => ['3.14', '(3.14159).toFixed(2)'];
         yield 'number toString radix' => ['ff', '(255).toString(16)'];
         yield 'json roundtrip' => ['{"a":[1,2],"b":"x"}', 'JSON.stringify(JSON.parse("{\"a\":[1,2],\"b\":\"x\"}"))'];
@@ -495,6 +655,30 @@ final class LanguageTest extends EvalTestCase
     {
         $this->expectException(CompileError::class);
         $this->evalJs('for (let k in {a: 1}) {}');
+    }
+
+    /**
+     * An array pattern is defined over the iterator protocol, which the engine
+     * does not have. Reading by index instead would answer `undefined` for a
+     * Set, a Map or a generator rather than iterating it.
+     */
+    public function testArrayDestructuringIsRejected(): void
+    {
+        $this->expectException(CompileError::class);
+        $this->expectExceptionMessage('Array destructuring');
+        $this->evalJs('var [a, b] = [1, 2];');
+    }
+
+    /**
+     * Peast returns the wrong target for `({x = f = 1} = v)` -- the shorthand's
+     * key is lost -- so the shape is refused rather than compiled from a tree
+     * that does not match the source.
+     */
+    public function testShorthandWithAnAssignmentDefaultIsRejected(): void
+    {
+        $this->expectException(CompileError::class);
+        $this->expectExceptionMessage('the parser loses the target');
+        $this->evalJs('var f, x; ({x = f = 1} = {});');
     }
 
     public function testStackOverflowIsRangeError(): void

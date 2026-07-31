@@ -23,37 +23,41 @@ says whether the syntax work is aimed at anything:
 
 ```console
 $ php tests/acceptance/run.php --dir path/to/node_modules
-  accepted   238   59.5%
-  rejected   162   40.5%
+  accepted   272   68.0%
+  rejected   128   32.0%
 
 what the rejections tripped on:
-  Destructuring               88  22.0%
-  ForOfStatement              17   4.2%
-  SpreadElement               14   3.5%
+  ForOfStatement              37   9.2%
+  SpreadElement               19   4.8%
+  ClassDeclaration            12   3.0%
   ...
 ```
 
-Template literals, arrow functions, default/rest parameters and `let`/`const`
-have landed since; destructuring is now the largest single item left.
+Template literals, arrow functions, default/rest parameters, `let`/`const` and
+object destructuring have landed since. `for…of`, spread and array destructuring
+are one feature wearing three hats — all three reduce to the iterator protocol —
+and they are next.
 
 **Conformance** — the test262 pass rate over what is implemented. Against a
 current tc39/test262 checkout:
 
 | Area | Pass rate | Run |
 |---|---|---|
-| **overall** | **95.9%** | 13420 |
-| `language/` | 93.9% | 4597 |
-| `built-ins/` | 97.0% | 8823 |
+| **overall** | **96.3%** | 14412 |
+| `language/` | 95.3% | 5496 |
+| `built-ins/` | 96.9% | 8916 |
 
-A further ~22000 tests are skipped as out of scope: post-ES2015 features by
-front-matter tag, out-of-scope builtins by path, and tests whose *own source*
-uses syntax the compiler does not accept yet, which it cannot run by
-construction. The runner reports those as skips rather than failures so the rate
-reflects engine defects only.
+A further ~21000 tests are skipped as out of scope: features the engine cannot
+attempt at all by front-matter tag, out-of-scope builtins by path, and — the
+largest group — tests whose *own source* uses syntax the compiler does not accept
+yet, which it cannot run by construction. The runner reports those as skips
+rather than failures so the rate reflects engine defects only.
 
-The rate moves *down* as the syntax surface grows, and that is the intended
-reading: each landed feature un-skips a batch of tests that were never passing,
-only unreachable. `let`/`const` alone moved 189 tests from skipped to run.
+Both numbers move as the syntax surface grows, and the percentage is the less
+interesting one: each landed feature un-skips a batch of tests that were never
+passing, only unreachable, so the denominator grows with the numerator. The
+honest comparison is the **failure set** — a feature is done when the tests it
+brought in pass and nothing that passed before stopped.
 
 ```console
 $ git clone --depth 1 https://github.com/tc39/test262.git ../test262
@@ -69,9 +73,9 @@ The core language works end to end:
 - **Compiler**: Peast (ESTree) → scope analysis (closure capture, strict-mode
   early errors) → stack bytecode → a peephole pass that fuses the opcode pairs
   a real workload actually executes. ES5.1 plus template literals, arrow
-  functions, default/rest parameters and `let`/`const` (block scopes, temporal
-  dead zone, redeclaration errors) so far; DESIGN.md §2.5 has the order for
-  the rest
+  functions, default/rest parameters, `let`/`const` (block scopes, temporal dead
+  zone, redeclaration errors) and object destructuring so far; DESIGN.md §2.5
+  has the order for the rest
 - **VM**: single `while/switch` dispatch loop, own frame stack (JS calls never
   consume the PHP call stack), in-VM exception handling, wall-clock execution
   limit
