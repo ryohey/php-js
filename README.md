@@ -23,30 +23,28 @@ says whether the syntax work is aimed at anything:
 
 ```console
 $ php tests/acceptance/run.php --dir path/to/node_modules
-  accepted   291   72.8%
-  rejected   109   27.2%
+  accepted   323   80.8%
+  rejected    77   19.2%
 
 what the rejections tripped on:
-  SpreadElement               21   5.2%
-  ClassDeclaration            13   3.2%
-  TaggedTemplateExpression    12   3.0%
-  Array destructuring         12   3.0%
+  TaggedTemplateExpression    18   4.5%
+  ClassDeclaration            14   3.5%
+  Generators                  10   2.5%
   ...
 ```
 
 Template literals, arrow functions, default/rest parameters, `let`/`const`,
-object destructuring and `for…of` have landed since. Spread and array
-destructuring are next — they consume the iteration protocol `for…of` just
-brought in.
+destructuring, `for…of` and spread have landed since — 46.8% to 80.8%. Tagged
+templates and classes are next.
 
 **Conformance** — the test262 pass rate over what is implemented. Against a
 current tc39/test262 checkout:
 
 | Area | Pass rate | Run |
 |---|---|---|
-| **overall** | **96.2%** | 14458 |
-| `language/` | 95.3% | 5500 |
-| `built-ins/` | 96.7% | 8958 |
+| **overall** | **96.2%** | 15459 |
+| `language/` | 95.3% | 6464 |
+| `built-ins/` | 96.8% | 8995 |
 
 A further ~21000 tests are skipped as out of scope: features the engine cannot
 attempt at all by front-matter tag, out-of-scope builtins by path, and — the
@@ -65,7 +63,7 @@ $ git clone --depth 1 https://github.com/tc39/test262.git ../test262
 $ php tests/test262/run.php --test262 ../test262
 ```
 
-The whole suite takes about two minutes.
+The whole suite takes about three minutes.
 
 ## Status
 
@@ -75,7 +73,7 @@ The core language works end to end:
   early errors) → stack bytecode → a peephole pass that fuses the opcode pairs
   a real workload actually executes. ES5.1 plus template literals, arrow
   functions, default/rest parameters, `let`/`const` (block scopes, temporal dead
-  zone, redeclaration errors), object destructuring and `for…of` so far;
+  zone, redeclaration errors), destructuring, `for…of` and spread so far;
   DESIGN.md §2.5 has the order for the rest
 - **VM**: single `while/switch` dispatch loop, own frame stack (JS calls never
   consume the PHP call stack), in-VM exception handling, wall-clock execution
@@ -93,7 +91,8 @@ The core language works end to end:
   replacer), Error family, console, RegExp (translated to PCRE2), Date
 - **Iteration**: `%IteratorPrototype%`, the array and string iterators (the
   string one steps by code point), and `@@iterator` on Array, String and
-  `arguments`. `IteratorClose` runs on every abrupt exit from a `for…of`
+  `arguments`. `for…of`, spread and array destructuring all go through it, and
+  `IteratorClose` runs on every abrupt exit
 - **Promise** + microtask queue (native state machine, VM re-entry only for
   user callbacks; combinators build their result through `NewPromiseCapability`)
 - **Bytecode files**: emitted as `<?php return [...];` — plain arrays that

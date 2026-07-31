@@ -747,6 +747,99 @@ final class LanguageTest extends EvalTestCase
             '{ try { x++; "none" } catch (e) { e.constructor.name } let x = 1; }',
         ];
 
+        // --- array destructuring, over the iteration protocol ---
+        yield 'array pattern' => [3, 'var [a, b] = [1, 2]; a + b'];
+        yield 'an elision skips an element' => [2, 'var [, b] = [1, 2]; b'];
+        yield 'an elision still steps the iterator' => ['1:0,1', 'var log = []; var o = {}; o[Symbol.iterator] = function () { var i = 0; return { next: function () { log.push(i); return {value: i++, done: i > 3}; } }; }; var [, b] = o; b + ":" + log.join(",")'];
+        yield 'an array rest element' => ['1:2,3', 'var [a, ...r] = [1,2,3]; a + ":" + r.join(",")'];
+        yield 'an array rest is a real array' => [true, 'var [...r] = [1]; Array.isArray(r)'];
+        yield 'an array rest of nothing is empty' => [0, 'var [a, ...r] = [1]; r.length'];
+        yield 'a default in an array pattern' => [5, 'var [a = 5] = []; a'];
+        yield 'a default yields to a value' => [1, 'var [a = 5] = [1]; a'];
+        yield 'a default applies to undefined only' => ['null', 'var [a = 5] = [null]; String(a)'];
+        yield 'nested array patterns' => [3, 'var [[a], [b]] = [[1],[2]]; a + b'];
+        yield 'an object pattern inside an array pattern' => [7, 'var [{x}] = [{x: 7}]; x'];
+        yield 'an array pattern inside an object pattern' => [3, 'var {a: [x, y]} = {a: [1,2]}; x + y'];
+        yield 'a short source gives undefined' => ['1:undefined', 'var [a, b] = [1]; a + ":" + typeof b'];
+        yield 'a string destructures by code point' => ['a:2', 'var [a, b] = "a\\ud83d\\ude00"; a + ":" + b.length'];
+        yield 'a Set destructures' => [9, 'var s = {}; s[Symbol.iterator] = function () { var i = 0, a = [4,5]; return { next: function () { return i < 2 ? {value: a[i++], done: false} : {done: true}; } }; }; var [x, y] = s; x + y'];
+        yield 'const through an array pattern' => [9, 'const [a] = [9]; a'];
+        yield 'let through an array pattern' => [3, '{ let [a] = [3]; a }'];
+        yield 'an array pattern let does not leak' => ['undefined', '{ let [a] = [1]; } typeof a'];
+        yield 'destructuring a non-iterable throws' => ['TypeError', 'try { var [a] = 5; "none" } catch (e) { e.constructor.name }'];
+        yield 'an array pattern on null throws' => ['TypeError', 'try { var [a] = null; "none" } catch (e) { e.constructor.name }'];
+        yield 'array destructuring assignment' => ['1:2', 'var a, b; [a, b] = [1, 2]; a + ":" + b'];
+        yield 'a swap' => ['2:1', 'var a = 1, b = 2; [a, b] = [b, a]; a + ":" + b'];
+        yield 'an array pattern assigns into a member expression' => [4, 'var o = {}; [o.x] = [4]; o.x'];
+        yield 'the assignment evaluates to its source' => ['[1,2]', 'var a; JSON.stringify([a] = [1, 2])'];
+        yield 'an array pattern parameter' => [3, 'function f([a, b]) { return a + b; } f([1,2])'];
+        yield 'an array pattern parameter with a default' => [3, 'function f([a] = [3]) { return a; } f()'];
+        yield 'an arrow with an array pattern' => [3, '(([a, b]) => a + b)([1,2])'];
+        yield 'an array pattern in a for-of head' => ['1a2b', 'var s = ""; for (const [k, v] of [[1,"a"],[2,"b"]]) s += k + v; s'];
+        yield 'a partly consumed iterator is closed' => [true, 'var closed = false; var o = {}; o[Symbol.iterator] = function () { return { next: function () { return {value: 1, done: false}; }, return: function () { closed = true; return {}; } }; }; var [a] = o; closed'];
+        yield 'a rest element leaves nothing to close' => ['false:2', 'var closed = false; var o = {}; o[Symbol.iterator] = function () { var n = 0; return { next: function () { return n++ < 2 ? {value: 1, done: false} : {done: true}; }, return: function () { closed = true; return {}; } }; }; var [...r] = o; closed + ":" + r.length'];
+        yield 'a throw while binding closes the iterator' => [true, 'var closed = false; var o = {}; o[Symbol.iterator] = function () { return { next: function () { return {value: 1, done: false}; }, return: function () { closed = true; return {}; } }; }; try { var [a = (function(){ throw new Error("x"); })()] = o; } catch (e) {} closed'];
+
+        // --- spread ---
+        yield 'array spread' => ['1,2,3', '[...[1,2], 3].join(",")'];
+        yield 'spread in the middle' => ['0,1,2,3', '[0, ...[1,2], 3].join(",")'];
+        yield 'spread a string' => ['a-b-c', '[..."abc"].join("-")'];
+        yield 'spread keeps a hole as undefined' => ['[1,null,2]', 'JSON.stringify([...[1,,2]])'];
+        yield 'spread an empty array' => [0, '[...[]].length'];
+        yield 'two spreads' => ['1,2,3', '[...[1], ...[2,3]].join(",")'];
+        yield 'spread a custom iterable' => ['1,2', 'var o = {}; o[Symbol.iterator] = function () { var i = 0; return { next: function () { return i < 2 ? {value: ++i, done: false} : {done: true}; } }; }; [...o].join(",")'];
+        yield 'spread a non-iterable throws' => ['TypeError', 'try { [...5]; "none" } catch (e) { e.constructor.name }'];
+        yield 'call spread' => [6, 'function f(a,b,c){return a+b+c;} f(...[1,2,3])'];
+        yield 'call spread after fixed arguments' => ['1:2:3', 'function f(a,b,c){return a+":"+b+":"+c;} f(1, ...[2,3])'];
+        yield 'call spread before fixed arguments' => ['1:2:3', 'function f(a,b,c){return a+":"+b+":"+c;} f(...[1,2], 3)'];
+        yield 'call spread keeps the receiver' => [15, 'var o = {n: 10, f: function(a){return this.n + a;}}; o.f(...[5])'];
+        yield 'call spread reaches a builtin' => [7, 'Math.max(...[3,7,2])'];
+        yield 'call spread sets arguments.length' => [3, '(function () { return arguments.length; })(...[1,2,3])'];
+        yield 'new with spread' => [3, 'function P(a,b){this.v=a+b;} new P(...[1,2]).v'];
+        yield 'object spread' => ['{"a":1,"b":2}', 'JSON.stringify({...{a:1}, b:2})'];
+        yield 'a later property wins over a spread' => ['{"a":2,"b":3}', 'JSON.stringify({a:1, ...{a:2, b:3}})'];
+        yield 'a later spread wins over a property' => ['{"a":9}', 'JSON.stringify({...{a:1}, a:9})'];
+        yield 'object spread of a string' => ['{"0":"a","1":"b"}', 'JSON.stringify({..."ab"})'];
+        yield 'object spread of null is empty' => ['{}', 'JSON.stringify({...null})'];
+        yield 'object spread skips the prototype' => ['{}', 'function P(){} P.prototype.x = 1; JSON.stringify({...new P()})'];
+        yield 'a computed key in an object literal' => ['{"z":1}', 'var k = "z"; JSON.stringify({[k]: 1})'];
+        yield 'a computed accessor key' => ['{"z":1}', 'var k = "z"; JSON.stringify({get [k]() { return 1; }})'];
+        yield 'a computed symbol key' => [5, 'var s = Symbol("s"); var o = {[s]: 5}; o[s]'];
+        yield 'a computed key converts once in a literal' => [1, 'var n = 0; var k = { toString: function () { n++; return "a"; } }; var o = {[k]: 1}; n'];
+
+        // --- for...in heads, which share the for...of machinery ---
+        yield 'a const for-in head' => ['ab', 'var s = ""; for (const k in {a:1,b:2}) s += k; s'];
+        yield 'a let for-in head' => ['a', 'var s = ""; for (let k in {a:1}) s += k; s'];
+        yield 'a lexical for-in head does not leak' => [
+            'undefined',
+            'for (const k in {a:1}) {} typeof k',
+        ];
+        yield 'a pattern in a for-in head' => [
+            'ab',
+            'var s = ""; for (var [a, b] in {ab:1}) s += a + b; s',
+        ];
+        yield 'a member expression for-in target' => [
+            'a',
+            'var o = {}; var s = ""; for (o.k in {a:1}) s += o.k; s',
+        ];
+
+        // A native drain runs outside the dispatch loop, so it has to enforce
+        // the wall-clock limit itself or an endless iterable escapes it.
+        yield 'a broken iterator is not closed' => [
+            0,
+            'var c = 0; var o = {}; o[Symbol.iterator] = function () { return {'
+                . ' next: function () { throw new Error("n"); },'
+                . ' return: function () { c++; return {}; } }; };'
+                . ' try { var [a] = o; } catch (e) {} c',
+        ];
+        // Promise combinators take an iterable, not an array-like.
+        yield 'Promise.all iterates its argument' => [
+            true,
+            'var s = {}; s[Symbol.iterator] = function () { var i = 0; return { next: function () {'
+                . ' return i < 2 ? {value: ++i, done: false} : {done: true}; } }; };'
+                . ' var p = Promise.all(s); p instanceof Promise',
+        ];
+
         yield 'number toFixed' => ['3.14', '(3.14159).toFixed(2)'];
         yield 'number toString radix' => ['ff', '(255).toString(16)'];
         yield 'json roundtrip' => ['{"a":[1,2],"b":"x"}', 'JSON.stringify(JSON.parse("{\"a\":[1,2],\"b\":\"x\"}"))'];
@@ -810,22 +903,12 @@ final class LanguageTest extends EvalTestCase
         $this->evalJs('var f = []; for (let i = 0; i < 3; i++) { f.push(function () { return i; }); }');
     }
 
-    public function testLetInAForInHeadIsRejected(): void
+    /** A for-in head binds per iteration too, so a capture is refused. */
+    public function testLetInAForInHeadCapturedByAClosureIsRejected(): void
     {
         $this->expectException(CompileError::class);
-        $this->evalJs('for (let k in {a: 1}) {}');
-    }
-
-    /**
-     * An array pattern is defined over the iterator protocol, which the engine
-     * does not have. Reading by index instead would answer `undefined` for a
-     * Set, a Map or a generator rather than iterating it.
-     */
-    public function testArrayDestructuringIsRejected(): void
-    {
-        $this->expectException(CompileError::class);
-        $this->expectExceptionMessage('Array destructuring');
-        $this->evalJs('var [a, b] = [1, 2];');
+        $this->expectExceptionMessage('fresh binding per iteration');
+        $this->evalJs('var f = []; for (const k in {a:1}) { f.push(function () { return k; }); }');
     }
 
     /**
@@ -838,6 +921,24 @@ final class LanguageTest extends EvalTestCase
         $this->expectException(CompileError::class);
         $this->expectExceptionMessage('the parser loses the target');
         $this->evalJs('var f, x; ({x = f = 1} = {});');
+    }
+
+    /**
+     * Draining an iterator happens in PHP, outside the dispatch loop that
+     * normally checks the clock, so an endless iterable would otherwise spin
+     * past the limit the host set.
+     */
+    public function testAnEndlessIterableStillHitsTheTimeLimit(): void
+    {
+        $engine = new \PhpJs\Engine();
+        $engine->vm->setTimeLimit(0.5);
+        $this->expectException(JSException::class);
+        $this->expectExceptionMessage('timed out');
+        $engine->evaluate(
+            'var o = {}; o[Symbol.iterator] = function () {'
+            . ' return { next: function () { return {value: 1, done: false}; } }; };'
+            . ' var a = [...o];'
+        );
     }
 
     public function testStackOverflowIsRangeError(): void

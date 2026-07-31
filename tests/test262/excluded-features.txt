@@ -55,9 +55,6 @@ optional-catch-binding
 nullish-coalescing-operator
 logical-assignment-operators
 exponentiation
-spread
-object-spread
-object-rest
 new.target
 super
 generators
@@ -101,7 +98,6 @@ Object.fromEntries
 Object.is
 Object.hasOwn
 Object.groupBy
-object-rest
 Object.setPrototypeOf
 Number.isInteger
 Number.isSafeInteger

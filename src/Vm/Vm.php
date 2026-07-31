@@ -479,6 +479,31 @@ final class Vm
                         break;
                     }
 
+                    case Op::DEFINE_DATA_ELEM: {
+                        $val = $stack[--$sp];
+                        $key = $this->propertyKey($stack[--$sp]);
+                        $stack[$sp - 1]->defineOwnData($key, $val);
+                        break;
+                    }
+                    case Op::DEFINE_GETTER_ELEM:
+                    case Op::DEFINE_SETTER_ELEM: {
+                        $isGetter = $op === Op::DEFINE_GETTER_ELEM;
+                        $fn = $stack[--$sp];
+                        $key = $this->propertyKey($stack[--$sp]);
+                        $obj = $stack[$sp - 1];
+                        $prev = $obj->descs[$key] ?? null;
+                        $keep = ($prev !== null && ($prev[2] & JSObject::ACCESSOR))
+                            ? ($isGetter ? $prev[1] : $prev[0])
+                            : null;
+                        $obj->defineOwnAccessor(
+                            $key,
+                            $isGetter ? $fn : $keep,
+                            $isGetter ? $keep : $fn,
+                            JSObject::E | JSObject::C
+                        );
+                        break;
+                    }
+
                     case Op::PUSH_TDZ:
                         $stack[$sp++] = JSHole::$hole;
                         break;
@@ -513,24 +538,11 @@ final class Vm
                         }
                         $src = $stack[--$sp];
                         $this->sp = $sp;
-                        $rest = new JSObject($realm->objectPrototype());
                         // null and undefined contribute nothing rather than
                         // throwing: the pattern that reached here already ran
                         // RequireObjectCoercible if the spec asked for it.
-                        if ($src !== null && !($src instanceof JSUndefined)) {
-                            $from = Conversions::toObject($this, $src);
-                            foreach ($from->ownEnumerableKeys() as $k) {
-                                if (!isset($excluded[$k])) {
-                                    $rest->defineOwnData($k, $from->get($k, $this));
-                                }
-                            }
-                            foreach ($from->ownSymbolKeys() as $k) {
-                                $d = $from->ownDescriptor($k);
-                                if ($d !== null && ($d[2] & JSObject::E) && !isset($excluded[$k])) {
-                                    $rest->defineOwnData($k, $from->get($k, $this));
-                                }
-                            }
-                        }
+                        $rest = new JSObject($realm->objectPrototype());
+                        $this->copyDataProperties($rest, $src, $excluded);
                         $stack[$sp++] = $rest;
                         break;
                     }
@@ -562,6 +574,110 @@ final class Vm
                         $iter = $stack[--$sp];
                         $this->sp = $sp;
                         $this->closeIterator($iter, $quiet === 1);
+                        break;
+                    }
+                    case Op::ITER_REC: {
+                        $slot = $code[$pc++];
+                        $obj = $stack[--$sp];
+                        $this->sp = $sp;
+                        [$iter, $next] = $this->getIterator($obj);
+                        $stack[$base + $slot] = [$iter, $next, false];
+                        break;
+                    }
+                    case Op::ITER_TAKE: {
+                        $slot = $code[$pc++];
+                        $rec = $stack[$base + $slot];
+                        $this->sp = $sp;
+                        if ($rec[2]) {
+                            // Already finished: the rest of the pattern takes
+                            // undefined without asking the iterator again.
+                            $stack[$sp++] = JSUndefined::$undefined;
+                            break;
+                        }
+                        // A step that throws leaves the iterator broken, and
+                        // the spec does not close a broken iterator (8.5.2):
+                        // the record is marked done before the throw escapes.
+                        $result = $this->stepIterator($rec, $stack[$base + $slot][2]);
+                        if ($result === null) {
+                            $stack[$base + $slot][2] = true;
+                            $stack[$sp++] = JSUndefined::$undefined;
+                            break;
+                        }
+                        $stack[$sp++] = $result->get('value', $this);
+                        break;
+                    }
+                    case Op::ITER_REST: {
+                        $slot = $code[$pc++];
+                        $rec = $stack[$base + $slot];
+                        $this->sp = $sp;
+                        $rest = new JSArray($realm->arrayPrototype());
+                        $n = 0;
+                        if (!$rec[2]) {
+                            while (true) {
+                                $this->checkDeadline();
+                                $result = $this->stepIterator($rec, $stack[$base + $slot][2]);
+                                if ($result === null) {
+                                    break;
+                                }
+                                $rest->elements[$n++] = $result->get('value', $this);
+                            }
+                        }
+                        $rest->length = $n;
+                        // A rest element always drains the iterator, so the
+                        // record is done and nothing is left to close.
+                        $stack[$base + $slot][2] = true;
+                        $stack[$sp++] = $rest;
+                        break;
+                    }
+                    case Op::ITER_FIN: {
+                        $slot = $code[$pc++];
+                        $quiet = $code[$pc++];
+                        $rec = $stack[$base + $slot];
+                        if (is_array($rec) && !$rec[2]) {
+                            $stack[$base + $slot][2] = true;
+                            $this->sp = $sp;
+                            $this->closeIterator($rec[0], $quiet === 1);
+                        }
+                        break;
+                    }
+                    case Op::ARR_APPEND: {
+                        $v = $stack[--$sp];
+                        $arr = $stack[$sp - 1];
+                        if ($v !== JSHole::$hole) {
+                            $arr->elements[$arr->length] = $v;
+                        }
+                        $arr->length++;
+                        break;
+                    }
+                    case Op::ARR_SPREAD: {
+                        $src = $stack[--$sp];
+                        $arr = $stack[$sp - 1];
+                        $this->sp = $sp;
+                        foreach ($this->iterateToList($src) as $v) {
+                            $arr->elements[$arr->length++] = $v;
+                        }
+                        break;
+                    }
+                    case Op::OBJ_SPREAD: {
+                        $src = $stack[--$sp];
+                        $obj = $stack[$sp - 1];
+                        $this->sp = $sp;
+                        $this->copyDataProperties($obj, $src, []);
+                        break;
+                    }
+                    case Op::CALL_SPREAD: {
+                        $argsArr = $stack[--$sp];
+                        $thisVal = $stack[--$sp];
+                        $fn = $stack[--$sp];
+                        $this->sp = $sp;
+                        $stack[$sp++] = $this->invoke($fn, $thisVal, $this->arrayToArgs($argsArr));
+                        break;
+                    }
+                    case Op::NEW_SPREAD: {
+                        $argsArr = $stack[--$sp];
+                        $ctor = $stack[--$sp];
+                        $this->sp = $sp;
+                        $stack[$sp++] = $this->construct($ctor, $this->arrayToArgs($argsArr));
                         break;
                     }
                     case Op::TO_KEY:
@@ -1382,6 +1498,111 @@ final class Vm
             $this->throwError('TypeError', 'Result of the Symbol.iterator method is not an object');
         }
         return [$iter, $iter->get('next', $this)];
+    }
+
+    /**
+     * Enforce the wall-clock limit from a native loop.
+     *
+     * The dispatch loop checks the deadline every DEADLINE_CHECK_INTERVAL
+     * instructions, but draining an iterator happens in PHP: an iterable that
+     * never reports done would spin outside the VM entirely, which is exactly
+     * the runaway the limit exists to stop.
+     */
+    private function checkDeadline(): void
+    {
+        if ($this->deadline !== null && microtime(true) > $this->deadline) {
+            $this->deadline = null;                 // let the unwind finish
+            $this->throwError('RangeError', 'Script execution timed out');
+        }
+    }
+
+    /**
+     * One step of a destructuring iterator: the result object, or null when the
+     * iterator says done. `$done` is set through a reference so it is already
+     * true if the step throws -- a broken iterator is not closed (8.5.2).
+     *
+     * @param array{0: JSObject, 1: mixed, 2: bool} $rec
+     */
+    private function stepIterator(array $rec, bool &$done): ?JSObject
+    {
+        $done = true;
+        $result = $this->invoke($rec[1], $rec[0], []);
+        if (!$result instanceof JSObject) {
+            $this->throwError('TypeError', 'Iterator result is not an object');
+        }
+        if (Conversions::toBoolean($result->get('done', $this))) {
+            return null;
+        }
+        $done = false;
+        return $result;
+    }
+
+    /**
+     * IterableToList (7.4.11): drain an iterable. Used by spread, where the
+     * whole sequence is wanted at once rather than one element at a time.
+     *
+     * @return list<mixed>
+     */
+    public function iterateToList(mixed $obj): array
+    {
+        [$iter, $next] = $this->getIterator($obj);
+        $out = [];
+        while (true) {
+            $this->checkDeadline();
+            $result = $this->invoke($next, $iter, []);
+            if (!$result instanceof JSObject) {
+                $this->throwError('TypeError', 'Iterator result is not an object');
+            }
+            if (Conversions::toBoolean($result->get('done', $this))) {
+                return $out;
+            }
+            $out[] = $result->get('value', $this);
+        }
+    }
+
+    /**
+     * CopyDataProperties (7.3.25): own enumerable properties of $src onto
+     * $target, skipping $excluded. Shared by `{...src}` and by a rest element
+     * in an object pattern, which are the same operation.
+     *
+     * @param array<string, true> $excluded
+     */
+    public function copyDataProperties(JSObject $target, mixed $src, array $excluded): void
+    {
+        if ($src === null || $src instanceof JSUndefined) {
+            return;
+        }
+        $from = Conversions::toObject($this, $src);
+        foreach ($from->ownEnumerableKeys() as $k) {
+            if (!isset($excluded[$k])) {
+                $target->defineOwnData($k, $from->get($k, $this));
+            }
+        }
+        foreach ($from->ownSymbolKeys() as $k) {
+            $d = $from->ownDescriptor($k);
+            if ($d !== null && ($d[2] & JSObject::E) && !isset($excluded[$k])) {
+                $target->defineOwnData($k, $from->get($k, $this));
+            }
+        }
+    }
+
+    /**
+     * The argument list a spread call passes on. The array was built by this
+     * compiler and is always dense, so its elements are the arguments.
+     *
+     * @return list<mixed>
+     */
+    private function arrayToArgs(mixed $arr): array
+    {
+        if (!$arr instanceof JSArray) {
+            return [];
+        }
+        $args = [];
+        $und = JSUndefined::$undefined;
+        for ($i = 0; $i < $arr->length; $i++) {
+            $args[] = $arr->elements[$i] ?? $und;
+        }
+        return $args;
     }
 
     /**

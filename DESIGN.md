@@ -202,6 +202,41 @@ for code you control; it is no longer the *only* way in.
   While unwinding a throw, an error from `return` is discarded in favour of the
   exception in flight (7.4.9).
 
+- **Spread and array destructuring**, the protocol's other two consumers.
+
+  An array literal or argument list carrying a spread does not know its length
+  until it runs, so it is grown one element at a time (`ARR_APPEND`,
+  `ARR_SPREAD`) and a call passes the result as one array (`CALL_SPREAD`,
+  `NEW_SPREAD`). `{...src}` is `CopyDataProperties`, the same operation an object
+  pattern's rest element performs, and they share one implementation.
+
+  An array pattern holds an iterator *record* — `[iterator, next, done]` in a
+  frame slot, the way `FORIN_INIT` holds its key list — because a pattern longer
+  than its source keeps taking `undefined` without asking again, and because
+  whether to close on the way out depends on that flag. A rest element drains the
+  iterator, so nothing is left to close; an element list that stopped early
+  leaves it open, and the spec closes it. A step that *throws* leaves the
+  iterator broken, and a broken iterator is not closed — the record is marked
+  done before the throw escapes.
+
+  Two early errors are enforced here rather than by the parser, because Peast
+  accepts them in a destructuring *assignment*, where the pattern is
+  reinterpreted from an array literal: a rest element must end its pattern, and
+  it takes no default. One of them, `[...x,]`, survives only in the source text —
+  the parser normalizes the trailing comma away and the AST is identical to
+  `[...x]` — so that single check reads the source, by character offset, since
+  Peast counts characters and one non-ASCII byte earlier in the file would shift
+  a byte-based slice.
+
+  `for…in` heads went through the same machinery, which both fixed patterns
+  there and retired the refusal of `for (const k in o)`.
+
+  Two pre-existing bugs surfaced. `{[k]: v}` in an object *literal* silently
+  produced the key `"k"`; computed keys now evaluate, in source order, converted
+  once (`DEFINE_DATA_ELEM` and the accessor forms). And `Promise.all`/`race` read
+  their argument as an array-like, so `Promise.all(new Set([p]))` resolved with
+  nothing; they take an iterable now.
+
 **Known gaps in what has landed**, all visible as test262 failures rather than
 as silence: `var f = () => {}` does not take the name `f` (NamedEvaluation is
 not implemented for any form, and it is now the single largest failure group at
@@ -229,12 +264,14 @@ against a non-writable `length`. Those tests had been skipped because their own
 source is written in ES6, not because the engine passed them. That is the second
 argument for growing the surface: the skips were hiding real defects.
 
-**Next:** spread (5.2% of all rejections) and array destructuring (3.0%), the
-other two consumers of the protocol that just landed. Then classes (3.2%) and
-tagged templates (3.0%).
+**Next:** tagged templates (4.5% of all rejections) and classes (3.5%), which
+are now the two largest items. Then generators (2.5%), which the VM's own frame
+stack was designed to make cheap (§4).
 
 Queued behind those: per-iteration loop bindings (which retires the refusal
-above), the separate parameter scope, and NamedEvaluation.
+above), the separate parameter scope, and NamedEvaluation — the last is the
+largest single failure group in test262 and has been since arrow functions
+landed.
 
 **Deliberately out of scope for now:** ES modules (node-compat resolves
 CommonJS, and published packages overwhelmingly ship it), Proxy and Reflect

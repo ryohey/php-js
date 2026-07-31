@@ -123,6 +123,42 @@ final class Op
      * `return` is swallowed in favour of the original (7.4.9).
      */
     public const ITER_CLOSE = 98; // q
+
+    /**
+     * An iterator record in a local slot, for array destructuring:
+     * `[iterator, nextMethod, done]`. Held the way FORIN_INIT holds its key
+     * list -- a VM-internal tuple in a frame slot, never on the JS heap.
+     *
+     * Destructuring needs the record rather than a bare pair because a pattern
+     * that runs out mid-way keeps taking `undefined` without calling `next`
+     * again, and the `done` flag is what remembers that.
+     */
+    public const ITER_REC = 99;   // t   [obj] -> []
+    /** The next value, or undefined once done. */
+    public const ITER_TAKE = 100; // t   [] -> [value]
+    /** Everything left, as an array; marks the record done. */
+    public const ITER_REST = 101; // t   [] -> [array]
+    /** IteratorClose unless the record already finished; q=1 while unwinding. */
+    public const ITER_FIN = 102;  // tq
+
+    /** `[arr value] -> [arr]`: append at arr.length, a hole only bumping it. */
+    public const ARR_APPEND = 103;
+    /** `[arr iterable] -> [arr]`: iterate and append each value. */
+    public const ARR_SPREAD = 104;
+    /** `[obj source] -> [obj]`: CopyDataProperties for `{...src}`. */
+    public const OBJ_SPREAD = 105;
+    /** `[func this argsArray] -> [result]`, for a call carrying a spread. */
+    public const CALL_SPREAD = 106;
+    /** `[ctor argsArray] -> [result]`, for a `new` carrying a spread. */
+    public const NEW_SPREAD = 107;
+    /**
+     * The computed-key forms of DEFINE_DATA/GETTER/SETTER, taking the key from
+     * the stack: `[obj key value] -> [obj]`. `k` is a constant-pool index, and
+     * a computed key is not known until it runs.
+     */
+    public const DEFINE_DATA_ELEM = 108;
+    public const DEFINE_GETTER_ELEM = 109;
+    public const DEFINE_SETTER_ELEM = 110;
     public const NOT = 38;
     public const BNOT = 39;
     public const TYPEOF = 40;
@@ -220,6 +256,12 @@ final class Op
         self::PUSH_TDZ => '', self::TDZ_CHECK => 'k', self::THROW_CONST => '',
         self::REQ_COERCIBLE => '', self::COPY_REST => 'n', self::TO_KEY => '',
         self::ITER_GET => '', self::ITER_NEXT => 'a', self::ITER_CLOSE => 'n',
+        self::ITER_REC => 't', self::ITER_TAKE => 't', self::ITER_REST => 't',
+        self::ITER_FIN => 'tn',
+        self::ARR_APPEND => '', self::ARR_SPREAD => '', self::OBJ_SPREAD => '',
+        self::CALL_SPREAD => '', self::NEW_SPREAD => '',
+        self::DEFINE_DATA_ELEM => '', self::DEFINE_GETTER_ELEM => '',
+        self::DEFINE_SETTER_ELEM => '',
         self::BAND => '', self::BOR => '', self::BXOR => '',
         self::SHL => '', self::SHR => '', self::USHR => '',
         self::EQ => '', self::NEQ => '', self::SEQ => '', self::SNEQ => '',

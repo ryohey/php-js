@@ -51,6 +51,12 @@ final class Compiler
     }
 
     /**
+     * The source being compiled, for the one early error the AST cannot
+     * express: see checkRestIsLast.
+     */
+    private string $source = '';
+
+    /**
      * @param null|callable(object, Ctx, bool): ?string $onFunction
      * @return array<string, mixed> program template
      */
@@ -58,6 +64,7 @@ final class Compiler
     {
         $c = new self();
         $c->onFunction = $onFunction;
+        $c->source = $source;
         try {
             $ast = Peast::latest($source, ['sourceType' => 'script'])->parse();
         } catch (\Throwable $e) {
@@ -410,11 +417,18 @@ final class Compiler
                 return;
             case 'ObjectExpression':
                 foreach ($node->getProperties() as $p) {
-                    if ($p->getType() !== 'Property') {
-                        $this->unsupported($p, 'Spread properties are not supported (ES5 target)');
+                    if ($p->getType() === 'SpreadElement') {
+                        $this->analyzeNode($p->getArgument(), $ctx);
+                        continue;
+                    }
+                    if ($p->getComputed()) {
+                        $this->analyzeNode($p->getKey(), $ctx);
                     }
                     $this->analyzeNode($p->getValue(), $ctx);
                 }
+                return;
+            case 'SpreadElement':
+                $this->analyzeNode($node->getArgument(), $ctx);
                 return;
             case 'Property':
                 $this->analyzeNode($node->getValue(), $ctx);
@@ -512,15 +526,26 @@ final class Compiler
                 return;
             }
             case 'ForInStatement': {
-                $left = $node->getLeft();
-                if ($left->getType() === 'VariableDeclaration' && $left->getKind() !== 'var') {
-                    $this->unsupported($left, "'{$left->getKind()}' in a for-in head is not supported yet");
-                }
-                $this->analyzeNode($left, $ctx);
+                // Same shape as for-of: the object is evaluated outside the
+                // loop's scope, and a lexical head binds afresh each pass.
                 $this->analyzeNode($node->getRight(), $ctx);
+                $left = $node->getLeft();
+                $head = $left->getType() === 'VariableDeclaration' && $left->getKind() !== 'var';
                 $this->loopDepth++;
+                $opened = $head && $this->enterBlock(
+                    $node,
+                    [$left],
+                    $ctx,
+                    true,
+                    array_keys($this->varNamesIn([$node->getBody()], false)),
+                    false
+                );
+                $this->analyzeForTarget($left, $ctx);
                 $this->analyzeNode($node->getBody(), $ctx);
                 $this->loopDepth--;
+                if ($opened) {
+                    array_pop($this->lexStack);
+                }
                 return;
             }
             case 'ForOfStatement': {
@@ -734,6 +759,39 @@ final class Compiler
         return $names;
     }
 
+    /** @param list<?object> $items */
+    private static function hasSpread(array $items): bool
+    {
+        foreach ($items as $item) {
+            if ($item !== null && $item->getType() === 'SpreadElement') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * An argument list carrying a spread, as one array on the stack. Built with
+     * the same append/spread pair as an array literal, so the two cannot
+     * disagree about what spreading means.
+     *
+     * @param list<object> $args
+     */
+    private function genArgumentArray(array $args): void
+    {
+        $c = $this->cur;
+        $c->emit(Op::NEW_ARRAY, 0);
+        foreach ($args as $a) {
+            if ($a->getType() === 'SpreadElement') {
+                $this->genExpr($a->getArgument());
+                $c->emit(Op::ARR_SPREAD);
+                continue;
+            }
+            $this->genExpr($a);
+            $c->emit(Op::ARR_APPEND);
+        }
+    }
+
     private static function isPattern(object $node): bool
     {
         $t = $node->getType();
@@ -751,6 +809,52 @@ final class Compiler
      * invariant rather than as the special case, because the tree is wrong
      * either way and unpacking it would produce a confidently wrong answer.
      */
+    /**
+     * A rest element ends its pattern and takes no default (13.15.1). Peast
+     * enforces both in a declaration and in a parameter list, but not in a
+     * destructuring *assignment*, where the pattern is reinterpreted from an
+     * array literal -- so `[...x, y] = []` arrives looking well-formed.
+     *
+     * @param list<?object> $elements
+     */
+    private function checkRestIsLast(array $elements, object $pattern): void
+    {
+        $last = count($elements) - 1;
+        foreach ($elements as $i => $el) {
+            if ($el === null || $el->getType() !== 'RestElement') {
+                continue;
+            }
+            if ($i !== $last) {
+                $this->fail($pattern, 'A rest element must be the last element of a pattern');
+            }
+            if ($el->getArgument()->getType() === 'AssignmentPattern') {
+                $this->fail($pattern, 'A rest element may not have a default');
+            }
+            // `[...x,]` is invalid where `[...x]` is fine, and Peast normalizes
+            // the trailing comma away -- the AST is identical either way. The
+            // source is the only place the difference survives.
+            if ($this->trailingCommaAfter($el, $pattern)) {
+                $this->fail($pattern, 'A rest element may not be followed by a comma');
+            }
+        }
+    }
+
+    /** Is there a `,` between the end of $el and the close of $pattern? */
+    private function trailingCommaAfter(object $el, object $pattern): bool
+    {
+        if ($this->source === '') {
+            return false;
+        }
+        $from = $el->getLocation()->getEnd()->getIndex();
+        $to = $pattern->getLocation()->getEnd()->getIndex() - 1;   // before ] or }
+        if ($to <= $from) {
+            return false;
+        }
+        // Peast counts characters, not bytes, so a single non-ASCII character
+        // anywhere earlier in the file would shift a byte-based slice.
+        return str_contains(mb_substr($this->source, $from, $to - $from, 'UTF-8'), ',');
+    }
+
     private function checkShorthand(object $prop): void
     {
         if (!$prop->getShorthand()) {
@@ -808,6 +912,7 @@ final class Compiler
         }
         switch ($target->getType()) {
             case 'ObjectPattern':
+                $this->checkRestIsLast($target->getProperties(), $target);
                 foreach ($target->getProperties() as $p) {
                     if ($p->getType() === 'RestElement') {
                         $this->analyzePattern($p->getArgument(), $ctx, $assigning);
@@ -839,8 +944,11 @@ final class Compiler
                 $this->analyzeNode($target, $ctx);
                 return;
             case 'ArrayPattern':
-                $this->unsupported($target, 'Array destructuring is not supported yet');
-                // no break (unsupported throws)
+                $this->checkRestIsLast($target->getElements(), $target);
+                foreach ($target->getElements() as $el) {
+                    $this->analyzePattern($el, $ctx, $assigning);
+                }
+                return;
             default:
                 $this->unsupported($target, 'Unsupported binding target: ' . $target->getType());
         }
@@ -873,12 +981,11 @@ final class Compiler
                 $this->collectPatternNames($target->getArgument(), $names);
                 return;
             case 'ArrayPattern':
-                // An array pattern is defined over the iterator protocol
-                // (GetIterator / IteratorStep / IteratorClose), which the engine
-                // does not have yet. Reading by index instead would answer for a
-                // Set, a Map or a generator by handing back undefined.
-                $this->unsupported($target, 'Array destructuring is not supported yet');
-                // no break (unsupported throws)
+                $this->checkRestIsLast($target->getElements(), $target);
+                foreach ($target->getElements() as $el) {
+                    $this->collectPatternNames($el, $names);   // null is an elision
+                }
+                return;
             default:
                 $this->unsupported($target, 'Unsupported binding target: ' . $target->getType());
         }
@@ -1502,34 +1609,28 @@ final class Compiler
                 $iterSlot = $c->tempAlloc();
                 $c->emit(Op::FORIN_INIT, $iterSlot);
                 $loop = $this->pushLoop($labels, true);
-                $lNext = $c->here();
-                $jEnd = $c->emitJump(Op::FORIN_NEXT, $iterSlot);
-                // Assign the key to the loop variable.
                 $left = $node->getLeft();
-                if ($left->getType() === 'VariableDeclaration') {
-                    $name = $left->getDeclarations()[0]->getId()->getName();
-                    $this->emitStoreName($name);
-                    $c->emit(Op::POP);
-                } elseif ($left->getType() === 'Identifier') {
-                    $this->emitStoreName($left->getName());
-                    $c->emit(Op::POP);
-                } elseif ($left->getType() === 'MemberExpression') {
-                    $keyTmp = $c->tempAlloc();
-                    $c->emit(Op::SET_LOCAL, $keyTmp);
-                    $c->emit(Op::POP);
-                    $this->genAssignToMember($left, function () use ($c, $keyTmp) {
-                        $c->emit(Op::GET_LOCAL, $keyTmp);
-                    });
-                    $c->emit(Op::POP);
-                    $c->tempFree($keyTmp);
-                } else {
-                    $this->unsupported($left, 'Unsupported for-in target');
+                $headScope = $this->enterBlock($node, [$left], $c, false);
+                $lNext = $c->here();
+                if ($headScope) {
+                    $this->emitBlockPrologue($node);
                 }
+                $jEnd = $c->emitJump(Op::FORIN_NEXT, $iterSlot);
+                // The key is on the stack; bind it the same way for-of binds a
+                // value, so a pattern head works in both.
+                $keyTmp = $c->tempAlloc();
+                $c->emit(Op::SET_LOCAL, $keyTmp);
+                $c->emit(Op::POP);
+                $this->genForTarget($left, static fn () => $c->emit(Op::GET_LOCAL, $keyTmp));
+                $c->tempFree($keyTmp);
                 $this->genStmt($node->getBody());
                 $this->patchContinues($loop, $lNext);
                 $c->emit(Op::JMP, $lNext);
                 $c->patch($jEnd);
                 $this->popLoop($loop);
+                if ($headScope) {
+                    array_pop($this->lexStack);
+                }
                 $c->tempFree($iterSlot);
                 return;
             }
@@ -1880,6 +1981,12 @@ final class Compiler
                 $c->emit(Op::ITER_CLOSE, 0);
                 continue;
             }
+            if (($entry['iterRec'] ?? null) !== null) {
+                // The same, for an array pattern left part-way through: a
+                // `return` inside one of its defaults, say.
+                $c->emit(Op::ITER_FIN, $entry['iterRec'], 0);
+                continue;
+            }
             if ($entry['finalizer'] !== null) {
                 // Inline a copy with the outer regions only, so exits inside
                 // this copy don't re-run the same finalizer.
@@ -1974,30 +2081,72 @@ final class Compiler
             }
             case 'ArrayExpression': {
                 $elements = $node->getElements();
+                if (!self::hasSpread($elements)) {
+                    foreach ($elements as $el) {
+                        if ($el === null) {
+                            $c->emit(Op::PUSH_HOLE);
+                        } else {
+                            $this->genExpr($el);
+                        }
+                    }
+                    $c->emit(Op::NEW_ARRAY, count($elements));
+                    return;
+                }
+                // With a spread the length is not known until it runs, so the
+                // array is grown one element at a time instead.
+                $c->emit(Op::NEW_ARRAY, 0);
                 foreach ($elements as $el) {
                     if ($el === null) {
                         $c->emit(Op::PUSH_HOLE);
-                    } else {
-                        $this->genExpr($el);
+                        $c->emit(Op::ARR_APPEND);
+                        continue;
                     }
+                    if ($el->getType() === 'SpreadElement') {
+                        $this->genExpr($el->getArgument());
+                        $c->emit(Op::ARR_SPREAD);
+                        continue;
+                    }
+                    $this->genExpr($el);
+                    $c->emit(Op::ARR_APPEND);
                 }
-                $c->emit(Op::NEW_ARRAY, count($elements));
                 return;
             }
             case 'ObjectExpression':
                 $c->emit(Op::NEW_OBJECT);
                 foreach ($node->getProperties() as $p) {
-                    $key = $this->propertyKeyString($p->getKey());
-                    $kidx = $c->constIndex($key);
+                    if ($p->getType() === 'SpreadElement') {
+                        $this->genExpr($p->getArgument());
+                        $c->emit(Op::OBJ_SPREAD);
+                        continue;
+                    }
+                    // A computed key is an expression evaluated here, in
+                    // source order, and converted once.
+                    $computed = $p->getComputed();
+                    $kidx = null;
+                    if ($computed) {
+                        $this->genExpr($p->getKey());
+                        $c->emit(Op::TO_KEY);
+                    } else {
+                        $kidx = $c->constIndex($this->propertyKeyString($p->getKey()));
+                    }
                     if ($p->getKind() === 'init') {
                         $this->genExpr($p->getValue());
-                        $c->emit(Op::DEFINE_DATA, $kidx);
+                        if ($computed) {
+                            $c->emit(Op::DEFINE_DATA_ELEM);
+                        } else {
+                            $c->emit(Op::DEFINE_DATA, $kidx);
+                        }
                     } else {
                         $fnNode = $p->getValue();
                         $childCtx = $this->fnCtx[$fnNode];
                         $idx = $this->compileChild($childCtx, $fnNode);
                         $c->emit(Op::NEW_FUNC, $idx);
-                        $c->emit($p->getKind() === 'get' ? Op::DEFINE_GETTER : Op::DEFINE_SETTER, $kidx);
+                        $isGet = $p->getKind() === 'get';
+                        if ($computed) {
+                            $c->emit($isGet ? Op::DEFINE_GETTER_ELEM : Op::DEFINE_SETTER_ELEM);
+                        } else {
+                            $c->emit($isGet ? Op::DEFINE_GETTER : Op::DEFINE_SETTER, $kidx);
+                        }
                     }
                 }
                 return;
@@ -2025,10 +2174,14 @@ final class Compiler
                     $c->emit(Op::PUSH_UNDEF);
                 }
                 $args = $node->getArguments();
+                if (self::hasSpread($args)) {
+                    // [func this argsArray]: the count is only known at run
+                    // time, so the arguments travel as an array.
+                    $this->genArgumentArray($args);
+                    $c->emit(Op::CALL_SPREAD);
+                    return;
+                }
                 foreach ($args as $a) {
-                    if ($a->getType() === 'SpreadElement') {
-                        $this->unsupported($a, 'Spread arguments are not supported (ES5 target)');
-                    }
                     $this->genExpr($a);
                 }
                 $c->emit(Op::CALL, count($args));
@@ -2037,6 +2190,11 @@ final class Compiler
             case 'NewExpression': {
                 $this->genExpr($node->getCallee());
                 $args = $node->getArguments();
+                if (self::hasSpread($args)) {
+                    $this->genArgumentArray($args);
+                    $c->emit(Op::NEW_SPREAD);
+                    return;
+                }
                 foreach ($args as $a) {
                     $this->genExpr($a);
                 }
@@ -2651,9 +2809,67 @@ final class Compiler
             case 'ObjectPattern':
                 $this->genObjectPattern($target, $pushSource, $declaring);
                 return;
+            case 'ArrayPattern':
+                $this->genArrayPattern($target, $pushSource, $declaring);
+                return;
             default:
                 $this->unsupported($target, 'Unsupported binding target: ' . $target->getType());
         }
+    }
+
+    /**
+     * An array pattern, over the iteration protocol rather than over indices --
+     * so it destructures a Set, a Map or a generator, not just an Array.
+     *
+     * The iterator record carries a `done` flag because a pattern longer than
+     * its source keeps taking `undefined` without asking the iterator again,
+     * and because whether to close on the way out depends on it: an element
+     * list that stopped early leaves the iterator open, and the spec says to
+     * close it (8.5.2). A rest element drains it, so nothing is left to close.
+     */
+    private function genArrayPattern(object $pattern, callable $pushSource, bool $declaring): void
+    {
+        $c = $this->cur;
+        $rec = $c->tempAlloc();
+        $pushSource();
+        $c->emit(Op::ITER_REC, $rec);
+
+        // Binding an element can run arbitrary code -- a default, a setter, a
+        // nested pattern -- and if it throws the iterator still has to be told.
+        $jThrow = $c->emitJump(Op::TRY_ENTER);
+        $c->tryStack[] = ['finalizer' => null, 'iterRec' => $rec];
+        foreach ($pattern->getElements() as $el) {
+            if ($el === null) {
+                $c->emit(Op::ITER_TAKE, $rec);      // an elision still steps
+                $c->emit(Op::POP);
+                continue;
+            }
+            if ($el->getType() === 'RestElement') {
+                $this->genPattern(
+                    $el->getArgument(),
+                    static fn () => $c->emit(Op::ITER_REST, $rec),
+                    $declaring
+                );
+                continue;
+            }
+            $this->genPattern($el, static fn () => $c->emit(Op::ITER_TAKE, $rec), $declaring);
+        }
+        array_pop($c->tryStack);
+        $c->emit(Op::TRY_LEAVE);
+        $c->emit(Op::ITER_FIN, $rec, 0);            // no-op once the record is done
+        $jEnd = $c->emitJump(Op::JMP);
+
+        $c->patch($jThrow);
+        $exc = $c->tempAlloc();
+        $c->emit(Op::SET_LOCAL, $exc);
+        $c->emit(Op::POP);
+        $c->emit(Op::ITER_FIN, $rec, 1);            // quiet: the throw in flight wins
+        $c->emit(Op::GET_LOCAL, $exc);
+        $c->emit(Op::THROW);
+        $c->tempFree($exc);
+
+        $c->patch($jEnd);
+        $c->tempFree($rec);
     }
 
     private function genObjectPattern(object $pattern, callable $pushSource, bool $declaring): void

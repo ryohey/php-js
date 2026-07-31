@@ -400,19 +400,13 @@ final class PromiseBuiltins
     }
 
     /** ES5 target: only arrays (and array-likes) are accepted as iterables. */
+    /**
+     * The combinators take an *iterable*, not an array-like. Reading `length`
+     * and indices instead would resolve `Promise.all(new Set([p]))` with
+     * nothing at all rather than with the promise's value.
+     */
     private static function iterableToList(Vm $vm, mixed $v): array
     {
-        if ($v instanceof JSArray) {
-            return $v->toList();
-        }
-        if ($v instanceof JSObject) {
-            $len = Conversions::toUint32($vm, $v->get('length', $vm));
-            $out = [];
-            for ($i = 0; $i < $len; $i++) {
-                $out[] = $v->get((string)$i, $vm);
-            }
-            return $out;
-        }
-        $vm->throwError('TypeError', 'Promise.all/race expects an array');
+        return $vm->iterateToList($v);
     }
 }
