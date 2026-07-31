@@ -40,7 +40,7 @@ final class JSFunction extends JSFunctionBase
         parent::__construct($realm->functionPrototype());
         $this->isArrow = !empty($template['arrow']);
         $this->name = $template['name'];
-        $this->arity = $template['nparams'];
+        $this->arity = $template['length'] ?? $template['nparams'];
         $id = $template['nativeId'] ?? null;
         if ($id !== null && \PhpJs\Builtins\BuiltinRegistry::hasHost($id)) {
             $this->nativeId = $id;

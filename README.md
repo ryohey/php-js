@@ -60,8 +60,9 @@ The core language works end to end:
 
 - **Compiler**: Peast (ESTree) → scope analysis (closure capture, strict-mode
   early errors) → stack bytecode → a peephole pass that fuses the opcode pairs
-  a real workload actually executes. ES5.1 plus template literals and arrow
-  functions so far; DESIGN.md §2.5 has the order for the rest
+  a real workload actually executes. ES5.1 plus template literals, arrow
+  functions and default/rest parameters so far; DESIGN.md §2.5 has the order
+  for the rest
 - **VM**: single `while/switch` dispatch loop, own frame stack (JS calls never
   consume the PHP call stack), in-VM exception handling, wall-clock execution
   limit

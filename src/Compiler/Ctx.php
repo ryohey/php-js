@@ -22,6 +22,20 @@ final class Ctx
     public bool $isArrow = false;
     /** For `x => expr`, the expression standing in for a body. */
     public ?object $arrowBody = null;
+    /**
+     * Parameter index => its default's initializer. The parameter still takes
+     * its positional slot; the prologue overwrites it when the caller passed
+     * nothing.
+     * @var array<int, object>
+     */
+    public array $paramInits = [];
+    /** Name of the rest parameter, which takes no positional slot. */
+    public ?string $restParam = null;
+    /**
+     * Reported `length`: parameters before the first default or rest. Distinct
+     * from nparams, which is how many slots receive positional arguments.
+     */
+    public int $length = 0;
     public string $name = '';
     /** @var list<string> parameter names in positional order */
     public array $params = [];
@@ -155,6 +169,7 @@ final class Ctx
             'name' => $this->name,
             'strict' => $this->strict,
             'nparams' => $this->nparams,
+            'length' => $this->length,
             'nlocals' => $this->nlocals,
             'nenv' => $this->nenv,
             'usesArgs' => $this->usesArguments,

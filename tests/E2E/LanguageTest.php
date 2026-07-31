@@ -230,6 +230,86 @@ final class LanguageTest extends EvalTestCase
         yield 'arrow length and name' => ['2|', '((a, b) => a + b).length + "|" + ((a, b) => a + b).name'];
         yield 'arrow is a function' => ['function', 'typeof (() => 1)'];
 
+        // A default applies to `undefined` only -- not to every falsy value, and
+        // not to an explicitly passed `null`.
+        yield 'default parameter fills a missing argument' => [
+            '1|2|3',
+            'function d(a, b = 2, c = a + b) { return a + "|" + b + "|" + c; } d(1)',
+        ];
+        yield 'default yields to an argument that was passed' => [
+            '1|9|10',
+            'function d(a, b = 2, c = a + b) { return a + "|" + b + "|" + c; } d(1, 9)',
+        ];
+        yield 'explicit undefined still takes the default' => [
+            '1|2|7',
+            'function d(a, b = 2, c = a + b) { return a + "|" + b + "|" + c; } d(1, undefined, 7)',
+        ];
+        yield 'null does not take the default' => [
+            '1|null|1',
+            'function d(a, b = 2, c = a + b) { return a + "|" + b + "|" + c; } d(1, null)',
+        ];
+        yield 'a default may reference an earlier parameter' => [
+            5,
+            'function f(a, b = a) { return b; } f(5)',
+        ];
+        // Parameters are in a dead zone while the list initializes, so this is a
+        // ReferenceError in the spec. Nothing implements that zone yet, and
+        // answering undefined would be silently wrong, so it is refused.
+        yield 'a default may not reference a later parameter' => [
+            'SyntaxError',
+            'try { eval("(function (b = a, a = 1) { return b; })()"); "none" }'
+                . ' catch (e) { e.constructor.name }',
+        ];
+        yield 'rest parameter collects the remainder' => [
+            '1|2|2,3',
+            'function r(a, ...rest) { return a + "|" + rest.length + "|" + rest.join(","); } r(1, 2, 3)',
+        ];
+        yield 'rest parameter is empty when nothing is left' => [
+            '1|0|',
+            'function r(a, ...rest) { return a + "|" + rest.length + "|" + rest.join(","); } r(1)',
+        ];
+        yield 'rest parameter is a real array' => [
+            true,
+            'Array.isArray((function (...x) { return x; })())',
+        ];
+        yield 'defaults and rest together' => [
+            '1|2|3,4',
+            'function m(a, b = 1, ...rest) { return a + "|" + b + "|" + rest.join(","); } m(1, 2, 3, 4)',
+        ];
+        yield 'a default is captured by a closure' => [
+            1,
+            'function capt(a = 1) { return function () { return a; }; } capt()()',
+        ];
+        yield 'a rest parameter is captured by a closure' => [
+            '123',
+            'function c(...xs) { return function () { return xs.join(""); }; } c(1, 2, 3)()',
+        ];
+        // `length` counts parameters before the first default or rest, which is
+        // why it is a separate template field from the slot count.
+        yield 'length stops at the first default' => [
+            '1|1|1',
+            'function d(a, b = 2, c = 3) {} function r(a, ...x) {} function m(a, b = 1, ...x) {}'
+                . ' d.length + "|" + r.length + "|" + m.length',
+        ];
+        // A body directive may not follow a non-simple parameter list: it would
+        // change how the list is read after it has been read.
+        yield 'use strict is refused after a default parameter' => [
+            'SyntaxError',
+            'try { eval("(function (a = 1) { \'use strict\'; return a; })"); "none" }'
+                . ' catch (e) { e.constructor.name }',
+        ];
+        yield 'use strict stays legal after a simple list' => [
+            1,
+            'eval("(function (a) { \'use strict\'; return a; })")(1)',
+        ];
+        yield 'arrow with a default' => [5, '((x = 5) => x)()'];
+        yield 'arrow with a rest parameter' => [3, '((...xs) => xs.length)(1, 2, 3)'];
+        // A non-simple parameter list is never mapped onto `arguments`.
+        yield 'arguments still counts what was passed' => [
+            3,
+            '(function (a, ...rest) { return arguments.length; })(1, 2, 3)',
+        ];
+
         yield 'number toFixed' => ['3.14', '(3.14159).toFixed(2)'];
         yield 'number toString radix' => ['ff', '(255).toString(16)'];
         yield 'json roundtrip' => ['{"a":[1,2],"b":"x"}', 'JSON.stringify(JSON.parse("{\"a\":[1,2],\"b\":\"x\"}"))'];

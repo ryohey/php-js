@@ -116,10 +116,34 @@ for code you control; it is no longer the *only* way in.
   `arguments` inside an arrow is refused — it means the *enclosing* function's,
   and handing back the arrow's own would be silently wrong.
 
+- **Default and rest parameters.** A default applies to `undefined` only, and
+  is filled by a prologue that runs before captured parameters are copied into
+  the environment record — so the environment sees finished values rather than
+  raw arguments. `length` becomes a template field of its own, separate from
+  `nparams`: the first counts parameters before the first default or rest, the
+  second counts slots that receive positional arguments, and a rest element has
+  no slot at all. Its array is built by `REST_ARGS` from the argument list,
+  which is retained for exactly that reason. A parameter list carrying either is
+  never mapped onto `arguments` (9.2.12), and may not repeat a name.
+
 **Known gaps in what has landed**, all visible as test262 failures rather than
 as silence: `var f = () => {}` does not take the name `f` (NamedEvaluation is
 not implemented for any form), and two malformed-unicode-escape cases in
 templates are still accepted where they should be early errors.
+
+One refusal is deliberately wider than the spec: a parameter default that
+reaches a parameter declared after it is rejected at compile time, where the
+spec throws a ReferenceError at run time. Parameters occupy a temporal dead zone
+while the list initializes, nothing implements that zone yet, and answering
+`undefined` would be silently wrong. It also refuses the case where the later
+parameter is only named inside a nested function, which the spec would allow.
+Both go away when TDZ lands with `let`.
+
+Defaults and rest also brought in tests for something not implemented: with a
+non-simple parameter list the parameters and the body's `var`s occupy *separate*
+scopes, so `function f(a = 1) { var a; }` has two `a`s. Seven test262 cases cover
+it and fail. It is the same second-scope machinery `let` needs, and it is queued
+with it rather than approximated.
 
 Widening the denominator also *exposed* four pre-existing builtin bugs —
 `Array.prototype` `pop`/`push`/`unshift` with a string receiver, and `shift`
@@ -127,8 +151,7 @@ against a non-writable `length`. Those tests had been skipped because their own
 source is written in ES6, not because the engine passed them. That is the second
 argument for growing the surface: the skips were hiding real defects.
 
-**Next, in this order:** default and rest parameters, destructuring, then
-`let`/`const`. The last is the one with real design content, and the plan is:
+**Next, in this order:** destructuring, then `let`/`const`. The last is the one with real design content, and the plan is:
 block scopes as frames on the existing `lexStack` (both passes already push and
 pop it symmetrically), bindings into `Ctx::$extraBindings` so slot assignment is
 unchanged — **so the VM does not change at all**, slots being slots. TDZ needs a

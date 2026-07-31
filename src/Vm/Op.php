@@ -64,6 +64,12 @@ final class Op
      * valueOf and toString tells the two apart.
      */
     public const TOSTR = 88;
+    /**
+     * `n` -> the arguments from index n onward, as an array. The frame keeps
+     * its raw argument list whenever a rest parameter is present, which is the
+     * only thing that list is needed for once parameters have their slots.
+     */
+    public const REST_ARGS = 89;   // n
     public const NOT = 38;
     public const BNOT = 39;
     public const TYPEOF = 40;
@@ -157,6 +163,7 @@ final class Op
         self::ADD => '', self::SUB => '', self::MUL => '', self::DIV => '', self::MOD => '',
         self::NEG => '', self::TONUM => '', self::NOT => '', self::BNOT => '', self::TYPEOF => '',
         self::TOSTR => '',
+        self::REST_ARGS => 'n',
         self::BAND => '', self::BOR => '', self::BXOR => '',
         self::SHL => '', self::SHR => '', self::USHR => '',
         self::EQ => '', self::NEQ => '', self::SEQ => '', self::SNEQ => '',

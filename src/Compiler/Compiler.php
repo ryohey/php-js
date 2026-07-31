@@ -105,25 +105,61 @@ final class Compiler
             if ($ctx->strict && $node->getId() !== null) {
                 $this->checkBindingName($ctx, $node->getId()->getName(), $node);
             }
-            foreach ($node->getParams() as $i => $p) {
+            $simple = true;      // no defaults, no rest: `length` == nparams
+            foreach ($node->getParams() as $p) {
+                $init = null;
+                $isRest = false;
+                if ($p->getType() === 'AssignmentPattern') {
+                    $init = $p->getRight();
+                    $p = $p->getLeft();
+                } elseif ($p->getType() === 'RestElement') {
+                    $isRest = true;
+                    $p = $p->getArgument();
+                    if ($ctx->restParam !== null) {
+                        $this->fail($p, 'Only one rest parameter is allowed');
+                    }
+                }
                 if ($p->getType() !== 'Identifier') {
-                    $this->unsupported($p, 'Parameter patterns are not supported (ES5 target)');
+                    $this->unsupported($p, 'Destructuring parameters are not supported yet');
                 }
                 $name = $p->getName();
                 if ($ctx->strict) {
                     $this->checkBindingName($ctx, $name, $p);
                 }
-                if (($ctx->strict || $ctx->isArrow) && in_array($name, $ctx->params, true)) {
-                    // Sloppy functions may repeat a parameter name; strict ones
-                    // and arrows may not, and an arrow may not regardless of
-                    // the surrounding strictness (14.2.1).
-                    $this->fail($p, $ctx->isArrow
-                        ? "Duplicate parameter name '$name' not allowed in an arrow function"
-                        : "Duplicate parameter name '$name' not allowed in strict mode");
+                // A sloppy function may repeat a parameter name, but only while
+                // its list stays simple; an arrow never may (14.2.1, 15.1.3).
+                $strictList = $ctx->strict || $ctx->isArrow || !$simple || $init !== null || $isRest;
+                if ($strictList && in_array($name, $ctx->params, true)) {
+                    $this->fail($p, "Duplicate parameter name '$name' is not allowed here");
                 }
+                if ($isRest) {
+                    $simple = false;
+                    $ctx->restParam = $name;
+                    // Not a positional slot: it is built in the prologue from
+                    // the argument list, which is why the list has to be kept.
+                    $ctx->usesArguments = true;
+                    $ctx->bindings[$name] = new Binding($ctx, $name, 'var');
+                    continue;
+                }
+                if ($init !== null) {
+                    $ctx->paramInits[count($ctx->params)] = $init;
+                }
+                if ($simple && $init === null) {
+                    $ctx->length++;
+                }
+                if ($init !== null) {
+                    $simple = false;
+                }
+                $ctx->bindings[$name] = new Binding($ctx, $name, 'param', count($ctx->params));
                 $ctx->params[] = $name;
-                $ctx->bindings[$name] = new Binding($ctx, $name, 'param', $i);
             }
+        }
+        // A body directive may not follow a parameter list carrying defaults or
+        // a rest element (14.1.2): the directive would change how the list is
+        // read after it has already been read.
+        if (!$isProgram && ($ctx->paramInits !== [] || $ctx->restParam !== null)
+            && $this->hasUseStrict($body)) {
+            $this->fail($node, "'use strict' is not allowed in a function with a non-simple parameter list");
         }
         $ctx->strict = $ctx->strict || $this->hasUseStrict($body);
 
@@ -145,6 +181,10 @@ final class Compiler
         $this->lexStack[] = ['ctx' => $ctx, 'names' => $ctx->bindings];
         foreach ($body as $stmt) {
             $this->analyzeNode($stmt, $ctx);
+        }
+        foreach ($ctx->paramInits as $index => $init) {
+            $this->checkInitializerOrder($ctx, $index, $init);
+            $this->analyzeNode($init, $ctx);
         }
         if ($ctx->arrowBody !== null) {
             $this->analyzeNode($ctx->arrowBody, $ctx);
@@ -423,6 +463,41 @@ final class Compiler
      * 'eval' and 'arguments' may not be bound in strict mode (ES5.1 12.2.1,
      * 13.1). Called for var/function/parameter/catch bindings.
      */
+    /**
+     * A default may not reach a parameter declared after it.
+     *
+     * Parameters are in their own temporal dead zone while the list is being
+     * initialized, so `function f(b = a, a = 1)` is a ReferenceError at the
+     * moment `b` is evaluated. Nothing here implements that dead zone yet, and
+     * answering `undefined` would be silently wrong, so the shape is refused
+     * outright.
+     *
+     * Deliberately conservative: it also refuses an initializer that only
+     * mentions a later parameter inside a nested function, which the spec would
+     * allow if that function is never called early. Rejecting a program that
+     * almost certainly throws beats running one that quietly does not.
+     */
+    private function checkInitializerOrder(Ctx $ctx, int $index, object $init): void
+    {
+        $later = array_slice($ctx->params, $index);
+        if ($ctx->restParam !== null) {
+            $later[] = $ctx->restParam;
+        }
+        if ($later === []) {
+            return;
+        }
+        $traverser = new \Peast\Traverser();
+        $traverser->addFunction(function ($node) use ($later, $init): void {
+            if ($node->getType() === 'Identifier' && in_array($node->getName(), $later, true)) {
+                $this->fail(
+                    $init,
+                    "Parameter default cannot reference '{$node->getName()}', which is declared later"
+                );
+            }
+        });
+        $traverser->traverse($init);
+    }
+
     private function checkBindingName(Ctx $ctx, string $name, ?object $node): void
     {
         if ($ctx->strict && ($name === 'eval' || $name === 'arguments')) {
@@ -457,9 +532,15 @@ final class Compiler
     {
         $ctx->nparams = count($ctx->params);
         $ctx->nlocals = $ctx->nparams;
+        $simpleList = $ctx->paramInits === [] && $ctx->restParam === null;
+        if ($simpleList) {
+            $ctx->length = $ctx->nparams;
+        }
         // A mapped arguments object aliases the parameters, and the only
-        // heap-safe place to share them is an environment slot (§11.3).
-        $mapParams = $ctx->usesArguments && !$ctx->strict;
+        // heap-safe place to share them is an environment slot (§11.3). A
+        // parameter list with defaults or a rest element is never mapped
+        // (9.2.12), which is just as well: there is nothing to alias.
+        $mapParams = $ctx->usesArguments && !$ctx->strict && $simpleList;
         foreach ($ctx->bindings as $b) {
             if ($mapParams && $b->kind === 'param') {
                 $b->captured = true;
@@ -541,7 +622,29 @@ final class Compiler
 
         $body = $isProgram ? $node->getBody() : ($ctx->arrowBody !== null ? [] : $node->getBody()->getBody());
 
-        // Prologue: copy captured params into the environment record.
+        // Prologue, in this order: a default fills a parameter the caller left
+        // out, the rest element gathers what is past the declared ones, and only
+        // then are captured parameters copied into the environment -- so the
+        // environment sees the finished values rather than the raw arguments.
+        foreach ($ctx->paramInits as $index => $init) {
+            $slot = $ctx->bindings[$ctx->params[$index]]->slot;
+            $ctx->emit(Op::GET_LOCAL, $slot);
+            $ctx->emit(Op::PUSH_UNDEF);
+            $ctx->emit(Op::SEQ);
+            // A default applies only to `undefined`, not to every falsy value
+            // and not to an explicitly passed `null`.
+            $skip = $ctx->emitJump(Op::JF);
+            $this->genExpr($init);
+            $ctx->emit(Op::SET_LOCAL, $slot);
+            $ctx->emit(Op::POP);
+            $ctx->patch($skip);
+        }
+        if ($ctx->restParam !== null) {
+            $ctx->emit(Op::REST_ARGS, $ctx->nparams);
+            $this->emitStoreBinding($ctx->bindings[$ctx->restParam]);
+            $ctx->emit(Op::POP);
+        }
+
         foreach ($ctx->bindings as $b) {
             if ($b->kind === 'param' && $b->captured) {
                 $ctx->emit(Op::GET_LOCAL, $b->slot);

@@ -479,6 +479,17 @@ final class Vm
                         break;
                     }
 
+                    case Op::REST_ARGS: {
+                        $from = $code[$pc++];
+                        $args = $frame[self::F_ARGS] ?? [];
+                        $rest = new JSArray($realm->arrayPrototype());
+                        for ($i = $from, $n = count($args); $i < $n; $i++) {
+                            $rest->elements[$i - $from] = $args[$i];
+                        }
+                        $rest->length = max(0, count($args) - $from);
+                        $stack[$sp++] = $rest;
+                        break;
+                    }
                     case Op::TOSTR:
                         if (!is_string($stack[$sp - 1])) {
                             $this->sp = $sp;
