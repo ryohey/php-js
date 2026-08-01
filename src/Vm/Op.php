@@ -159,6 +159,19 @@ final class Op
     public const DEFINE_DATA_ELEM = 108;
     public const DEFINE_GETTER_ELEM = 109;
     public const DEFINE_SETTER_ELEM = 110;
+    /**
+     * GetTemplateObject (13.2.8.3): `[] -> [templateObject]`. `k1` is the
+     * cache key (a string constant unique to this call site within its
+     * compilation), `k2`/`k3` are the cooked and raw string arrays.
+     *
+     * The object is built once and kept in `Realm::$templateObjectCache`
+     * keyed by `k1`, not recreated on every evaluation -- a loop that
+     * evaluates the same tagged template site N times must hand the tag the
+     * same array identity all N times (test262
+     * language/expressions/tagged-template/cache-*). Building it fresh here
+     * would be observably wrong, not just wasteful.
+     */
+    public const NEW_TAG_TEMPLATE = 111; // kkk
     public const NOT = 38;
     public const BNOT = 39;
     public const TYPEOF = 40;
@@ -262,6 +275,7 @@ final class Op
         self::CALL_SPREAD => '', self::NEW_SPREAD => '',
         self::DEFINE_DATA_ELEM => '', self::DEFINE_GETTER_ELEM => '',
         self::DEFINE_SETTER_ELEM => '',
+        self::NEW_TAG_TEMPLATE => 'kkk',
         self::BAND => '', self::BOR => '', self::BXOR => '',
         self::SHL => '', self::SHR => '', self::USHR => '',
         self::EQ => '', self::NEQ => '', self::SEQ => '', self::SNEQ => '',

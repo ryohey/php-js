@@ -23,27 +23,27 @@ says whether the syntax work is aimed at anything:
 
 ```console
 $ php tests/acceptance/run.php --dir path/to/node_modules
-  accepted   323   80.8%
-  rejected    77   19.2%
+  accepted   339   84.8%
+  rejected    61   15.2%
 
 what the rejections tripped on:
-  TaggedTemplateExpression    18   4.5%
-  ClassDeclaration            14   3.5%
+  ClassDeclaration            15   3.8%
   Generators                  10   2.5%
+  unexpected export            7   1.8%
   ...
 ```
 
 Template literals, arrow functions, default/rest parameters, `let`/`const`,
-destructuring, `for…of` and spread have landed since — 46.8% to 80.8%. Tagged
-templates and classes are next.
+destructuring, `for…of`, spread and tagged templates have landed since —
+46.8% to 84.8%. Classes are next.
 
 **Conformance** — the test262 pass rate over what is implemented. Against a
 current tc39/test262 checkout:
 
 | Area | Pass rate | Run |
 |---|---|---|
-| **overall** | **96.2%** | 15459 |
-| `language/` | 95.3% | 6464 |
+| **overall** | **96.3%** | 15498 |
+| `language/` | 95.5% | 6503 |
 | `built-ins/` | 96.8% | 8995 |
 
 A further ~21000 tests are skipped as out of scope: features the engine cannot
@@ -73,8 +73,8 @@ The core language works end to end:
   early errors) → stack bytecode → a peephole pass that fuses the opcode pairs
   a real workload actually executes. ES5.1 plus template literals, arrow
   functions, default/rest parameters, `let`/`const` (block scopes, temporal dead
-  zone, redeclaration errors), destructuring, `for…of` and spread so far;
-  DESIGN.md §2.5 has the order for the rest
+  zone, redeclaration errors), destructuring, `for…of`, spread and tagged
+  templates so far; DESIGN.md §2.5 has the order for the rest
 - **VM**: single `while/switch` dispatch loop, own frame stack (JS calls never
   consume the PHP call stack), in-VM exception handling, wall-clock execution
   limit

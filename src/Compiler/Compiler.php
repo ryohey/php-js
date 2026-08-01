@@ -43,11 +43,27 @@ final class Compiler
      */
     private $onFunction = null;
 
+    /**
+     * A tagged template's cache key (GetTemplateObject, 13.2.8.3) has to
+     * distinguish this compilation from any other one that happened to
+     * produce identical source text -- two `eval` calls of the same string
+     * must each get their own template object (test262
+     * cache-identical-source-eval.js). One counter per process, bumped once
+     * per `compile()` call, does that: every call site within a compilation
+     * gets a local index (`$nextTemplateIndex`, below) under this ID, and no
+     * two compilations ever share an ID to collide the indices under.
+     */
+    private static int $nextCompilationId = 0;
+    private int $compilationId;
+    /** Local index of the next tagged-template call site within this compilation. */
+    private int $nextTemplateIndex = 0;
+
     private function __construct()
     {
         $this->blockScopes = new \SplObjectStorage();
         $this->fnCtx = new \SplObjectStorage();
         $this->catchBind = new \SplObjectStorage();
+        $this->compilationId = self::$nextCompilationId++;
     }
 
     /**
@@ -472,6 +488,12 @@ final class Compiler
                 $this->analyzeNode($node->getCallee(), $ctx);
                 foreach ($node->getArguments() as $a) {
                     $this->analyzeNode($a, $ctx);
+                }
+                return;
+            case 'TaggedTemplateExpression':
+                $this->analyzeNode($node->getTag(), $ctx);
+                foreach ($node->getQuasi()->getExpressions() as $expr) {
+                    $this->analyzeNode($expr, $ctx);
                 }
                 return;
             case 'BlockStatement': {
@@ -2114,6 +2136,30 @@ final class Compiler
                 $c->emit(Op::NEW_OP, count($args));
                 return;
             }
+            case 'TaggedTemplateExpression': {
+                // Same [func, this] setup as an ordinary call -- a tag reached
+                // through a member expression still gets that object as `this`.
+                $tag = self::unwrapParens($node->getTag());
+                if ($tag->getType() === 'MemberExpression') {
+                    $this->genExpr($tag->getObject());
+                    if ($tag->getComputed()) {
+                        $this->genExpr($tag->getProperty());
+                        $c->emit(Op::GET_METHOD_ELEM);
+                    } else {
+                        $c->emit(Op::GET_METHOD, $c->constIndex($tag->getProperty()->getName()));
+                    }
+                } else {
+                    $this->genExpr($tag);
+                    $c->emit(Op::PUSH_UNDEF);
+                }
+                $this->genTemplateObject($node->getQuasi());
+                $exprs = $node->getQuasi()->getExpressions();
+                foreach ($exprs as $e) {
+                    $this->genExpr($e);
+                }
+                $c->emit(Op::CALL, count($exprs) + 1);
+                return;
+            }
             case 'UnaryExpression':
                 $this->genUnary($node);
                 return;
@@ -2170,6 +2216,36 @@ final class Compiler
     }
 
     /**
+     * The `[cooked...]` array (with `raw` attached) a tag function receives as
+     * its first argument. Emits NEW_TAG_TEMPLATE, which resolves this call
+     * site's identity from the cache -- see NEW_TAG_TEMPLATE and
+     * Realm::templateObject.
+     *
+     * The cache key only has to be unique within this compilation
+     * ($compilationId does that across compilations) and stable across every
+     * evaluation of this exact site, so a plain incrementing counter over the
+     * tagged templates this compiler visits is enough; it does not need to
+     * mean anything.
+     */
+    private function genTemplateObject(object $quasiNode): void
+    {
+        $c = $this->cur;
+        $cooked = [];
+        $raw = [];
+        foreach ($quasiNode->getQuasis() as $quasi) {
+            $cooked[] = $this->cookTemplate($quasi, true);
+            $raw[] = str_replace(["\r\n", "\r"], "\n", $quasi->getRawValue());
+        }
+        $key = $this->compilationId . ':' . $this->nextTemplateIndex++;
+        $c->emit(
+            Op::NEW_TAG_TEMPLATE,
+            $c->constIndex($key),
+            $c->constIndex($cooked),
+            $c->constIndex($raw)
+        );
+    }
+
+    /**
      * A template literal is string concatenation, with one wrinkle that stops
      * it being a plain rewrite to `+`: each substitution is converted with
      * ToString (13.2.8.5), while `+` converts with ToPrimitive under the
@@ -2222,14 +2298,23 @@ final class Compiler
     }
 
     /**
-     * A template rejects the escapes a sloppy string tolerates.
+     * A plain template rejects the escapes a sloppy string tolerates; a tagged
+     * one does not, because its cooked value is allowed to be `undefined`
+     * instead (12.9.6) -- the tag still sees the raw text, and a template
+     * built for one syntax (e.g. a regex DSL) can freely use escapes that mean
+     * nothing to JS.
      *
-     * `\8`, `\9` and legacy octals are errors here whatever the surrounding
-     * strictness (12.9.6), because a template's cooked value is only allowed to
-     * be undefined in a *tagged* template, and this compiler has no tagged form
-     * yet. Peast catches the malformed unicode escapes; these are the rest.
+     * Peast itself refuses a malformed `\u` at parse time, but only outside a
+     * tag -- inside one it hands back the raw text unexamined, which is why
+     * this scan has to check `\x` and `\u` itself rather than leaving them to
+     * `decodeStringLiteral` (which never throws: an escape it does not
+     * recognise as well-formed it treats as standing for itself, the
+     * permissive reading a plain string needs it *not* to have here).
+     *
+     * @return string|null null only when `$tagged` and the text is malformed,
+     *                      meaning the cooked value is `undefined`
      */
-    private function cookTemplate(object $quasi): string
+    private function cookTemplate(object $quasi, bool $tagged = false): ?string
     {
         $raw = $quasi->getRawValue();
         $length = strlen($raw);
@@ -2239,6 +2324,9 @@ final class Compiler
             }
             $next = $raw[++$i] ?? '';
             if ($next === '8' || $next === '9') {
+                if ($tagged) {
+                    return null;
+                }
                 $this->fail($quasi, "'\\$next' is not a valid escape in a template literal");
             }
             if ($next >= '0' && $next <= '7') {
@@ -2246,7 +2334,30 @@ final class Compiler
                 // anything else in that range is a legacy octal.
                 $following = $raw[$i + 1] ?? '';
                 if ($next !== '0' || ($following >= '0' && $following <= '9')) {
+                    if ($tagged) {
+                        return null;
+                    }
                     $this->fail($quasi, 'Octal escapes are not allowed in a template literal');
+                }
+            }
+            if ($tagged && $next === 'x') {
+                $hex = substr($raw, $i + 1, 2);
+                if (strlen($hex) !== 2 || !ctype_xdigit($hex)) {
+                    return null;
+                }
+            }
+            if ($tagged && $next === 'u') {
+                if (($raw[$i + 1] ?? '') === '{') {
+                    $close = strpos($raw, '}', $i + 2);
+                    $digits = $close === false ? '' : substr($raw, $i + 2, $close - $i - 2);
+                    if ($digits === '' || !ctype_xdigit($digits) || hexdec($digits) > 0x10FFFF) {
+                        return null;
+                    }
+                } else {
+                    $hex = substr($raw, $i + 1, 4);
+                    if (strlen($hex) !== 4 || !ctype_xdigit($hex)) {
+                        return null;
+                    }
                 }
             }
         }
@@ -2382,6 +2493,18 @@ final class Compiler
                 break;
             }
             $e = $body[$i];
+            // U+2028/U+2029 are LineTerminatorSequence too (11.8.6.1), so
+            // `\` followed by either is a line continuation exactly like `\n`
+            // and `\r` -- it generates nothing. Checked before the switch
+            // because `$e` is one byte and these are three-byte UTF-8.
+            if ($e === "\xE2" && substr($body, $i, 3) === "\xE2\x80\xA8") {
+                $i += 2;                                // LINE SEPARATOR
+                continue;
+            }
+            if ($e === "\xE2" && substr($body, $i, 3) === "\xE2\x80\xA9") {
+                $i += 2;                                // PARAGRAPH SEPARATOR
+                continue;
+            }
             switch ($e) {
                 case 'b': $units[] = 0x08; break;
                 case 'f': $units[] = 0x0C; break;

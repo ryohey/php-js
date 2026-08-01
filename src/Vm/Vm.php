@@ -503,6 +503,14 @@ final class Vm
                         );
                         break;
                     }
+                    case Op::NEW_TAG_TEMPLATE: {
+                        $key = $consts[$code[$pc++]];
+                        $cooked = $consts[$code[$pc++]];
+                        $raw = $consts[$code[$pc++]];
+                        $this->sp = $sp;
+                        $stack[$sp++] = $realm->templateObject($key, $cooked, $raw);
+                        break;
+                    }
 
                     case Op::PUSH_TDZ:
                         $stack[$sp++] = JSHole::$hole;

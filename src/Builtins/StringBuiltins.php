@@ -23,6 +23,7 @@ final class StringBuiltins
             'String' => [self::class, 'callAsFunction'],
             'String.ctor' => [self::class, 'ctor'],
             'String.fromCharCode' => [self::class, 'fromCharCode'],
+            'String.raw' => [self::class, 'raw'],
             'String.prototype.toString' => [self::class, 'toStringMethod'],
             'String.prototype.valueOf' => [self::class, 'toStringMethod'],
             'String.prototype.charAt' => [self::class, 'charAt'],
@@ -66,6 +67,7 @@ final class StringBuiltins
         $ctor = $r->nativeFn('String', 'String', 1, 'String.ctor');
         $r->linkPair($ctor, $r->stringPrototype());
         $r->defineMethod($ctor, 'fromCharCode', 'String.fromCharCode', 1);
+        $r->defineMethod($ctor, 'raw', 'String.raw', 1);
         return $ctor;
     }
 
@@ -96,6 +98,34 @@ final class StringBuiltins
             $units[] = Conversions::toUint32($vm, $a) & 0xFFFF;
         }
         return StringOps::fromCodeUnits($units);
+    }
+
+    /**
+     * String.raw(template, ...substitutions) (21.1.2.4): the tag function
+     * that reproduces the source text a template literal would have
+     * substituted into, reading `template.raw` rather than `template` itself.
+     * Generic over any array-like with a `raw` property, not just a template
+     * object -- `String.raw({raw: ['a', 'b']}, 1)` is valid.
+     */
+    public static function raw(Vm $vm, mixed $t, array $args): mixed
+    {
+        $template = \array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined;
+        $cookedObj = Conversions::toObject($vm, $template);
+        $rawObj = Conversions::toObject($vm, $cookedObj->get('raw', $vm));
+        $len = Conversions::toLength($vm, $rawObj->get('length', $vm));
+        if ($len <= 0) {
+            return '';
+        }
+        $out = '';
+        for ($i = 0; ; $i++) {
+            $out .= Conversions::toString($vm, $rawObj->get((string)$i, $vm));
+            if ($i + 1 === $len) {
+                return $out;
+            }
+            if (\array_key_exists($i + 1, $args)) {
+                $out .= Conversions::toString($vm, $args[$i + 1]);
+            }
+        }
     }
 
     private static function thisString(Vm $vm, mixed $t, string $who): string

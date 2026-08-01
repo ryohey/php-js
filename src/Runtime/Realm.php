@@ -157,6 +157,48 @@ final class Realm
         return JSArray::fromList($values, $this->arrayPrototype());
     }
 
+    /**
+     * GetTemplateObject's cache (13.2.8.3), keyed by a string the compiler
+     * assigns each tagged-template call site: unique within its compilation
+     * unit and stable across every evaluation of that site, so a loop that
+     * runs the same tag hands it the same array identity every time. Per
+     * realm rather than static, like the symbol tables above -- two realms in
+     * one process must not share the cache (DESIGN.md §11), and a fresh
+     * request gets a fresh one.
+     *
+     * @var array<string, JSArray>
+     */
+    private array $templateObjectCache = [];
+
+    /**
+     * Build (once) or return (thereafter) the frozen `[cooked...]` array with
+     * a frozen `raw` array attached, for `$key`.
+     *
+     * `$cooked` entries are `string|null`; `null` is a malformed escape in a
+     * tagged template, whose cooked value the spec requires to be `undefined`
+     * (12.9.6) while `$raw` still carries the literal text.
+     *
+     * @param list<string|null> $cooked
+     * @param list<string>      $raw
+     */
+    public function templateObject(string $key, array $cooked, array $raw): JSArray
+    {
+        if (isset($this->templateObjectCache[$key])) {
+            return $this->templateObjectCache[$key];
+        }
+        $rawArr = $this->newArray($raw);
+        ObjectBuiltins::freeze($this->vm, JSUndefined::$undefined, [$rawArr]);
+
+        $und = JSUndefined::$undefined;
+        $obj = $this->newArray(array_map(static fn ($v) => $v ?? $und, $cooked));
+        // Not writable, not enumerable, not configurable (13.2.8.3 step 8) --
+        // own data, not the array elements DEFINE_DATA on cooked values uses.
+        $obj->defineOwnData('raw', $rawArr, 0);
+        ObjectBuiltins::freeze($this->vm, JSUndefined::$undefined, [$obj]);
+
+        return $this->templateObjectCache[$key] = $obj;
+    }
+
     public function createError(string $kind, string $message): JSObject
     {
         $err = new JSObject($this->errorPrototype($kind));

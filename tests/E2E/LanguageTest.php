@@ -197,6 +197,80 @@ final class LanguageTest extends EvalTestCase
             'var n = null, u; `${n}-${u}`',
         ];
 
+        // --- tagged templates ---
+        yield 'a tag receives cooked strings and substitution values' => [
+            'a|b|c::1,2',
+            'function tag(s, ...v) { return s.join("|") + "::" + v.join(","); } tag`a${1}b${2}c`',
+        ];
+        yield 'raw preserves the source escape' => [
+            'a\\nb',
+            'function tag(s) { return s.raw[0]; } tag`a\nb`',
+        ];
+        yield 'cooked decodes the escape' => [
+            3,
+            'function tag(s) { return s[0].length; } tag`a\nb`',
+        ];
+        yield 'the template array is frozen' => [
+            'TypeError',
+            'function tag(s) { try { s.push(1); return "no throw"; } catch (e) { return e.constructor.name; } } tag`x`',
+        ];
+        yield 'the raw array is frozen' => [
+            'TypeError',
+            '"use strict"; function tag(s) { try { s.raw[0] = "z"; return "no throw"; }'
+                . ' catch (e) { return e.constructor.name; } } tag`x`',
+        ];
+        yield 'both arrays are real arrays' => [
+            true,
+            'function tag(s) { return Array.isArray(s) && Array.isArray(s.raw); } tag`x`',
+        ];
+        yield 'raw is not enumerable' => [
+            -1,
+            'function tag(s) { return Object.keys(s).indexOf("raw"); } tag`x`',
+        ];
+        // GetTemplateObject (13.2.8.3): the same call site always hands the tag
+        // the same array identity, so a loop over it can memoize on it.
+        yield 'the same call site is the same object every time' => [
+            true,
+            'var o = []; function tag(s) { o.push(s); } function run() { tag`a${1}b`; }'
+                . ' run(); run(); o[0] === o[1]',
+        ];
+        yield 'different call sites are different objects' => [
+            false,
+            'var o = []; function tag(s) { o.push(s); } tag`a`; tag`b`; o[0] === o[1]',
+        ];
+        // Two evaluations of identical source text are still different sites.
+        yield 'the same source in two evals differs' => [
+            false,
+            'var a, b; function tag(s) { if (!a) { a = s; } else { b = s; } }'
+                . ' tag`same`; eval("tag`same`"); a === b',
+        ];
+        yield 'a tag reached through a member expression gets its receiver' => [
+            5,
+            'var obj = { n: 5, tag: function (s) { return this.n; } }; obj.tag`x`',
+        ];
+        // A tagged template's cooked value may be undefined; only a plain one
+        // treats a malformed escape as an early error (12.9.6).
+        yield 'a malformed escape cooks to undefined in a tag' => [
+            'undef',
+            'function tag(s) { return s[0] === undefined ? "undef" : s[0]; } tag`\\unicode`',
+        ];
+        yield 'a malformed escape still reaches raw' => [
+            '\\unicode',
+            'function tag(s) { return s.raw[0]; } tag`\\unicode`',
+        ];
+        yield 'a malformed escape rejects a plain template' => [
+            'SyntaxError',
+            'try { eval("`\\\\unicode`"); "none" } catch (e) { e.constructor.name }',
+        ];
+
+        yield 'String.raw reproduces the source text' => ['a\\nb', 'String.raw`a\nb`'];
+        yield 'String.raw with substitutions' => ['x1y2z', 'String.raw`x${1}y${2}z`'];
+        yield 'String.raw is generic over any raw array-like' => [
+            'a1b',
+            'String.raw({raw: ["a", "b"]}, 1)',
+        ];
+        yield 'String.raw of an empty template' => ['', 'String.raw``'];
+
         yield 'arrow, expression body' => [3, 'var f = (a, b) => a + b; f(1, 2)'];
         yield 'arrow, block body' => [42, 'var f = (x) => { return x * 2; }; f(21)'];
         yield 'arrow, no parameters' => [7, '(() => 7)()'];

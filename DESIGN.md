@@ -278,9 +278,45 @@ against a non-writable `length`. Those tests had been skipped because their own
 source is written in ES6, not because the engine passed them. That is the second
 argument for growing the surface: the skips were hiding real defects.
 
-**Next:** tagged templates (4.5% of all rejections) and classes (3.5%), which
-are now the two largest items. Then generators (2.5%), which the VM's own frame
-stack was designed to make cheap (§4).
+- **Tagged templates**, plus `String.raw`.
+
+  A plain template rejects a malformed `\x`/`\u`/octal escape at compile time;
+  a tagged one does not (12.9.6) -- the tag still gets the raw text, so a
+  template built for another syntax entirely (a regex DSL, SQL) can use
+  escapes that mean nothing to JS. Peast itself refuses a malformed `\u` at
+  parse time, but only outside a tag; inside one it hands back the raw text
+  unexamined, so `cookTemplate` now runs the same `\x`/`\u`/octal scan on the
+  tagged path that it always ran for `\0`/`\8`/`\9`, and returns `null` -- the
+  cooked value the array construction step turns into `undefined` -- instead
+  of failing compilation.
+
+  GetTemplateObject (13.2.8.3) is the part with real content: the same call
+  site has to hand the tag the identical `[cooked...]` array (with `raw`
+  attached, both frozen) on every evaluation, not a fresh one each time --
+  test262's `tagged-template/cache-*` tests check this by pushing a loop's
+  results into an array and comparing identity. `NEW_TAG_TEMPLATE` resolves
+  the object from `Realm::$templateObjectCache`, keyed by a string the
+  compiler assigns once per call site (`"$compilationId:$index"`). The index
+  alone is not enough: two `eval` calls of the same source text must each get
+  their own object (`cache-identical-source-eval.js`), so the compiler also
+  carries a process-wide counter bumped once per `Compiler::compile()` call --
+  every site inside one compilation shares an ID, and no two compilations
+  share one to collide their indices under. The cache itself lives on the
+  `Realm`, per DESIGN.md §11: keyed strings and heap arrays, nothing that
+  cannot ride a snapshot, and two realms in one process never see each other's
+  cache.
+
+  Widening the denominator here found two more pre-existing bugs, both in
+  `decodeStringLiteral` (shared by every string and template): U+2028 LINE
+  SEPARATOR and U+2029 PARAGRAPH SEPARATOR were never recognised as
+  `\`-continuations, only `\n` and `\r` were. Tests exercising it had been
+  skipped as tagged-template syntax; landing tagged templates reached them,
+  and fixing the shared function incidentally fixed the same bug in ordinary
+  string literals too.
+
+**Next:** classes, now the largest item at 3.8% of all rejections. Then
+generators (2.5%), which the VM's own frame stack was designed to make cheap
+(§4).
 
 Queued behind those: per-iteration loop bindings (which retires the refusal
 above), the separate parameter scope, and NamedEvaluation — the last is the
