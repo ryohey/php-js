@@ -1783,9 +1783,6 @@ final class Compiler
         if ($bodyBlock) {
             array_pop($this->lexStack);
         }
-        if ($bodyBlock) {
-            array_pop($this->lexStack);
-        }
         if ($ctx->arrowBody !== null) {
             // `x => expr` returns the expression; there is no other statement.
             $this->genExpr($ctx->arrowBody);

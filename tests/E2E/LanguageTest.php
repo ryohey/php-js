@@ -403,6 +403,26 @@ final class LanguageTest extends EvalTestCase
             '1|undefined',
             'function f() { let g = 1; return g; } f() + "|" + typeof g',
         ];
+        // Regression: codegen used to pop the function body's own lexStack
+        // layer twice (once too many), which -- only when a *sibling*
+        // hoisted function inside the same outer function had a body-level
+        // let of its own -- silently dropped the outer function's binding
+        // table off the stack early. Every var/function name resolved
+        // afterward then fell through to the global object instead of the
+        // outer function's own locals, corrupting scoping without any
+        // compile-time or run-time error.
+        yield 'a sibling function with its own let does not corrupt the outer scope' => [
+            'outer-local,NOT LEAKED',
+            'function outer() {'
+                . ' var localVar = "outer-local";'
+                . ' function f() { let x = 1; return x; }'
+                . ' f();'
+                . ' function g() { return localVar; }'
+                . ' return g();'
+                . '}'
+                . 'var r = outer();'
+                . '[r, typeof localVar !== "undefined" ? localVar : "NOT LEAKED"].join(",")',
+        ];
         yield 'a for head binding does not leak' => [
             'undefined',
             'for (let i = 0; i < 3; i++) {} typeof i',
