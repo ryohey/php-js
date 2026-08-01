@@ -24,6 +24,10 @@
         {
             "type": "path",
             "url": "../node-compat"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/ryohey/peast.git"
         }
     ],
     "config": {

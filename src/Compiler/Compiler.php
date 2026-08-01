@@ -51,12 +51,6 @@ final class Compiler
     }
 
     /**
-     * The source being compiled, for the one early error the AST cannot
-     * express: see checkRestIsLast.
-     */
-    private string $source = '';
-
-    /**
      * @param null|callable(object, Ctx, bool): ?string $onFunction
      * @return array<string, mixed> program template
      */
@@ -64,7 +58,6 @@ final class Compiler
     {
         $c = new self();
         $c->onFunction = $onFunction;
-        $c->source = $source;
         try {
             $ast = Peast::latest($source, ['sourceType' => 'script'])->parse();
         } catch (\Throwable $e) {
@@ -799,81 +792,6 @@ final class Compiler
     }
 
     /**
-     * A shorthand property binds the key itself, so `{x = d}` must arrive as
-     * key `x` with target `x`.
-     *
-     * Peast breaks that for a destructuring *assignment* whose default is
-     * itself an assignment: `({x = f = 1} = v)` comes back with the target
-     * `f`, having lost `x`. Declarations and parameters are parsed correctly,
-     * so this only guards the assignment path -- but it is written as the
-     * invariant rather than as the special case, because the tree is wrong
-     * either way and unpacking it would produce a confidently wrong answer.
-     */
-    /**
-     * A rest element ends its pattern and takes no default (13.15.1). Peast
-     * enforces both in a declaration and in a parameter list, but not in a
-     * destructuring *assignment*, where the pattern is reinterpreted from an
-     * array literal -- so `[...x, y] = []` arrives looking well-formed.
-     *
-     * @param list<?object> $elements
-     */
-    private function checkRestIsLast(array $elements, object $pattern): void
-    {
-        $last = count($elements) - 1;
-        foreach ($elements as $i => $el) {
-            if ($el === null || $el->getType() !== 'RestElement') {
-                continue;
-            }
-            if ($i !== $last) {
-                $this->fail($pattern, 'A rest element must be the last element of a pattern');
-            }
-            if ($el->getArgument()->getType() === 'AssignmentPattern') {
-                $this->fail($pattern, 'A rest element may not have a default');
-            }
-            // `[...x,]` is invalid where `[...x]` is fine, and Peast normalizes
-            // the trailing comma away -- the AST is identical either way. The
-            // source is the only place the difference survives.
-            if ($this->trailingCommaAfter($el, $pattern)) {
-                $this->fail($pattern, 'A rest element may not be followed by a comma');
-            }
-        }
-    }
-
-    /** Is there a `,` between the end of $el and the close of $pattern? */
-    private function trailingCommaAfter(object $el, object $pattern): bool
-    {
-        if ($this->source === '') {
-            return false;
-        }
-        $from = $el->getLocation()->getEnd()->getIndex();
-        $to = $pattern->getLocation()->getEnd()->getIndex() - 1;   // before ] or }
-        if ($to <= $from) {
-            return false;
-        }
-        // Peast counts characters, not bytes, so a single non-ASCII character
-        // anywhere earlier in the file would shift a byte-based slice.
-        return str_contains(mb_substr($this->source, $from, $to - $from, 'UTF-8'), ',');
-    }
-
-    private function checkShorthand(object $prop): void
-    {
-        if (!$prop->getShorthand()) {
-            return;
-        }
-        $target = $prop->getValue();
-        if ($target->getType() === 'AssignmentPattern') {
-            $target = $target->getLeft();
-        }
-        if ($target->getType() !== 'Identifier' || $target->getName() !== $prop->getKey()->getName()) {
-            $this->unsupported(
-                $prop,
-                "Shorthand '{$prop->getKey()->getName()}' with an assignment as its default"
-                    . ' is not supported yet (the parser loses the target)'
-            );
-        }
-    }
-
-    /**
      * The head of a `for…of` or `for…in`: either a declaration, whose names the
      * enclosing block already bound, or an assignment target.
      */
@@ -912,13 +830,11 @@ final class Compiler
         }
         switch ($target->getType()) {
             case 'ObjectPattern':
-                $this->checkRestIsLast($target->getProperties(), $target);
                 foreach ($target->getProperties() as $p) {
                     if ($p->getType() === 'RestElement') {
                         $this->analyzePattern($p->getArgument(), $ctx, $assigning);
                         continue;
                     }
-                    $this->checkShorthand($p);
                     if ($p->getComputed()) {
                         $this->analyzeNode($p->getKey(), $ctx);
                     }
@@ -944,7 +860,6 @@ final class Compiler
                 $this->analyzeNode($target, $ctx);
                 return;
             case 'ArrayPattern':
-                $this->checkRestIsLast($target->getElements(), $target);
                 foreach ($target->getElements() as $el) {
                     $this->analyzePattern($el, $ctx, $assigning);
                 }
@@ -970,7 +885,6 @@ final class Compiler
                         $this->collectPatternNames($p->getArgument(), $names);
                         continue;
                     }
-                    $this->checkShorthand($p);
                     $this->collectPatternNames($p->getValue(), $names);
                 }
                 return;
@@ -981,7 +895,6 @@ final class Compiler
                 $this->collectPatternNames($target->getArgument(), $names);
                 return;
             case 'ArrayPattern':
-                $this->checkRestIsLast($target->getElements(), $target);
                 foreach ($target->getElements() as $el) {
                     $this->collectPatternNames($el, $names);   // null is an elision
                 }

@@ -5,11 +5,17 @@
     "license": "MIT",
     "require": {
         "php": ">=8.2",
-        "mck89/peast": "^1.16"
+        "mck89/peast": "dev-fix/destructuring-cover-grammar"
     },
     "require-dev": {
         "phpunit/phpunit": "^11.0"
     },
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/ryohey/peast.git"
+        }
+    ],
     "autoload": {
         "psr-4": {
             "PhpJs\\": "src/"

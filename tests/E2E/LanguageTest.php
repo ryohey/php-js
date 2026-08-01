@@ -840,6 +840,40 @@ final class LanguageTest extends EvalTestCase
                 . ' var p = Promise.all(s); p instanceof Promise',
         ];
 
+        // The parser used to lose the shorthand's target when the default was
+        // itself an assignment, or when it named the key.
+        yield 'a shorthand default may be an assignment' => [
+            '1:1',
+            'var f, x; ({x = f = 1} = {}); x + ":" + f',
+        ];
+        yield 'a shorthand default may name the key' => [
+            5,
+            'var x; ({x = 5} = {}); x',
+        ];
+        // A rest element ends its pattern and takes no default. These are early
+        // errors only once the literal is read as a pattern -- `[...x,]` on its
+        // own is a perfectly good array literal.
+        yield 'a rest element must be last' => [
+            'SyntaxError',
+            'try { eval("var x,y; [...x, y] = [];"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'a rest element takes no trailing comma' => [
+            'SyntaxError',
+            'try { eval("var x; [...x,] = [];"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'a rest element takes no default' => [
+            'SyntaxError',
+            'try { eval("var x; [...x = 1] = [];"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'an object rest element must be last' => [
+            'SyntaxError',
+            'try { eval("var a,b; ({...a, b} = {});"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'a trailing comma after a spread is fine in a literal' => [
+            2,
+            '[...[1,2],].length',
+        ];
+
         yield 'number toFixed' => ['3.14', '(3.14159).toFixed(2)'];
         yield 'number toString radix' => ['ff', '(255).toString(16)'];
         yield 'json roundtrip' => ['{"a":[1,2],"b":"x"}', 'JSON.stringify(JSON.parse("{\"a\":[1,2],\"b\":\"x\"}"))'];
@@ -909,18 +943,6 @@ final class LanguageTest extends EvalTestCase
         $this->expectException(CompileError::class);
         $this->expectExceptionMessage('fresh binding per iteration');
         $this->evalJs('var f = []; for (const k in {a:1}) { f.push(function () { return k; }); }');
-    }
-
-    /**
-     * Peast returns the wrong target for `({x = f = 1} = v)` -- the shorthand's
-     * key is lost -- so the shape is refused rather than compiled from a tree
-     * that does not match the source.
-     */
-    public function testShorthandWithAnAssignmentDefaultIsRejected(): void
-    {
-        $this->expectException(CompileError::class);
-        $this->expectExceptionMessage('the parser loses the target');
-        $this->evalJs('var f, x; ({x = f = 1} = {});');
     }
 
     /**

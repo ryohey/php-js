@@ -40,6 +40,13 @@ Peast (ESTree-compliant) is adopted. We do not write our own.
 
 - Parse in ES5 mode; the compiler rejects out-of-scope syntax (classes, generators, etc.) by AST node kind with an immediate error (never silently miscompile).
 - Peast is also a runtime dependency for the `Function` constructor / indirect `eval` (in production runs that execute only precompiled code it sits on a never-autoloaded path, so the cost is effectively zero).
+- A parser bug is fixed in the parser: `composer.json` points at
+  [ryohey/peast](https://github.com/ryohey/peast) rather than working around a
+  wrong AST here. A wrong tree is wrong for every consumer of it — this project,
+  `docs/aot-php.md`'s ahead-of-time compiler, anything else that ever parses
+  with it — and a compiler-side check papering over one shape leaves every
+  other shape the bug can take unguarded. The fork tracks upstream `master` and
+  exists to carry small patches like this until they land there.
 
 ### 2.2 Compiler structure
 
@@ -175,11 +182,15 @@ for code you control; it is no longer the *only* way in.
   generator rather than iterating it. That protocol is the next increment, and it
   carries `for…of` and spread with it.
 
-  One shape is refused for a parser defect rather than a design one: Peast
-  returns the wrong target for a shorthand whose default is itself an assignment
-  (`({x = f = 1} = v)` comes back bound to `f`, having lost `x`). Declarations and
-  parameters parse correctly. The compiler asserts the invariant — a shorthand's
-  target is its key — and refuses when the tree does not match the source.
+  One shape used to be refused for a parser defect rather than a design one:
+  Peast returned the wrong target for a shorthand whose default is itself an
+  assignment (`({x = f = 1} = v)` came back bound to `f`, having lost `x`).
+  Fixed upstream in [ryohey/peast](https://github.com/ryohey/peast) rather than
+  worked around here — a compiler-side check on the tree shape would have had
+  to be re-derived by every consumer of the parser, where the parser itself has
+  exactly one place that builds an `AssignmentProperty` from a shorthand
+  (`expressionToPattern`). `composer.json` pins the fork's branch until the fix
+  lands upstream.
 
 - **The iteration protocol, and `for…of`.** `%IteratorPrototype%`, the array and
   string iterators, `Array.prototype.values`/`keys`/`entries`, and
@@ -219,14 +230,17 @@ for code you control; it is no longer the *only* way in.
   iterator broken, and a broken iterator is not closed — the record is marked
   done before the throw escapes.
 
-  Two early errors are enforced here rather than by the parser, because Peast
-  accepts them in a destructuring *assignment*, where the pattern is
-  reinterpreted from an array literal: a rest element must end its pattern, and
-  it takes no default. One of them, `[...x,]`, survives only in the source text —
-  the parser normalizes the trailing comma away and the AST is identical to
-  `[...x]` — so that single check reads the source, by character offset, since
-  Peast counts characters and one non-ASCII byte earlier in the file would shift
-  a byte-based slice.
+  Two early errors used to be missing for a destructuring *assignment*, where
+  the pattern is reinterpreted from an array or object literal: a rest element
+  must end its pattern, and it takes no default (`[...x, y] = []` and
+  `[...x = 1] = []` both parsed). The binding forms already enforced both from
+  their own grammar, so this was a gap in `expressionToPattern`'s reuse of
+  `SpreadElement`, not a new rule — fixed in the same fork and commit as the
+  shorthand bug above. One of them, `[...x,]`, survives only in the source
+  text: the array literal it is reinterpreted from allows the trailing comma,
+  and the AST is identical to `[...x]` either way, so the parser now records
+  it on the node as it parses rather than trying to recover it later from
+  offsets.
 
   `for…in` heads went through the same machinery, which both fixed patterns
   there and retired the refusal of `for (const k in o)`.

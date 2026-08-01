@@ -37,6 +37,10 @@
       "type": "path",
       "url": "../php-transpile",
       "options": { "symlink": true }
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/ryohey/peast.git"
     }
   ],
   "minimum-stability": "dev",
