@@ -288,6 +288,27 @@ final class Op
      */
     public const YIELD_DELEGATE_STEP = 127;
 
+    /**
+     * SetFunctionName (10.2.11), for the one case its name is not already
+     * baked into the function's template at compile time: a computed
+     * property/method key on an object literal or a class, whose value is
+     * not known until it runs. `k` is a prefix constant ("" / "get " /
+     * "set ", known at compile time even when the key is not).
+     *
+     * `[value, key] -> [value]`. `key` is the same already-`TO_KEY`-converted
+     * string `DEFINE_METHOD_ELEM`/`DEFINE_DATA_ELEM`/etc. will use, not the
+     * raw pre-conversion value -- a symbol's conversion is reversed back to
+     * the original through `Realm::symbolByKey()` to recover its
+     * `[[Description]]` for the bracketed `"[desc]"` form the spec asks for
+     * (or `""`, for a symbol with no description; never the private storage
+     * string that conversion produced). Every other trigger (a `var`/`let`
+     * declarator, a plain assignment to an identifier, a parameter default,
+     * a non-computed property key) has a syntactically static name and
+     * needs no opcode at all -- `Compiler::analyzeMaybeNamed` threads it
+     * straight into the child function's template.
+     */
+    public const SET_FUNC_NAME = 128; // k
+
     public const NOT = 38;
     public const BNOT = 39;
     public const TYPEOF = 40;
@@ -401,6 +422,7 @@ final class Op
         self::GET_SUPER_METHOD => 'k', self::GET_SUPER_METHOD_ELEM => '',
         self::SUPER_CALL => 'c', self::SUPER_CALL_SPREAD => '',
         self::YIELD => 'nn', self::YIELD_DELEGATE_STEP => '',
+        self::SET_FUNC_NAME => 'k',
         self::BAND => '', self::BOR => '', self::BXOR => '',
         self::SHL => '', self::SHR => '', self::USHR => '',
         self::EQ => '', self::NEQ => '', self::SEQ => '', self::SNEQ => '',

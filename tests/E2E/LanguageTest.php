@@ -1173,6 +1173,112 @@ final class LanguageTest extends EvalTestCase
             '7,true', 'function* inner(){ yield 1; } function* outer(){ yield* inner(); yield 99; }'
                 . ' var it = outer(); it.next(); var r = it.return(7); r.value + "," + r.done',
         ];
+
+        // --- NamedEvaluation (SetFunctionName for anonymous functions) ---
+        yield 'a var declaration names its anonymous function initializer' => [
+            'f', 'var f = function(){}; f.name',
+        ];
+        yield 'a let/const declaration names an anonymous arrow initializer' => [
+            'f', 'let f = () => {}; f.name',
+        ];
+        yield 'a plain assignment to a bare identifier names an anonymous function' => [
+            'f', 'var f; f = function(){}; f.name',
+        ];
+        yield 'a function expression keeps its own name over an inferred one' => [
+            'foo', 'var f = function foo(){}; f.name',
+        ];
+        yield 'an anonymous class expression is named by its declaration' => [
+            'C', 'var C = class {}; C.name',
+        ];
+        yield 'a class expression keeps its own name over an inferred one' => [
+            'D', 'var C = class D {}; C.name',
+        ];
+        yield 'parens around the initializer do not defeat naming' => [
+            'f', 'var f = ((function(){})); f.name',
+        ];
+        yield 'parens around a plain-assignment target do defeat naming' => [
+            '', 'var fn; (fn) = function(){}; fn.name',
+        ];
+        yield 'assigning to a member expression does not name the function' => [
+            '', 'var o = {}; o.x = function(){}; o.x.name',
+        ];
+        yield 'reassigning an already-named function does not rename it' => [
+            'f', 'var f = function(){}; var g; g = f; g.name',
+        ];
+        yield 'a sequence expression does not propagate a name' => [
+            '', 'var f = (0, function(){}); f.name',
+        ];
+        yield 'a conditional expression does not propagate a name' => [
+            '', 'var f = true ? function(){} : 0; f.name',
+        ];
+        yield 'a default parameter names its anonymous initializer' => [
+            'f', 'function g(f = function(){}) { return f.name; } g()',
+        ];
+        yield 'an array destructuring default names its anonymous initializer' => [
+            'f', 'var [f = function(){}] = []; f.name',
+        ];
+        yield 'an object destructuring default names its anonymous initializer' => [
+            'f', 'var {f = function(){}} = {}; f.name',
+        ];
+        yield 'a computed destructuring default names its anonymous initializer' => [
+            'f', 'var k = "f"; var {[k]: f = function(){}} = {}; f.name',
+        ];
+        yield 'a non-computed object literal property names its anonymous value' => [
+            'f', '({f: function(){}}).f.name',
+        ];
+        yield 'an object literal keeps a property value\'s own name' => [
+            'foo', '({f: function foo(){}}).f.name',
+        ];
+        yield 'an object literal shorthand method is named by its key' => [
+            'm', '({m(){}}).m.name',
+        ];
+        yield 'an object literal getter is named with a "get " prefix' => [
+            'get g', 'Object.getOwnPropertyDescriptor({get g(){return 1;}}, "g").get.name',
+        ];
+        yield 'an object literal setter is named with a "set " prefix' => [
+            'set s', 'Object.getOwnPropertyDescriptor({set s(v){}}, "s").set.name',
+        ];
+        yield 'a computed object literal property is named at run time' => [
+            'f', 'var k = "f"; ({[k]: function(){}}).f.name',
+        ];
+        yield 'a computed object literal method is named at run time' => [
+            'm', 'var k = "m"; ({[k](){}}).m.name',
+        ];
+        yield 'a computed object literal getter gets its "get " prefix at run time' => [
+            'get g', 'var k = "g"; Object.getOwnPropertyDescriptor({get [k](){return 1;}}, "g").get.name',
+        ];
+        yield 'a computed class method is named at run time' => [
+            'm', 'var k = "m"; class A { [k](){} } (new A()).m.name',
+        ];
+        yield 'a computed static class method is named at run time' => [
+            'm', 'var k = "m"; class A { static [k](){} } A.m.name',
+        ];
+        yield 'a symbol-keyed computed property is named with the bracketed description' => [
+            '[x]', 'var s = Symbol("x"); var o = {[s]: function(){}}; o[s].name',
+        ];
+        yield 'a symbol with no description names the function with an empty string' => [
+            '', 'var s = Symbol(); var o = {[s]: function(){}}; o[s].name',
+        ];
+        yield "a static class member overrides the constructor's own .name" => [
+            'pass', 'var ready = false; class C { static get name(){ return ready ? "pass" : "fail"; } }'
+                . ' ready = true; C.name',
+        ];
+        yield "a static class member overrides the constructor's own .length" => [
+            'function', 'class A { static length(){} } typeof A.length',
+        ];
+        yield "a named function expression's own binding is immutable in sloppy mode (silently ignored)" => [
+            'function', 'var f = function foo(){ foo = 1; return foo; }; typeof f()',
+        ];
+        yield "a named function expression's own binding throws in strict mode" => [
+            'TypeError', '"use strict"; var f = function foo(){ foo = 1; return foo; };'
+                . ' try { f(); "no throw"; } catch (e) { e.constructor.name; }',
+        ];
+        yield 'assigning to a named function expression\'s own binding still evaluates to the right-hand value' => [
+            5, 'var f = function foo(){ return foo = 5; }; f()',
+        ];
+        yield "a named function expression's own binding can still be read (recursion)" => [
+            120, 'var f = function fact(n){ return n < 2 ? 1 : n * fact(n - 1); }; f(5)',
+        ];
     }
 
     #[DataProvider('cases')]

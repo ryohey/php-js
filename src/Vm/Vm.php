@@ -729,6 +729,16 @@ final class Vm
                         }
                         break;
                     }
+                    case Op::SET_FUNC_NAME: {
+                        $prefix = $consts[$code[$pc++]];
+                        $key = $stack[--$sp];
+                        $fn = $stack[$sp - 1];
+                        if ($fn instanceof JSFunctionBase) {
+                            $sym = $realm->symbolByKey($key);
+                            $fn->name = $prefix . ($sym !== null ? ($sym->description !== null ? '[' . $sym->description . ']' : '') : $key);
+                        }
+                        break;
+                    }
                     case Op::NEW_CLASS: {
                         $childIdx = $code[$pc++];
                         $hasSuper = $code[$pc++];

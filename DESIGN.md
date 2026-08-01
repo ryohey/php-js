@@ -252,11 +252,8 @@ for code you control; it is no longer the *only* way in.
   nothing; they take an iterable now.
 
 **Known gaps in what has landed**, all visible as test262 failures rather than
-as silence: `var f = () => {}` does not take the name `f` (NamedEvaluation is
-not implemented for any form, and it is now the single largest failure group at
-48 of them, since a destructuring default names a function too), and two
-malformed-unicode-escape cases in templates are still accepted where they should
-be early errors.
+as silence: two malformed-unicode-escape cases in templates are still accepted
+where they should be early errors.
 
 One refusal is deliberately wider than the spec: a parameter default that
 reaches a parameter declared after it is rejected at compile time, where the
@@ -462,9 +459,73 @@ argument for growing the surface: the skips were hiding real defects.
   generator's own `[[Prototype]]` stays `%Function.prototype%` rather than
   the spec's separate (and practically unobservable) `%GeneratorFunction.prototype%`.
 
-**Next:** per-iteration loop bindings, which retires the refusal above; the
-separate parameter scope; and NamedEvaluation, the largest single failure
-group in test262 and has been since arrow functions landed.
+- **NamedEvaluation** (8.6.2) — `var f = function(){}` naming `f`, and every
+  other form the spec threads a name through: `let`/`const`, a plain
+  assignment to a bare identifier, a parameter default (including inside a
+  destructuring pattern, but only for a bare `SingleNameBinding`, never a
+  nested pattern's own default), and a non-computed object-literal property.
+  Was the single largest failure group in test262 since arrow functions
+  landed; fixing it moved the suite from 93.9% to 96.1%.
+
+  One check carries all of it: `Compiler::analyzeMaybeNamed`, called at each
+  of those sites instead of the ordinary `analyzeNode`, unwraps parens (at
+  any depth — `var f = ((function(){}))` still names it "f") and checks
+  `IsAnonymousFunctionDefinition` before threading the name through the exact
+  mechanism a class method's own key already used to name itself
+  (`analyzeFunction`'s `inferredName` parameter, generalized from what used
+  to be class-method-only `classMethodName`) — SetFunctionName never
+  overrides a name an expression already carries (`function foo(){}` keeps
+  "foo" no matter where it appears), so this has to be a compile-time
+  decision, not a runtime overwrite. One asymmetry survives the paren-unwrap
+  rule: `(fn) = function(){}` does *not* name it, because IsIdentifierRef of
+  the assignment's left side is checked against the source as written, not
+  unwrapped — parens are only ever transparent on the value side.
+
+  A non-computed object-literal key reuses the same mechanism for its
+  method/getter/setter forms too (`{ m(){} }`, `{ get g(){} }`), which turned
+  out to be a gap of its own — `.name` on those was empty before this landed,
+  not just on the NamedEvaluation-eligible `init` form.
+
+  A **computed** key (object-literal or class) is the one case with no
+  compile-time name at all: `{ [k]: function(){} }`'s name depends on
+  evaluating `k`. `SET_FUNC_NAME`, a new opcode, does the naming after the
+  fact, right after the value is created and before it is ever attached to
+  the object — reusing the same key `TO_KEY` already converted rather than
+  the pre-conversion value, with `Realm::symbolByKey()` reversing a symbol's
+  conversion back to its `[[Description]]` for the spec's bracketed
+  `"[desc]"` form (or `""`, for a description-less symbol — never a bracket
+  pair around nothing). This also retired a gap classes landed with: a
+  computed class method's name was simply left blank before, for the same
+  reason (§2.5's class section originally called it out as "the same
+  NamedEvaluation gap ordinary functions already have").
+
+  Two more bugs surfaced chasing this down, neither about NamedEvaluation
+  itself:
+
+  - A named function expression's own binding (`function foo(){}`'s `foo`,
+    visible for recursion inside its own body) was fully mutable. It is
+    supposed to be immutable, but — unlike `const` — created with
+    `CreateImmutableBinding`'s strict parameter `false` (13.2), so an
+    assignment silently does nothing in sloppy code and only throws in
+    strict mode; either way the assignment *expression* still evaluates to
+    the right-hand value, since `PutValue` never actually runs.
+  - `JSFunctionBase::ensureOwn()`, which lazily materializes `.name`/
+    `.length` on first access, did not check whether a class had already
+    installed its own static member under that key first (`class C { static
+    get name(){...} }` is legal and must win — 15.7.14 explicitly overwrites
+    the constructor's own `.name` for exactly this case). The lazy default
+    was clobbering it the first time anything read `.name`.
+
+  **Left as narrower, separate gaps:** eval's dynamic scope resolution does
+  not see a named function expression's own binding (so reassigning it
+  through `eval` in strict mode throws `ReferenceError` instead of
+  `TypeError` — a sharper edge of the same eval-scoping limit as always), and
+  own-property enumeration order for a function's lazily-materialized
+  `.length`/`.name` does not match the spec's creation-time order when a
+  class also defines its own static member under one of those keys.
+
+**Next:** per-iteration loop bindings, which retires the refusal above, and
+the separate parameter scope.
 
 **Deliberately out of scope for now:** ES modules (node-compat resolves
 CommonJS, and published packages overwhelmingly ship it), Proxy and Reflect

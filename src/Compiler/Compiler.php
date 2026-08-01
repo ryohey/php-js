@@ -108,9 +108,14 @@ final class Compiler
     // =========================================================================
 
     /**
-     * @param string|null $classMethodName Non-null for a class method/constructor:
-     *     the name to give the function (SetFunctionName, 15.4.5), since the
-     *     FunctionExpression backing a method is always anonymous in the AST.
+     * @param string|null $inferredName The name to give the function
+     *     (SetFunctionName), when $node does not already carry one of its
+     *     own: always non-null for a class method or constructor, whose
+     *     FunctionExpression is anonymous in the AST by grammar; passed by
+     *     `analyzeMaybeNamed` for every other NamedEvaluation trigger
+     *     (8.6.2) -- a `var`/`let`/`const` declarator, a plain assignment to
+     *     an identifier, a parameter default, a non-computed object-literal
+     *     property -- but only when $node is genuinely anonymous there too.
      */
     private function analyzeFunction(
         object $node,
@@ -119,7 +124,7 @@ final class Compiler
         bool $inClassMethod = false,
         bool $isDerivedConstructor = false,
         bool $isClassConstructor = false,
-        ?string $classMethodName = null,
+        ?string $inferredName = null,
     ): Ctx {
         $ctx = new Ctx();
         $ctx->parent = $parent;
@@ -139,7 +144,7 @@ final class Compiler
             // Arrow functions cannot be generators (no such syntax exists),
             // so this is always exactly `function*`/`*method(){}`.
             $ctx->isGenerator = $node->getGenerator();
-            $ctx->name = $classMethodName
+            $ctx->name = $inferredName
                 ?? ((!$ctx->isArrow && $node->getId() !== null) ? $node->getId()->getName() : '');
             $bodyNode = $node->getBody();
             if ($bodyNode->getType() === 'BlockStatement') {
@@ -280,7 +285,7 @@ final class Compiler
         }
         foreach ($ctx->paramInits as $index => $init) {
             $this->checkInitializerOrder($ctx, $index, $init);
-            $this->analyzeNode($init, $ctx);
+            $this->analyzeMaybeNamed($init, $ctx, $ctx->params[$index]);
         }
         // A pattern's own computed keys and defaults are expressions evaluated
         // in the function's scope, like a parameter default.
@@ -330,7 +335,7 @@ final class Compiler
      * function expression's is (`$ctx->selfBinding`), but shared across every
      * method rather than owned by one function's `Ctx`.
      */
-    private function analyzeClass(object $node, Ctx $ctx): void
+    private function analyzeClass(object $node, Ctx $ctx, ?string $inferredName = null): void
     {
         $superClass = $node->getSuperClass();
         if ($superClass !== null) {
@@ -360,7 +365,7 @@ final class Compiler
             $this->lexStack[] = ['ctx' => $ctx, 'names' => $names];
         }
 
-        $className = $node->getId()?->getName() ?? '';
+        $className = $node->getId()?->getName() ?? $inferredName ?? '';
         $hasCtor = false;
         foreach ($node->getBody()->getBody() as $el) {
             $key = $el->getKey();
@@ -396,9 +401,9 @@ final class Compiler
                 $hasCtor = true;
             }
             // A computed key's name is not known until it runs (and might
-            // never be a string at all), so it falls back to the same
-            // NamedEvaluation gap ordinary functions already have rather than
-            // guessing.
+            // never be a string at all), so it is left empty here -- codegen
+            // (genClass) fills it in at run time with SET_FUNC_NAME instead
+            // of this compile-time template field.
             $methodName = $isCtor ? $className
                 : ($el->getComputed() ? null : $this->methodDisplayName($el));
             $this->analyzeFunction(
@@ -408,7 +413,7 @@ final class Compiler
                 inClassMethod: true,
                 isDerivedConstructor: $isCtor && $superClass !== null,
                 isClassConstructor: $isCtor,
-                classMethodName: $methodName,
+                inferredName: $methodName,
             );
         }
         if (!$hasCtor) {
@@ -425,7 +430,7 @@ final class Compiler
                 inClassMethod: true,
                 isDerivedConstructor: $superClass !== null,
                 isClassConstructor: true,
-                classMethodName: $className,
+                inferredName: $className,
             );
         }
 
@@ -581,7 +586,12 @@ final class Compiler
                 return;
             case 'VariableDeclaration':
                 foreach ($node->getDeclarations() as $d) {
-                    $this->analyzeNode($d->getInit(), $ctx);
+                    $id = $d->getId();
+                    if ($id->getType() === 'Identifier' && $d->getInit() !== null) {
+                        $this->analyzeMaybeNamed($d->getInit(), $ctx, $id->getName());
+                    } else {
+                        $this->analyzeNode($d->getInit(), $ctx);
+                    }
                     // A pattern carries expressions of its own -- computed keys
                     // and defaults -- which are evaluated where the pattern is.
                     $this->analyzePattern($d->getId(), $ctx);
@@ -612,8 +622,20 @@ final class Compiler
                     }
                     if ($p->getComputed()) {
                         $this->analyzeNode($p->getKey(), $ctx);
+                        // The name (SetFunctionName's key, "get "/"set "
+                        // prefix included) is a runtime value here; codegen's
+                        // SET_FUNC_NAME handles it once the key is known.
+                        $this->analyzeNode($p->getValue(), $ctx);
+                        continue;
                     }
-                    $this->analyzeNode($p->getValue(), $ctx);
+                    if ($p->getKind() === 'init') {
+                        $this->analyzeMaybeNamed($p->getValue(), $ctx, $this->propertyKeyString($p->getKey()));
+                    } else {
+                        // A getter/setter's value is always an anonymous
+                        // FunctionExpression by grammar -- there is no "own
+                        // name" that could ever win over the key.
+                        $this->analyzeFunction($p->getValue(), $ctx, false, inferredName: $this->methodDisplayName($p));
+                    }
                 }
                 return;
             case 'SpreadElement':
@@ -646,7 +668,21 @@ final class Compiler
                 } else {
                     $this->analyzeNode($left, $ctx);
                 }
-                $this->analyzeNode($node->getRight(), $ctx);
+                // NamedEvaluation (8.6.2) only reaches a plain `=` to a bare
+                // identifier -- not a compound operator, and not a member
+                // expression, which is why `o.x = function(){}` stays
+                // nameless. IsIdentifierRef checks the *original* left side,
+                // not unwrapped: unlike the right side (where parens are
+                // always transparent to naming), `(fn) = function(){}` stays
+                // nameless too -- a parenthesized reference is not "an
+                // IdentifierRef" even though it is still a legal assignment
+                // target once evaluated as one (test262 fn-name-lhs-cover.js).
+                $rawLeft = $node->getLeft();
+                if ($node->getOperator() === '=' && $rawLeft->getType() === 'Identifier') {
+                    $this->analyzeMaybeNamed($node->getRight(), $ctx, $rawLeft->getName());
+                } else {
+                    $this->analyzeNode($node->getRight(), $ctx);
+                }
                 return;
             }
             case 'BinaryExpression':
@@ -1031,6 +1067,75 @@ final class Compiler
     }
 
     /**
+     * NamedEvaluation (8.6.2): analyze $node, giving it $name if -- and only
+     * if -- it is a genuinely nameless function/arrow/class expression.
+     * SetFunctionName never overrides a name the expression already carries
+     * of its own (`var f = function foo(){}` keeps "foo", not "f"), so this
+     * has to check before threading $name through the same mechanism a
+     * class or object-literal method's own key already uses
+     * (`analyzeFunction`'s `inferredName` / `analyzeClass`'s
+     * `inferredName`). Parens are transparent to NamedEvaluation at any
+     * depth -- `var f = ((function(){}))` still names it "f" -- so this
+     * unwraps them, the same as `isAnonymousFunctionDefinition` does for
+     * the codegen sites where the name is a runtime value instead (a
+     * computed property/method key) and `SET_FUNC_NAME` has to do the
+     * naming after the fact rather than the template already carrying it.
+     */
+    private function analyzeMaybeNamed(?object $node, Ctx $ctx, string $name): void
+    {
+        if ($node === null) {
+            $this->analyzeNode($node, $ctx);
+            return;
+        }
+        $inner = self::unwrapParens($node);
+        $type = $inner->getType();
+        if ($type === 'ArrowFunctionExpression') {
+            $this->analyzeFunction($inner, $ctx, false, inferredName: $name);
+            return;
+        }
+        if ($type === 'FunctionExpression') {
+            if ($inner->getId() !== null) {
+                $this->analyzeNode($inner, $ctx);
+                return;
+            }
+            $this->analyzeFunction($inner, $ctx, false, inferredName: $name);
+            return;
+        }
+        if ($type === 'ClassExpression') {
+            if ($inner->getId() !== null) {
+                $this->analyzeNode($inner, $ctx);
+                return;
+            }
+            $this->analyzeClass($inner, $ctx, $name);
+            return;
+        }
+        $this->analyzeNode($node, $ctx);
+    }
+
+    /**
+     * IsAnonymousFunctionDefinition (8.6.1): is $node -- unwrapped of any
+     * parens -- a function/arrow/class expression with no name of its own?
+     * Used at the codegen sites where a NamedEvaluation-eligible name is
+     * only known at run time (a computed property/method key), to decide
+     * whether `SET_FUNC_NAME` is worth emitting at all; `analyzeMaybeNamed`
+     * is the analysis-pass counterpart, for every other site, where the
+     * name is a compile-time string that ends up baked into the function's
+     * own template instead.
+     */
+    private static function isAnonymousFunctionDefinition(object $node): bool
+    {
+        $node = self::unwrapParens($node);
+        $type = $node->getType();
+        if ($type === 'ArrowFunctionExpression') {
+            return true;
+        }
+        if ($type === 'FunctionExpression' || $type === 'ClassExpression') {
+            return $node->getId() === null;
+        }
+        return false;
+    }
+
+    /**
      * The head of a `for…of` or `for…in`: either a declaration, whose names the
      * enclosing block already bound, or an assignment target.
      */
@@ -1080,10 +1185,20 @@ final class Compiler
                     $this->analyzePattern($p->getValue(), $ctx, $assigning);
                 }
                 return;
-            case 'AssignmentPattern':
-                $this->analyzePattern($target->getLeft(), $ctx, $assigning);
-                $this->analyzeNode($target->getRight(), $ctx);
+            case 'AssignmentPattern': {
+                $left = $target->getLeft();
+                $this->analyzePattern($left, $ctx, $assigning);
+                // NamedEvaluation only reaches a default on a bare
+                // `SingleNameBinding` -- not one behind a nested pattern
+                // (`[{x} = f]`'s `f` stays nameless; the default belongs to
+                // the pattern `{x}`, not to a single name).
+                if ($left->getType() === 'Identifier') {
+                    $this->analyzeMaybeNamed($target->getRight(), $ctx, $left->getName());
+                } else {
+                    $this->analyzeNode($target->getRight(), $ctx);
+                }
                 return;
+            }
             case 'RestElement':
                 $this->analyzePattern($target->getArgument(), $ctx, $assigning);
                 return;
@@ -1706,9 +1821,16 @@ final class Compiler
             $c->emit(Op::GET_LOCAL, $targetSlot);
             $computed = $el->getComputed();
             $kidx = null;
+            $keySlot = null;
             if ($computed) {
                 $this->genExpr($el->getKey());
                 $c->emit(Op::TO_KEY);
+                // A copy survives in a temp slot for SET_FUNC_NAME below,
+                // the same way ObjectExpression's computed keys do: a class
+                // method is always anonymous by grammar, but its name is not
+                // known until this runs.
+                $keySlot = $c->tempAlloc();
+                $c->emit(Op::SET_LOCAL, $keySlot);
             } else {
                 $kidx = $c->constIndex($this->propertyKeyString($el->getKey()));
             }
@@ -1721,12 +1843,21 @@ final class Compiler
             if ($kind === 'get' || $kind === 'set') {
                 $isGet = $kind === 'get';
                 if ($computed) {
+                    $c->emit(Op::GET_LOCAL, $keySlot);
+                    $c->emit(Op::SET_FUNC_NAME, $c->constIndex($isGet ? 'get ' : 'set '));
                     $c->emit($isGet ? Op::DEFINE_CLASS_GETTER_ELEM : Op::DEFINE_CLASS_SETTER_ELEM);
                 } else {
                     $c->emit($isGet ? Op::DEFINE_CLASS_GETTER : Op::DEFINE_CLASS_SETTER, $kidx);
                 }
             } else {
+                if ($computed) {
+                    $c->emit(Op::GET_LOCAL, $keySlot);
+                    $c->emit(Op::SET_FUNC_NAME, $c->constIndex(''));
+                }
                 $c->emit($computed ? Op::DEFINE_METHOD_ELEM : Op::DEFINE_METHOD, ...($computed ? [] : [$kidx]));
+            }
+            if ($keySlot !== null) {
+                $c->tempFree($keySlot);
             }
             $c->emit(Op::POP);
         }
@@ -2561,17 +2692,27 @@ final class Compiler
                         continue;
                     }
                     // A computed key is an expression evaluated here, in
-                    // source order, and converted once.
+                    // source order, and converted once. A copy survives in a
+                    // temp slot for SET_FUNC_NAME below, since a computed
+                    // key's SetFunctionName name (unlike every other
+                    // NamedEvaluation trigger) is not known until this runs.
                     $computed = $p->getComputed();
                     $kidx = null;
+                    $keySlot = null;
                     if ($computed) {
                         $this->genExpr($p->getKey());
                         $c->emit(Op::TO_KEY);
+                        $keySlot = $c->tempAlloc();
+                        $c->emit(Op::SET_LOCAL, $keySlot);
                     } else {
                         $kidx = $c->constIndex($this->propertyKeyString($p->getKey()));
                     }
                     if ($p->getKind() === 'init') {
                         $this->genExpr($p->getValue());
+                        if ($computed && self::isAnonymousFunctionDefinition($p->getValue())) {
+                            $c->emit(Op::GET_LOCAL, $keySlot);
+                            $c->emit(Op::SET_FUNC_NAME, $c->constIndex(''));
+                        }
                         if ($computed) {
                             $c->emit(Op::DEFINE_DATA_ELEM);
                         } else {
@@ -2584,10 +2725,17 @@ final class Compiler
                         $c->emit(Op::NEW_FUNC, $idx);
                         $isGet = $p->getKind() === 'get';
                         if ($computed) {
+                            // Always anonymous by grammar -- no eligibility
+                            // check needed, unlike the 'init' case above.
+                            $c->emit(Op::GET_LOCAL, $keySlot);
+                            $c->emit(Op::SET_FUNC_NAME, $c->constIndex($isGet ? 'get ' : 'set '));
                             $c->emit($isGet ? Op::DEFINE_GETTER_ELEM : Op::DEFINE_SETTER_ELEM);
                         } else {
                             $c->emit($isGet ? Op::DEFINE_GETTER : Op::DEFINE_SETTER, $kidx);
                         }
+                    }
+                    if ($keySlot !== null) {
+                        $c->tempFree($keySlot);
                     }
                 }
                 return;
@@ -3637,6 +3785,20 @@ final class Compiler
                 // The value is evaluated first and then discarded, because the
                 // spec evaluates the right-hand side before it complains.
                 $c->emit(Op::THROW_CONST);
+                return;
+            }
+            if ($b->kind === 'self') {
+                // A named function expression's own binding is immutable,
+                // but -- unlike `const` -- created with CreateImmutableBinding's
+                // strict parameter false (13.2's NamedEvaluation), which means
+                // an assignment silently does nothing in sloppy code rather
+                // than throwing; strict mode throws same as `const` does.
+                // Either way PutValue itself never runs, so this must not
+                // emit a store: the assignment *expression* still evaluates
+                // to the right-hand value sitting on the stack, unstored.
+                if ($c->strict) {
+                    $c->emit(Op::THROW_CONST);
+                }
                 return;
             }
             if (($b->kind === 'let' || $b->kind === 'class') && !$declaring) {
