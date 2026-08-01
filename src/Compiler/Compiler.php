@@ -24,10 +24,29 @@ use PhpJs\Vm\Op;
  */
 final class Compiler
 {
+    /**
+     * The name a derived class's constructor closes over to find its parent
+     * constructor for `super(...)`. Prefixed with a NUL the way a pattern
+     * parameter's synthetic name is, so no source identifier can collide with
+     * it, and scoped to one class body via the same lexStack push/pop
+     * enterBlock uses for a block's bindings.
+     */
+    private const SUPERCLASS_SLOT = "\0superclass";
+
     /** @var \SplObjectStorage<object, Ctx> function node -> analyzed context */
     private \SplObjectStorage $fnCtx;
     /** @var \SplObjectStorage<object, Binding> CatchClause -> catch binding */
     private \SplObjectStorage $catchBind;
+    /**
+     * ClassDeclaration/ClassExpression node -> its synthesized default
+     * constructor's FunctionExpression, for a class that wrote none (12.2.2).
+     * Parsed once per class in the analysis pass and looked up again in
+     * codegen, the same arrangement every other node-keyed table here uses --
+     * the node object is the only thing that ties one pass's work to the
+     * other's.
+     * @var \SplObjectStorage<object, object>
+     */
+    private \SplObjectStorage $syntheticCtors;
     /** @var list<array{ctx: Ctx, names: array<string, Binding>}> */
     private array $lexStack = [];
     private Ctx $cur;
@@ -63,6 +82,7 @@ final class Compiler
         $this->blockScopes = new \SplObjectStorage();
         $this->fnCtx = new \SplObjectStorage();
         $this->catchBind = new \SplObjectStorage();
+        $this->syntheticCtors = new \SplObjectStorage();
         $this->compilationId = self::$nextCompilationId++;
     }
 
@@ -87,12 +107,27 @@ final class Compiler
     // Pass 1: scope analysis
     // =========================================================================
 
-    private function analyzeFunction(object $node, ?Ctx $parent, bool $isProgram): Ctx
-    {
+    /**
+     * @param string|null $classMethodName Non-null for a class method/constructor:
+     *     the name to give the function (SetFunctionName, 15.4.5), since the
+     *     FunctionExpression backing a method is always anonymous in the AST.
+     */
+    private function analyzeFunction(
+        object $node,
+        ?Ctx $parent,
+        bool $isProgram,
+        bool $inClassMethod = false,
+        bool $isDerivedConstructor = false,
+        bool $isClassConstructor = false,
+        ?string $classMethodName = null,
+    ): Ctx {
         $ctx = new Ctx();
         $ctx->parent = $parent;
         $ctx->isProgram = $isProgram;
-        $ctx->strict = ($parent?->strict ?? false);
+        $ctx->strict = ($parent?->strict ?? false) || $inClassMethod;
+        $ctx->inClassMethod = $inClassMethod;
+        $ctx->isDerivedConstructor = $isDerivedConstructor;
+        $ctx->isClassConstructor = $isClassConstructor;
 
         if ($isProgram) {
             $body = $node->getBody();
@@ -104,7 +139,8 @@ final class Compiler
                 $this->unsupported($node, 'Async functions are not supported (ES5 target)');
             }
             $ctx->isArrow = $node->getType() === 'ArrowFunctionExpression';
-            $ctx->name = (!$ctx->isArrow && $node->getId() !== null) ? $node->getId()->getName() : '';
+            $ctx->name = $classMethodName
+                ?? ((!$ctx->isArrow && $node->getId() !== null) ? $node->getId()->getName() : '');
             $bodyNode = $node->getBody();
             if ($bodyNode->getType() === 'BlockStatement') {
                 $body = $bodyNode->getBody();
@@ -260,7 +296,8 @@ final class Compiler
         }
 
         foreach ($ctx->extraBindings as $b) {
-            if ($b->inLoop && $b->captured && ($b->kind === 'let' || $b->kind === 'const')) {
+            if ($b->inLoop && $b->captured
+                && ($b->kind === 'let' || $b->kind === 'const' || $b->kind === 'class')) {
                 // Each iteration should give `$b->name` a binding of its own, so
                 // that closures made in different iterations see different
                 // values. One slot is reused instead, which would hand every
@@ -278,6 +315,141 @@ final class Compiler
             $this->fnCtx[$node] = $ctx;
         }
         return $ctx;
+    }
+
+    /**
+     * A class declaration or expression. The superclass expression (if any)
+     * is evaluated in the *enclosing* scope -- `extends` cannot see the
+     * class's own name or `super(...)`'s target, both of which exist only
+     * from here down.
+     *
+     * Every method (constructor included) closes over up to two names pushed
+     * onto `lexStack` for exactly this class body: the superclass reference
+     * `super(...)` resolves against, and -- for a named class expression only
+     * -- the class's own name, visible inside the body the way a named
+     * function expression's is (`$ctx->selfBinding`), but shared across every
+     * method rather than owned by one function's `Ctx`.
+     */
+    private function analyzeClass(object $node, Ctx $ctx): void
+    {
+        $superClass = $node->getSuperClass();
+        if ($superClass !== null) {
+            $this->analyzeNode($superClass, $ctx);
+        }
+
+        $names = [];
+        if ($superClass !== null) {
+            $superBinding = new Binding($ctx, self::SUPERCLASS_SLOT, 'var');
+            $ctx->extraBindings[] = $superBinding;
+            $names[self::SUPERCLASS_SLOT] = $superBinding;
+        }
+        if ($node->getType() === 'ClassExpression' && $node->getId() !== null) {
+            $selfName = $node->getId()->getName();
+            // Always strict, for the reason enterBlock's 'class' case is.
+            $this->checkIdentifierName($selfName, true, $node->getId());
+            $selfBinding = new Binding($ctx, $selfName, 'class');
+            $ctx->extraBindings[] = $selfBinding;
+            $names[$selfName] = $selfBinding;
+        }
+        if ($names !== []) {
+            // Recorded the way enterBlock records a block's bindings, so
+            // genClass can push the very same Binding objects back onto
+            // lexStack instead of building new ones (which assignSlots has
+            // already assigned slots to, by the time codegen runs).
+            $this->blockScopes[$node] = $names;
+            $this->lexStack[] = ['ctx' => $ctx, 'names' => $names];
+        }
+
+        $className = $node->getId()?->getName() ?? '';
+        $hasCtor = false;
+        foreach ($node->getBody()->getBody() as $el) {
+            $key = $el->getKey();
+            if ($key->getType() === 'PrivateIdentifier') {
+                // An object-model change (DESIGN.md §2.5's "deliberately out of
+                // scope"): a private name is not a property key at all, it is
+                // its own kind of slot with its own access rules.
+                $this->unsupported($el, 'Private class members are not supported');
+            }
+            if ($el->getType() === 'PropertyDefinition') {
+                $this->unsupported($el, 'Class fields are not supported yet');
+            }
+            if ($el->getComputed()) {
+                $this->analyzeNode($key, $ctx);
+            } else {
+                // Two early errors that only apply to a literal key -- a
+                // computed one is never known until it runs, so the spec does
+                // not (and cannot) reach these for it (15.7.1).
+                $literalKey = $this->propertyKeyString($key);
+                $kind = $el->getKind();
+                if (!$el->getStatic() && $literalKey === 'constructor' && ($kind === 'get' || $kind === 'set')) {
+                    $this->fail($el, "Class constructor may not be an accessor");
+                }
+                if ($el->getStatic() && $literalKey === 'prototype') {
+                    $this->fail($el, "Classes may not have a static property named 'prototype'");
+                }
+            }
+            $isCtor = $el->getKind() === 'constructor';
+            if ($isCtor) {
+                if ($hasCtor) {
+                    $this->fail($el, 'A class may only have one constructor');
+                }
+                $hasCtor = true;
+            }
+            // A computed key's name is not known until it runs (and might
+            // never be a string at all), so it falls back to the same
+            // NamedEvaluation gap ordinary functions already have rather than
+            // guessing.
+            $methodName = $isCtor ? $className
+                : ($el->getComputed() ? null : $this->methodDisplayName($el));
+            $this->analyzeFunction(
+                $el->getValue(),
+                $ctx,
+                false,
+                inClassMethod: true,
+                isDerivedConstructor: $isCtor && $superClass !== null,
+                isClassConstructor: $isCtor,
+                classMethodName: $methodName,
+            );
+        }
+        if (!$hasCtor) {
+            $ctorNode = self::parseExpression(
+                $superClass !== null
+                    ? '(function (...args) { super(...args); })'
+                    : '(function () {})'
+            );
+            $this->syntheticCtors[$node] = $ctorNode;
+            $this->analyzeFunction(
+                $ctorNode,
+                $ctx,
+                false,
+                inClassMethod: true,
+                isDerivedConstructor: $superClass !== null,
+                isClassConstructor: true,
+                classMethodName: $className,
+            );
+        }
+
+        if ($names !== []) {
+            array_pop($this->lexStack);
+        }
+    }
+
+    /** Parse a single expression from a source fragment (used to synthesize AST nodes). */
+    private static function parseExpression(string $src): object
+    {
+        $expr = Peast::latest($src . ';', ['sourceType' => 'script'])->parse()->getBody()[0]->getExpression();
+        return self::unwrapParens($expr);
+    }
+
+    /** A method's `.name` (15.4.5): the key, `get `/`set `-prefixed for an accessor. */
+    private function methodDisplayName(object $method): string
+    {
+        $name = $this->propertyKeyString($method->getKey());
+        return match ($method->getKind()) {
+            'get' => "get $name",
+            'set' => "set $name",
+            default => $name,
+        };
     }
 
     /** Collect var/function declarations without descending into nested functions. */
@@ -403,6 +575,10 @@ final class Compiler
             case 'ArrowFunctionExpression':
                 $this->analyzeFunction($node, $ctx, false);
                 return;
+            case 'ClassDeclaration':
+            case 'ClassExpression':
+                $this->analyzeClass($node, $ctx);
+                return;
             case 'VariableDeclaration':
                 foreach ($node->getDeclarations() as $d) {
                     $this->analyzeNode($d->getInit(), $ctx);
@@ -419,7 +595,11 @@ final class Compiler
                 }
                 return;
             case 'MemberExpression':
-                $this->analyzeNode($node->getObject(), $ctx);
+                if ($node->getObject()->getType() === 'Super') {
+                    $this->checkSuperAllowed($ctx, $node);
+                } else {
+                    $this->analyzeNode($node->getObject(), $ctx);
+                }
                 if ($node->getComputed()) {
                     $this->analyzeNode($node->getProperty(), $ctx);
                 }
@@ -483,13 +663,35 @@ final class Compiler
                 $this->analyzeNode($node->getConsequent(), $ctx);
                 $this->analyzeNode($node->getAlternate(), $ctx);
                 return;
-            case 'CallExpression':
             case 'NewExpression':
                 $this->analyzeNode($node->getCallee(), $ctx);
                 foreach ($node->getArguments() as $a) {
                     $this->analyzeNode($a, $ctx);
                 }
                 return;
+            case 'CallExpression': {
+                $callee = self::unwrapParens($node->getCallee());
+                if ($callee->getType() === 'Super') {
+                    if (!$ctx->isDerivedConstructor) {
+                        $this->fail($node, "'super' keyword is only valid inside a derived class constructor");
+                    }
+                    // The reference the codegen pass will resolve to find the
+                    // parent constructor -- an ordinary closure capture of the
+                    // name enterClass bound around the whole class body.
+                    $this->analyzeReference(self::SUPERCLASS_SLOT, $ctx, $node);
+                } elseif ($callee->getType() === 'MemberExpression' && $callee->getObject()->getType() === 'Super') {
+                    $this->checkSuperAllowed($ctx, $callee);
+                    if ($callee->getComputed()) {
+                        $this->analyzeNode($callee->getProperty(), $ctx);
+                    }
+                } else {
+                    $this->analyzeNode($callee, $ctx);
+                }
+                foreach ($node->getArguments() as $a) {
+                    $this->analyzeNode($a, $ctx);
+                }
+                return;
+            }
             case 'TaggedTemplateExpression':
                 $this->analyzeNode($node->getTag(), $ctx);
                 foreach ($node->getQuasi()->getExpressions() as $expr) {
@@ -724,6 +926,18 @@ final class Compiler
     {
         $names = [];
         foreach ($stmts as $stmt) {
+            if ($stmt->getType() === 'ClassDeclaration') {
+                // A class binding is lexical too, and immutable like `const`
+                // (12.2.1): `emitStoreName`'s const check already covers
+                // 'class', so nothing else has to know it isn't 'const' itself.
+                $id = $stmt->getId();
+                $name = $id->getName();
+                if (isset($names[$name])) {
+                    $this->fail($id, "Identifier '$name' has already been declared");
+                }
+                $names[$name] = 'class';
+                continue;
+            }
             if ($stmt->getType() !== 'VariableDeclaration') {
                 continue;
             }
@@ -1055,7 +1269,15 @@ final class Compiler
                 if (isset($taken[$name])) {
                     $this->fail($owner, "Identifier '$name' has already been declared");
                 }
-                $this->checkBindingName($ctx, $name, $owner);
+                if ($kind === 'class') {
+                    // A class's own name is always evaluated as strict-mode
+                    // code (15.7.1), regardless of whether the declaration
+                    // itself sits in sloppy code -- so `let`/`static`/`yield`
+                    // are reserved for it even outside a "use strict" file.
+                    $this->checkIdentifierName($name, true, $owner);
+                } else {
+                    $this->checkBindingName($ctx, $name, $owner);
+                }
                 $b = new Binding($ctx, $name, $kind);
                 $b->inLoop = $this->loopDepth > 0;
                 $ctx->extraBindings[] = $b;
@@ -1169,6 +1391,27 @@ final class Compiler
                 $this->unsupported(null, "'arguments' inside an arrow function is not supported yet");
             }
             $ctx->usesArguments = true;
+        }
+    }
+
+    /**
+     * `super.prop` / `super.method()`: legal directly inside a class method,
+     * including the constructor -- not inside a further-nested ordinary
+     * function, which would need its own `[[HomeObject]]` and has none.
+     *
+     * An arrow *should* inherit `super` the way it inherits `this`
+     * (`$ctx->inClassMethod` is not threaded onto one for exactly that
+     * reason), but resolving it would need [[HomeObject]] carried through the
+     * closure the way `lexicalThis` is, which is not implemented -- so it is
+     * refused here rather than resolved to the wrong scope.
+     */
+    private function checkSuperAllowed(Ctx $ctx, object $node): void
+    {
+        if ($ctx->isArrow) {
+            $this->unsupported($node, "'super' inside an arrow function is not supported yet");
+        }
+        if (!$ctx->inClassMethod) {
+            $this->fail($node, "'super' keyword is only valid inside a class");
         }
     }
 
@@ -1385,6 +1628,118 @@ final class Compiler
         return count($parentCtx->children) - 1;
     }
 
+    /**
+     * A class declaration or expression, as an expression that leaves the
+     * constructor on the stack. `genStmt`'s ClassDeclaration case binds it to
+     * the class's name; ClassExpression's own case in genExpr just returns
+     * here.
+     *
+     * The constructor and prototype come from one NEW_CLASS -- see its
+     * doc comment for why extends is resolved there rather than with
+     * ordinary Object.create-style opcodes -- and everything after holds
+     * both in temp slots rather than juggling stack order, since a method
+     * definition needs whichever of the two is its target (prototype for an
+     * instance member, the constructor itself for a static one) both before
+     * and after building the method function.
+     */
+    private function genClass(object $node): void
+    {
+        $c = $this->cur;
+        $superClass = $node->getSuperClass();
+        $hasSuper = $superClass !== null;
+
+        // Re-push the same lexStack entry the analysis pass used, so
+        // `super(...)` and a named class expression's self-reference resolve
+        // to the Binding objects assignSlots already gave slots to.
+        $scoped = $this->blockScopes->contains($node);
+        if ($scoped) {
+            $this->lexStack[] = ['ctx' => $c, 'names' => $this->blockScopes[$node]];
+        }
+
+        if ($hasSuper) {
+            $this->genExpr($superClass);
+            // SET_LOCAL/SET_ENV keep the value on the stack, so this needs no
+            // DUP: NEW_CLASS still finds it on top right after.
+            $this->emitStoreBinding($this->resolve(self::SUPERCLASS_SLOT));
+        }
+        $c->emit(Op::NEW_CLASS, $this->compileClassCtor($node), $hasSuper ? 1 : 0);
+
+        // NEW_CLASS leaves [ctor, proto] -- proto on top -- so it comes off
+        // the stack first.
+        $protoSlot = $c->tempAlloc();
+        $c->emit(Op::SET_LOCAL, $protoSlot);
+        $c->emit(Op::POP);
+        $ctorSlot = $c->tempAlloc();
+        $c->emit(Op::SET_LOCAL, $ctorSlot);
+        $c->emit(Op::POP);
+
+        if ($node->getType() === 'ClassExpression' && $node->getId() !== null) {
+            $c->emit(Op::GET_LOCAL, $ctorSlot);
+            $this->emitStoreBinding($this->resolve($node->getId()->getName()));
+            $c->emit(Op::POP);
+        }
+
+        foreach ($node->getBody()->getBody() as $el) {
+            if ($el->getKind() === 'constructor') {
+                continue; // already built into the constructor template itself
+            }
+            $targetSlot = $el->getStatic() ? $ctorSlot : $protoSlot;
+            $c->emit(Op::GET_LOCAL, $targetSlot);
+            $computed = $el->getComputed();
+            $kidx = null;
+            if ($computed) {
+                $this->genExpr($el->getKey());
+                $c->emit(Op::TO_KEY);
+            } else {
+                $kidx = $c->constIndex($this->propertyKeyString($el->getKey()));
+            }
+            $childCtx = $this->fnCtx[$el->getValue()];
+            $idx = $this->compileChild($childCtx, $el->getValue());
+            $c->emit(Op::NEW_FUNC, $idx);
+            $c->emit(Op::GET_LOCAL, $targetSlot);
+            $c->emit(Op::SET_HOME_OBJECT);
+            $kind = $el->getKind();
+            if ($kind === 'get' || $kind === 'set') {
+                $isGet = $kind === 'get';
+                if ($computed) {
+                    $c->emit($isGet ? Op::DEFINE_CLASS_GETTER_ELEM : Op::DEFINE_CLASS_SETTER_ELEM);
+                } else {
+                    $c->emit($isGet ? Op::DEFINE_CLASS_GETTER : Op::DEFINE_CLASS_SETTER, $kidx);
+                }
+            } else {
+                $c->emit($computed ? Op::DEFINE_METHOD_ELEM : Op::DEFINE_METHOD, ...($computed ? [] : [$kidx]));
+            }
+            $c->emit(Op::POP);
+        }
+
+        $c->emit(Op::GET_LOCAL, $ctorSlot);
+        $c->tempFree($protoSlot);
+        $c->tempFree($ctorSlot);
+        if ($scoped) {
+            array_pop($this->lexStack);
+        }
+    }
+
+    /**
+     * The constructor's child template index -- the explicit `constructor`
+     * method if the class wrote one, otherwise the node `analyzeClass`
+     * synthesized and parked in `$syntheticCtors` keyed by this same class
+     * node (12.2.2's default constructor).
+     */
+    private function compileClassCtor(object $node): int
+    {
+        $ctorNode = null;
+        foreach ($node->getBody()->getBody() as $el) {
+            if ($el->getKind() === 'constructor') {
+                $ctorNode = $el->getValue();
+                break;
+            }
+        }
+        $ctorNode ??= $this->syntheticCtors[$node];
+        $childCtx = $this->fnCtx[$ctorNode];
+        return $this->compileChild($childCtx, $ctorNode);
+    }
+
     // ---- statements ---------------------------------------------------------
 
     private function genStmt(?object $node): void
@@ -1447,6 +1802,11 @@ final class Compiler
             }
             case 'FunctionDeclaration':
                 return; // hoisted in the prologue
+            case 'ClassDeclaration':
+                $this->genClass($node);
+                $this->emitStoreName($node->getId()->getName(), true);
+                $c->emit(Op::POP);
+                return;
             case 'EmptyStatement':
             case 'DebuggerStatement':
                 return;
@@ -1719,9 +2079,10 @@ final class Compiler
         if (!$binding instanceof Binding || $binding->captured) {
             return false;
         }
-        if ($binding->kind === 'let' || $binding->kind === 'const') {
+        if ($binding->kind === 'let' || $binding->kind === 'const' || $binding->kind === 'class') {
             // The fused form is a bare slot bump: it would skip the dead-zone
-            // check on the read and the TypeError on writing a `const`.
+            // check on the read and the TypeError on writing a `const`
+            // (a class binding is just as immutable).
             return false;
         }
         if ($this->cur->strict) {
@@ -2014,6 +2375,9 @@ final class Compiler
                 $c->emit(Op::NEW_FUNC, $idx);
                 return;
             }
+            case 'ClassExpression':
+                $this->genClass($node);
+                return;
             case 'ArrayExpression': {
                 $elements = $node->getElements();
                 if (!self::hasSpread($elements)) {
@@ -2086,6 +2450,15 @@ final class Compiler
                 }
                 return;
             case 'MemberExpression':
+                if ($node->getObject()->getType() === 'Super') {
+                    if ($node->getComputed()) {
+                        $this->genExpr($node->getProperty());
+                        $c->emit(Op::GET_SUPER_ELEM);
+                    } else {
+                        $c->emit(Op::GET_SUPER, $c->constIndex($node->getProperty()->getName()));
+                    }
+                    return;
+                }
                 $this->genExpr($node->getObject());
                 if ($node->getComputed()) {
                     $this->genExpr($node->getProperty());
@@ -2096,7 +2469,32 @@ final class Compiler
                 return;
             case 'CallExpression': {
                 $callee = self::unwrapParens($node->getCallee());
-                if ($callee->getType() === 'MemberExpression') {
+                $args = $node->getArguments();
+                if ($callee->getType() === 'Super') {
+                    // `super(...)`: the parent constructor -- closed over the
+                    // way any other captured name is -- run against the `this`
+                    // the derived class's own [[Construct]] already built.
+                    $this->emitLoadName(self::SUPERCLASS_SLOT);
+                    $c->emit(Op::PUSH_THIS);
+                    if (self::hasSpread($args)) {
+                        $this->genArgumentArray($args);
+                        $c->emit(Op::SUPER_CALL_SPREAD);
+                        return;
+                    }
+                    foreach ($args as $a) {
+                        $this->genExpr($a);
+                    }
+                    $c->emit(Op::SUPER_CALL, count($args));
+                    return;
+                }
+                if ($callee->getType() === 'MemberExpression' && $callee->getObject()->getType() === 'Super') {
+                    if ($callee->getComputed()) {
+                        $this->genExpr($callee->getProperty());
+                        $c->emit(Op::GET_SUPER_METHOD_ELEM);
+                    } else {
+                        $c->emit(Op::GET_SUPER_METHOD, $c->constIndex($callee->getProperty()->getName()));
+                    }
+                } elseif ($callee->getType() === 'MemberExpression') {
                     $this->genExpr($callee->getObject());
                     if ($callee->getComputed()) {
                         $this->genExpr($callee->getProperty());
@@ -2108,7 +2506,6 @@ final class Compiler
                     $this->genExpr($callee);
                     $c->emit(Op::PUSH_UNDEF);
                 }
-                $args = $node->getArguments();
                 if (self::hasSpread($args)) {
                     // [func this argsArray]: the count is only known at run
                     // time, so the arguments travel as an array.
@@ -3079,7 +3476,7 @@ final class Compiler
         } else {
             $c->emit(Op::GET_LOCAL, $b->slot);
         }
-        if ($b->kind === 'let' || $b->kind === 'const') {
+        if ($b->kind === 'let' || $b->kind === 'const' || $b->kind === 'class') {
             // Unconditional for now. Most reads are provably past their
             // declaration, but proving it needs flow analysis this compiler
             // does not have, and answering `undefined` inside the dead zone
@@ -3100,10 +3497,14 @@ final class Compiler
                 $c->emit(Op::THROW_CONST);
                 return;
             }
-            if ($b->kind === 'let' && !$declaring) {
-                // Writing to a `let` before its declaration runs is a
-                // ReferenceError just as reading one is, so the dead zone is
-                // checked on the way in too. A load already carries the check.
+            if (($b->kind === 'let' || $b->kind === 'class') && !$declaring) {
+                // Writing to a `let` (or a class binding, which despite being
+                // no more reassignable in practice than a function
+                // declaration's name is actually mutable per spec -- 15.7.14
+                // creates it with CreateMutableBinding, not Immutable) before
+                // its declaration runs is a ReferenceError just as reading one
+                // is, so the dead zone is checked on the way in too. A load
+                // already carries the check.
                 $this->emitLoadBinding($b);
                 $c->emit(Op::POP);
             }

@@ -20,6 +20,26 @@ final class Ctx
      * constructible. See DESIGN.md §2.5.
      */
     public bool $isArrow = false;
+    /**
+     * A class's constructor: `[[Call]]` is refused (must be `new`ed), and
+     * `.prototype` is non-writable/non-enumerable/non-configurable rather than
+     * the writable slot an ordinary function gets.
+     */
+    public bool $isClassConstructor = false;
+    /**
+     * Directly inside a class method or the constructor -- not a nested
+     * ordinary function, and not (yet) an arrow, which would need to inherit
+     * this the way it inherits `this` and is refused instead (DESIGN.md §2.5).
+     * Enables `super.prop` / `super.method()`, which read the current
+     * function's `[[HomeObject]]`.
+     */
+    public bool $inClassMethod = false;
+    /**
+     * Directly the constructor of a class with an `extends` clause. Enables
+     * `super(...)`, which is a SyntaxError anywhere else -- including a
+     * non-derived constructor, which has no superclass to call.
+     */
+    public bool $isDerivedConstructor = false;
     /** For `x => expr`, the expression standing in for a body. */
     public ?object $arrowBody = null;
     /**
@@ -181,6 +201,7 @@ final class Ctx
             'nenv' => $this->nenv,
             'usesArgs' => $this->usesArguments,
             'arrow' => $this->isArrow,
+            'classCtor' => $this->isClassConstructor,
             'argMap' => $this->argMap,
             'code' => $this->code,
             'consts' => $this->consts,

@@ -30,12 +30,36 @@ final class JSFunction extends JSFunctionBase
      * one's frame, whose `this` is already the captured value.
      */
     public mixed $lexicalThis = null;
+    /**
+     * `[[Call]]` on a class constructor is a TypeError -- it must be `new`ed.
+     * Set from the template rather than inferred, because NEW_CLASS is the
+     * only opcode that produces one and it already knows.
+     */
+    public bool $isClassConstructor = false;
+    /**
+     * `[[HomeObject]]` (15.7.9): the object `super.prop` / `super.method()`
+     * resolve against -- the class's `.prototype` for an instance method, the
+     * class (constructor) itself for a static one. Null for anything that was
+     * never a class member, which is also what makes `super` outside a class
+     * a compile-time refusal rather than a runtime null-check.
+     */
+    public ?JSObject $homeObject = null;
 
     public function __construct(
         /** @var array<string, mixed> function template (plain array, shared) */
         public array $template,
         public ?JSEnv $env,
         public Realm $realm,
+        /**
+         * Non-null only for a class constructor: the already-built prototype
+         * object NEW_CLASS constructed from the superclass (or Object.prototype,
+         * or null for `extends null`). Passed in rather than materialized lazily
+         * like an ordinary function's, because .prototype has to exist -- with
+         * non-writable/non-enumerable/non-configurable attributes an ordinary
+         * function's never has -- before the class body's methods can be
+         * attached to it.
+         */
+        ?JSObject $classProto = null,
     ) {
         parent::__construct($realm->functionPrototype());
         $this->isArrow = !empty($template['arrow']);
@@ -44,6 +68,11 @@ final class JSFunction extends JSFunctionBase
         $id = $template['nativeId'] ?? null;
         if ($id !== null && \PhpJs\Builtins\BuiltinRegistry::hasHost($id)) {
             $this->nativeId = $id;
+        }
+        if ($classProto !== null) {
+            $this->isClassConstructor = !empty($template['classCtor']);
+            $this->protoMade = true;
+            $this->defineOwnData('prototype', $classProto, 0);
         }
     }
 

@@ -112,6 +112,13 @@ final class Vm
         if (!$fn instanceof JSFunction) {
             $this->throwError('TypeError', Conversions::toString($this, TypeOps::typeofOp($fn)) . ' is not a function');
         }
+        if ($fn->isClassConstructor && $ctorObj === null) {
+            // Reached from a native caller (a callback slot, a builtin that
+            // invokes what it was handed) rather than through CALL, but the
+            // same rule: [[Call]] without `new` is a TypeError regardless of
+            // where the attempt comes from.
+            $this->throwError('TypeError', "Class constructor {$fn->name} cannot be invoked without 'new'");
+        }
         if ($fn->nativeId !== null) {
             return (BuiltinRegistry::get($fn->nativeId))(
                 $this,
@@ -501,6 +508,165 @@ final class Vm
                             $isGetter ? $keep : $fn,
                             JSObject::E | JSObject::C
                         );
+                        break;
+                    }
+                    case Op::DEFINE_METHOD: {
+                        $key = $consts[$code[$pc++]];
+                        $fn = $stack[--$sp];
+                        // Not DEFAULT_ATTRS: a class method is non-enumerable
+                        // (15.7.10), where an object literal's is not.
+                        $stack[$sp - 1]->defineOwnData($key, $fn, JSObject::W | JSObject::C);
+                        break;
+                    }
+                    case Op::DEFINE_METHOD_ELEM: {
+                        $fn = $stack[--$sp];
+                        $key = $this->propertyKey($stack[--$sp]);
+                        $stack[$sp - 1]->defineOwnData($key, $fn, JSObject::W | JSObject::C);
+                        break;
+                    }
+                    case Op::DEFINE_CLASS_GETTER:
+                    case Op::DEFINE_CLASS_SETTER: {
+                        $isGetter = $op === Op::DEFINE_CLASS_GETTER;
+                        $key = $consts[$code[$pc++]];
+                        $fn = $stack[--$sp];
+                        $obj = $stack[$sp - 1];
+                        $prev = $obj->descs[$key] ?? null;
+                        $keep = ($prev !== null && ($prev[2] & JSObject::ACCESSOR))
+                            ? ($isGetter ? $prev[1] : $prev[0])
+                            : null;
+                        // Non-enumerable, unlike DEFINE_GETTER/SETTER's object
+                        // literal form.
+                        $obj->defineOwnAccessor($key, $isGetter ? $fn : $keep, $isGetter ? $keep : $fn, JSObject::C);
+                        break;
+                    }
+                    case Op::DEFINE_CLASS_GETTER_ELEM:
+                    case Op::DEFINE_CLASS_SETTER_ELEM: {
+                        $isGetter = $op === Op::DEFINE_CLASS_GETTER_ELEM;
+                        $fn = $stack[--$sp];
+                        $key = $this->propertyKey($stack[--$sp]);
+                        $obj = $stack[$sp - 1];
+                        $prev = $obj->descs[$key] ?? null;
+                        $keep = ($prev !== null && ($prev[2] & JSObject::ACCESSOR))
+                            ? ($isGetter ? $prev[1] : $prev[0])
+                            : null;
+                        $obj->defineOwnAccessor($key, $isGetter ? $fn : $keep, $isGetter ? $keep : $fn, JSObject::C);
+                        break;
+                    }
+                    case Op::SET_HOME_OBJECT: {
+                        $home = $stack[--$sp];
+                        $func = $stack[$sp - 1];
+                        if ($func instanceof JSFunction && $home instanceof JSObject) {
+                            $func->homeObject = $home;
+                        }
+                        break;
+                    }
+                    case Op::NEW_CLASS: {
+                        $childIdx = $code[$pc++];
+                        $hasSuper = $code[$pc++];
+                        $superVal = $hasSuper ? $stack[--$sp] : false;
+                        $this->sp = $sp;
+
+                        $ctorParent = null;      // static-side [[Prototype]]; null keeps the default
+                        if (!$hasSuper) {
+                            $protoParent = $realm->objectPrototype();
+                        } elseif ($superVal === null) {
+                            // `extends null`: a prototype with no [[Prototype]]
+                            // at all, still a legal (if unusual) base.
+                            $protoParent = null;
+                        } else {
+                            if ($superVal instanceof JSNativeFunction
+                                || ($superVal instanceof JSFunction && $superVal->nativeId !== null)) {
+                                // A native constructor builds its own object
+                                // and returns it rather than initializing the
+                                // one SUPER_CALL already has (see JSFunction's
+                                // and BuiltinRegistry's calling convention) --
+                                // running it against an existing `this` would
+                                // silently drop everything it sets up.
+                                $this->throwError(
+                                    'TypeError',
+                                    'Extending a native constructor is not supported yet'
+                                );
+                            }
+                            if (!$superVal instanceof JSFunction || $superVal->isArrow) {
+                                $this->throwError(
+                                    'TypeError',
+                                    'Class extends value ' . Conversions::toString($this, TypeOps::typeofOp($superVal))
+                                        . ' is not a constructor or null'
+                                );
+                            }
+                            $protoParent = $superVal->get('prototype', $this);
+                            if ($protoParent !== null && !$protoParent instanceof JSObject) {
+                                $this->throwError(
+                                    'TypeError',
+                                    'Class extends value does not have valid prototype property'
+                                );
+                            }
+                            $ctorParent = $superVal;
+                        }
+
+                        $proto = new JSObject($protoParent);
+                        $ctor = new JSFunction($tpl['children'][$childIdx], $env, $realm, $proto);
+                        if ($ctorParent !== null) {
+                            $ctor->proto = $ctorParent;
+                        }
+                        $proto->defineOwnData('constructor', $ctor, JSObject::W | JSObject::C);
+
+                        $stack[$sp++] = $ctor;
+                        $stack[$sp++] = $proto;
+                        break;
+                    }
+                    case Op::GET_SUPER:
+                    case Op::GET_SUPER_ELEM: {
+                        $key = $op === Op::GET_SUPER ? $consts[$code[$pc++]] : $this->propertyKey($stack[--$sp]);
+                        $home = $frame[self::F_FUNC] instanceof JSFunction ? $frame[self::F_FUNC]->homeObject : null;
+                        $superProto = $home?->proto;
+                        $this->sp = $sp;
+                        $stack[$sp++] = $superProto === null ? JSUndefined::$undefined
+                            : $superProto->get($key, $this, $frame[self::F_THIS]);
+                        break;
+                    }
+                    case Op::GET_SUPER_METHOD:
+                    case Op::GET_SUPER_METHOD_ELEM: {
+                        $key = $op === Op::GET_SUPER_METHOD ? $consts[$code[$pc++]] : $this->propertyKey($stack[--$sp]);
+                        $home = $frame[self::F_FUNC] instanceof JSFunction ? $frame[self::F_FUNC]->homeObject : null;
+                        $superProto = $home?->proto;
+                        $this->sp = $sp;
+                        $stack[$sp++] = $superProto === null ? JSUndefined::$undefined
+                            : $superProto->get($key, $this, $frame[self::F_THIS]);
+                        $stack[$sp++] = $frame[self::F_THIS];
+                        break;
+                    }
+                    case Op::SUPER_CALL: {
+                        $argc = $code[$pc++];
+                        $args = [];
+                        for ($i = $argc; $i > 0; $i--) {
+                            $args[$argc - $i] = $stack[$sp - $i];
+                        }
+                        $sp -= $argc;
+                        $thisVal = $stack[--$sp];
+                        $parentCtor = $stack[--$sp];
+                        $this->sp = $sp;
+                        $frame[self::F_PC] = $pc;
+                        // Runs the parent constructor's body against the `this`
+                        // the derived class's own [[Construct]] already built,
+                        // rather than the spec's "create a fresh object from
+                        // new.target.prototype and rebind `this` to it" -- the
+                        // two coincide whenever new.target is the class that
+                        // was actually `new`ed, which is every call this
+                        // compiler can reach (DESIGN.md §2.5: Reflect is out of
+                        // scope, so new.target never diverges from it).
+                        $this->invoke($parentCtor, $thisVal, $args, $thisVal);
+                        $stack[$sp++] = $thisVal;
+                        break;
+                    }
+                    case Op::SUPER_CALL_SPREAD: {
+                        $argsArr = $stack[--$sp];
+                        $thisVal = $stack[--$sp];
+                        $parentCtor = $stack[--$sp];
+                        $this->sp = $sp;
+                        $frame[self::F_PC] = $pc;
+                        $this->invoke($parentCtor, $thisVal, $this->arrayToArgs($argsArr), $thisVal);
+                        $stack[$sp++] = $thisVal;
                         break;
                     }
                     case Op::NEW_TAG_TEMPLATE: {
@@ -1014,6 +1180,18 @@ final class Vm
                         $funcPos = $sp - $argc - 2;
                         $func = $stack[$funcPos];
                         if ($func instanceof JSFunction) {
+                            if ($func->isClassConstructor) {
+                                // 15.7.14's [[Call]] override: a class
+                                // constructor may only be invoked through
+                                // `new`. SUPER_CALL is the one caller allowed
+                                // to reach one this way, and it does not use
+                                // this opcode.
+                                $this->sp = $sp;
+                                $this->throwError(
+                                    'TypeError',
+                                    "Class constructor {$func->name} cannot be invoked without 'new'"
+                                );
+                            }
                             if ($func->nativeId !== null) {
                                 // Ahead-of-time compiled body: an ordinary
                                 // native call, no frame (docs/aot-php.md §3).

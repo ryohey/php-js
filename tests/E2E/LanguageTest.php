@@ -970,6 +970,61 @@ final class LanguageTest extends EvalTestCase
         yield 'regex sticky' => [false, 'var re=/b/y; re.test("ab")'];
         yield 'regex unicode escape' => [true, '/é/.test("é")'];
         yield 'string search' => [4, '"aaaabb".search(/b/)'];
+
+        // --- classes ---
+        yield 'a class is a function' => ['function', 'class A {} typeof A'];
+        yield 'a constructor runs on new' => [5, 'class A { constructor(x) { this.x = x; } } (new A(5)).x'];
+        yield 'a class method' => [1, 'class A { m() { return 1; } } (new A()).m()'];
+        yield 'a static method' => [2, 'class A { static sm() { return 2; } } A.sm()'];
+        yield 'a getter' => [3, 'class A { get g() { return 3; } } (new A()).g'];
+        yield 'a setter' => [4, 'class A { set s(v) { this._v = v; } } var a = new A(); a.s = 4; a._v'];
+        yield 'a class called without new throws' => ['TypeError', 'class A {} try { A(); "no throw" } catch (e) { e.constructor.name }'];
+
+        yield 'extends inherits methods' => [1, 'class A { m() { return 1; } } class B extends A {} (new B()).m()'];
+        yield 'extends sets up the prototype chain' => [true, 'class A {} class B extends A {} (new B()) instanceof A'];
+        yield 'super() forwards to the parent constructor' => ['3:6', 'class A { constructor(x) { this.x = x; } } class B extends A { constructor(x) { super(x); this.y = x * 2; } } var b = new B(3); b.x + ":" + b.y'];
+        yield 'super.method() calls the parent method' => [2, 'class A { m() { return 1; } } class B extends A { m() { return super.m() + 1; } } (new B()).m()'];
+        yield 'static methods are inherited' => [1, 'class A { static sm() { return 1; } } class B extends A {} B.sm()'];
+        yield 'a derived class without a constructor forwards its arguments' => [9, 'class A { constructor(x) { this.x = x; } } class B extends A {} (new B(9)).x'];
+        yield 'a subclass method overrides the parent method' => [2, 'class A { m() { return 1; } } class B extends A { m() { return 2; } } (new B()).m()'];
+        yield 'super(...spread)' => [5, 'class A { constructor(a, b) { this.sum = a + b; } } class B extends A { constructor(...args) { super(...args); } } (new B(2, 3)).sum'];
+        yield 'getters are inherited' => [5, 'class A { get g() { return 5; } } class B extends A {} (new B()).g'];
+        yield 'super.prop reads through the parent prototype' => [10, 'class A { m() { return 10; } } class B extends A { get x() { return super.m(); } } (new B()).x'];
+        yield 'extends null leaves no prototype chain' => [true, 'class A extends null {} Object.getPrototypeOf(A.prototype) === null'];
+
+        yield 'a named class expression can refer to itself' => [true, 'var C = class Named { m() { return Named; } }; (new C()).m() === C'];
+        yield 'an anonymous class expression' => [1, 'var D = class { m() { return 1; } }; (new D()).m()'];
+        yield 'a class binding is in the temporal dead zone before its declaration' => ['ReferenceError', 'try { new A2(); "no throw" } catch (e) { e.constructor.name } class A2 {}'];
+        yield 'a class binding may be reassigned -- it is let-like, not const' => ['no throw', 'class A3 {} try { A3 = 1; "no throw" } catch (e) { e.constructor.name }'];
+
+        yield 'private fields are refused' => ['SyntaxError', 'try { eval("class A { #x = 1; }"); "none" } catch (e) { e.constructor.name }'];
+        yield 'private methods are refused' => ['SyntaxError', 'try { eval("class A { #m() {} }"); "none" } catch (e) { e.constructor.name }'];
+        yield 'public class fields are refused' => ['SyntaxError', 'try { eval("class A { x = 1; }"); "none" } catch (e) { e.constructor.name }'];
+        yield 'public static class fields are refused' => ['SyntaxError', 'try { eval("class A { static x = 1; }"); "none" } catch (e) { e.constructor.name }'];
+        yield 'a duplicate constructor is refused' => ['SyntaxError', 'try { eval("class A { constructor(){} constructor(){} }"); "none" } catch (e) { e.constructor.name }'];
+        // A get/set accessor named "constructor" is a SpecialMethod and the
+        // spec refuses it outright -- but a *static* one is a plain property
+        // named "constructor" that never shadows the real constructor slot.
+        yield 'a get accessor named constructor is refused' => ['SyntaxError', 'try { eval("class A { get constructor() {} }"); "none" } catch (e) { e.constructor.name }'];
+        yield 'a set accessor named constructor is refused' => ['SyntaxError', 'try { eval("class A { set constructor(v) {} }"); "none" } catch (e) { e.constructor.name }'];
+        yield 'a static accessor named constructor is fine' => [9, 'class A { static get constructor() { return 9; } } A.constructor'];
+        yield 'a static property named prototype is refused' => ['SyntaxError', 'try { eval("class A { static prototype() {} }"); "none" } catch (e) { e.constructor.name }'];
+        yield 'extending a non-constructor throws' => ['TypeError', 'try { class A extends 5 {} new A(); "none" } catch (e) { e.constructor.name }'];
+        yield 'extending an arrow function throws' => ['TypeError', 'try { var f = () => {}; class A extends f {} new A(); "none" } catch (e) { e.constructor.name }'];
+        yield 'extending a native constructor is refused (documented gap)' => ['TypeError', 'try { class MyErr extends Error {} new MyErr("x"); "none" } catch (e) { e.constructor.name }'];
+        yield 'super() outside a class is refused' => ['SyntaxError', 'try { eval("function f() { super(); }"); "none" } catch (e) { e.constructor.name }'];
+        yield 'super.prop outside a class is refused' => ['SyntaxError', 'try { eval("function f() { return super.x; }"); "none" } catch (e) { e.constructor.name }'];
+        yield 'super() in a non-derived constructor is refused' => ['SyntaxError', 'try { eval("class A { constructor() { super(); } }"); "none" } catch (e) { e.constructor.name }'];
+
+        yield 'a computed method name' => [1, 'var k = "foo"; class A { [k]() { return 1; } } (new A()).foo()'];
+        yield 'a computed static method name' => [2, 'var k = "bar"; class A { static [k]() { return 2; } } A.bar()'];
+        yield 'class methods are not enumerable' => [0, 'class A { m() {} } Object.keys(A.prototype).length'];
+        yield 'static methods are not enumerable' => [0, 'class A { static sm() {} } Object.keys(A).length'];
+        yield 'class instances do not enumerate prototype methods' => [0, 'class A { m() {} } var out = []; for (var k in (new A())) out.push(k); out.length'];
+        yield 'the prototype property is non-writable' => [false, 'class A {} Object.getOwnPropertyDescriptor(A, "prototype").writable'];
+        yield 'a method has a name' => ['foo', 'class A { foo() {} } A.prototype.foo.name'];
+        yield 'a class has a name' => ['Foo', 'class Foo {} Foo.name'];
+        yield "a constructor's length matches its parameters" => [2, 'class A { constructor(a, b) {} } A.length'];
     }
 
     #[DataProvider('cases')]
@@ -988,7 +1043,7 @@ final class LanguageTest extends EvalTestCase
     public function testUnsupportedSyntaxFailsCompilation(): void
     {
         $this->expectException(CompileError::class);
-        $this->evalJs('class A {}');
+        $this->evalJs('function* g() {}');
     }
 
     /**

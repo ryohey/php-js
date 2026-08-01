@@ -7,7 +7,6 @@
 # CompileError::$unsupportedSyntax), and that mechanism keeps itself honest as
 # the syntax surface grows, while a tag silently hides results that have started
 # to pass. Tags are removed from this list as DESIGN.md 2.5 lands the feature.
-class
 class-fields-public
 class-fields-private
 class-methods-private

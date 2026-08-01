@@ -23,30 +23,34 @@ says whether the syntax work is aimed at anything:
 
 ```console
 $ php tests/acceptance/run.php --dir path/to/node_modules
-  accepted   339   84.8%
-  rejected    61   15.2%
+  accepted   342   85.5%
+  rejected    58   14.5%
 
 what the rejections tripped on:
-  ClassDeclaration            15   3.8%
-  Generators                  10   2.5%
-  unexpected export            7   1.8%
+  ChainExpression               15   3.8%
+  unexpected from                8   2.0%
+  Generators                     6   1.5%
+  Class fields are not supported 3   0.8%
   ...
 ```
 
 Template literals, arrow functions, default/rest parameters, `let`/`const`,
-destructuring, `for…of`, spread and tagged templates have landed since —
-46.8% to 84.8%. Classes are next.
+destructuring, `for…of`, spread, tagged templates and classes have landed
+since — 46.8% to 85.5%. What is left of that 14.5% is mostly optional
+chaining, generators, ES modules, and the class subfeatures (private/public
+fields, static blocks) still deliberately out of scope — see
+[DESIGN.md §2.5](./DESIGN.md).
 
 **Conformance** — the test262 pass rate over what is implemented. Against a
 current tc39/test262 checkout:
 
 | Area | Pass rate | Run |
 |---|---|---|
-| **overall** | **96.3%** | 15498 |
-| `language/` | 95.5% | 6503 |
-| `built-ins/` | 96.8% | 8995 |
+| **overall** | **94.7%** | 16845 |
+| `language/` | 92.5% | 7835 |
+| `built-ins/` | 96.7% | 9010 |
 
-A further ~21000 tests are skipped as out of scope: features the engine cannot
+A further ~18800 tests are skipped as out of scope: features the engine cannot
 attempt at all by front-matter tag, out-of-scope builtins by path, and — the
 largest group — tests whose *own source* uses syntax the compiler does not accept
 yet, which it cannot run by construction. The runner reports those as skips
@@ -73,8 +77,10 @@ The core language works end to end:
   early errors) → stack bytecode → a peephole pass that fuses the opcode pairs
   a real workload actually executes. ES5.1 plus template literals, arrow
   functions, default/rest parameters, `let`/`const` (block scopes, temporal dead
-  zone, redeclaration errors), destructuring, `for…of`, spread and tagged
-  templates so far; DESIGN.md §2.5 has the order for the rest
+  zone, redeclaration errors), destructuring, `for…of`, spread, tagged
+  templates and classes (`extends`, `super`, getters/setters, static members;
+  private fields and public class fields are refused, not silently ignored) so
+  far; DESIGN.md §2.5 has the order for the rest
 - **VM**: single `while/switch` dispatch loop, own frame stack (JS calls never
   consume the PHP call stack), in-VM exception handling, wall-clock execution
   limit

@@ -38,7 +38,7 @@ Compilation and execution are fully decoupled. The typical flow in a shared-noth
 
 Peast (ESTree-compliant) is adopted. We do not write our own.
 
-- Parse in ES5 mode; the compiler rejects out-of-scope syntax (classes, generators, etc.) by AST node kind with an immediate error (never silently miscompile).
+- Parse in ES5 mode; the compiler rejects out-of-scope syntax (generators, private fields, etc.) by AST node kind with an immediate error (never silently miscompile). See §2.5 for what has since grown beyond ES5.
 - Peast is also a runtime dependency for the `Function` constructor / indirect `eval` (in production runs that execute only precompiled code it sits on a never-autoloaded path, so the cost is effectively zero).
 - A parser bug is fixed in the parser: `composer.json` points at
   [ryohey/peast](https://github.com/ryohey/peast) rather than working around a
@@ -314,11 +314,77 @@ argument for growing the surface: the skips were hiding real defects.
   and fixing the shared function incidentally fixed the same bug in ordinary
   string literals too.
 
-**Next:** classes, now the largest item at 3.8% of all rejections. Then
-generators (2.5%), which the VM's own frame stack was designed to make cheap
-(§4).
+- **Classes** — declarations and expressions, `extends`, `super`, getters,
+  setters, static members and computed keys — compiled onto the same
+  machinery a function already has, not a parallel object model.
 
-Queued behind those: per-iteration loop bindings (which retires the refusal
+  A class becomes a constructor function plus a `prototype` object, built by
+  `NEW_CLASS` and populated member-by-member: `DEFINE_METHOD`/`_ELEM` and the
+  getter/setter equivalents install each entry non-enumerable (`W|C`, no
+  `E`), which is the one property-attribute difference from an object
+  literal's methods. `Ctx::$isClassConstructor` marks the function so `CALL`
+  and `Vm::invoke()` refuse `[[Call]]` — a class must be `new`ed — and so its
+  `prototype` is installed non-writable/non-configurable rather than the
+  ordinary writable slot.
+
+  `super.prop` / `super.method()` resolve through `[[HomeObject]]`
+  (`JSFunction::$homeObject`), a slot `SET_HOME_OBJECT` fills in when each
+  method is created, pointing at the `prototype` (or, for a static member,
+  the constructor itself) it was defined on — not at the instance, which is
+  why an overridden method can still reach the version one level up
+  regardless of how deep `this`'s own class actually is. `checkSuperAllowed`
+  refuses both forms outside a class method and, since an arrow has no
+  `[[HomeObject]]` of its own and inheriting one the way it inherits `this`
+  is unimplemented, inside an arrow too.
+
+  `super(...)` is a deliberate simplification rather than the full spec
+  algorithm: it runs the parent constructor's body against the *existing*
+  `this` (`Vm::invoke($parentCtor, $thisVal, $args, $thisVal)`) instead of
+  threading a dynamic `new.target` through the construction protocol.
+  `Reflect.construct` is the only thing that would observe the difference,
+  and `Reflect` is already out of scope (below), so the gap costs nothing
+  reachable. The same simplification is why extending a native constructor
+  (`class E extends Error {}`) is refused with a `TypeError`: `Error`'s own
+  `[[Construct]]` builds and returns a fresh object rather than initializing
+  the one it's handed, which the simplified model has no way to honor. That
+  check, like extending a non-constructor or an arrow function, happens at
+  `NEW_CLASS` — the superclass position is a general expression, not a
+  syntactic fact, so it can only be caught once evaluated.
+
+  A class's own binding is lexical but not constant: `class A {}; A = 1;`
+  succeeds in every current engine, confirmed against Node before writing
+  the compiler's TDZ check, so it goes through the same re-checked-at-write
+  path as `let` rather than `const`'s.
+
+  A class with no explicit `constructor` gets a synthesized one — source
+  text (`(function(){})`, or `(function(...args){super(...args);})` for a
+  derived class) parsed once per class and run through the same
+  `analyzeFunction`/`compileChild` pipeline as a written one, rather than a
+  hand-built template, so it can never drift from what a real constructor
+  compiles to.
+
+  Peast's own grammar had a bug here: `MethodDefinition.kind` collapsed to
+  `"constructor"` whenever the key was named `constructor`, regardless of
+  whether the method was actually a getter, setter, generator or async
+  method — silently discarding the information needed to refuse `get
+  constructor(){}` / `set constructor(){}`, both of which are early errors
+  (a *static* accessor named `constructor` is unaffected — spec-legal, and
+  the parser's own kind never applied to it since it only matters for
+  `IsStatic false`). Fixed upstream rather than special-cased here, same
+  policy as the destructuring bugs above: `parseMethodDefinition` now only
+  folds the kind to `KIND_CONSTRUCTOR` for a plain, non-generator,
+  non-async method. `static prototype(){}` on a class is refused for the
+  more ordinary reason that the compiler now checks for it directly.
+
+  **Explicitly refused, not silently ignored:** private fields and methods
+  (`#x`), public instance and static fields (`x = 1;` outside a method), and
+  static initialization blocks — all out of scope for the same reason as
+  Proxy/Reflect below, an object-model change rather than a syntax one.
+
+**Next:** generators (2.5% of all rejections), which the VM's own frame stack
+was designed to make cheap (§4).
+
+Queued behind that: per-iteration loop bindings (which retires the refusal
 above), the separate parameter scope, and NamedEvaluation — the last is the
 largest single failure group in test262 and has been since arrow functions
 landed.

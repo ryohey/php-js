@@ -172,6 +172,72 @@ final class Op
      * would be observably wrong, not just wasteful.
      */
     public const NEW_TAG_TEMPLATE = 111; // kkk
+
+    // ---- Classes ----
+    /**
+     * ClassDefinitionEvaluation's constructor + prototype step (15.7.14):
+     * `f` is the constructor's child template. `i` is 1 when the class has an
+     * `extends` clause, 0 otherwise -- distinct from `extends null`, which
+     * still pops a value (it just happens to be `null`).
+     *
+     * `[superOrNothing?] -> [ctor, proto]`. With `i=1`, pops the superclass
+     * value (a constructor, or `null`) and builds `proto` from its
+     * `.prototype` (or with no proto at all, for `extends null`), and sets the
+     * constructor's own `[[Prototype]]` to the superclass itself -- the static
+     * side of inheritance, `B.sm` resolving through `A.sm`. With `i=0`, `proto`
+     * inherits from `%Object.prototype%` and the constructor keeps the
+     * ordinary `%Function.prototype%` it was created with.
+     *
+     * `proto` is left on the stack because the class body's own DEFINE_METHOD
+     * etc. need it, and re-reading `ctor.prototype` would cost a property
+     * lookup for a value already in hand.
+     */
+    public const NEW_CLASS = 112; // fi
+    /**
+     * The computed and non-computed forms of defining a class method:
+     * `[obj func] -> [obj]` / `[obj key func] -> [obj]`. Not DEFINE_DATA/_ELEM,
+     * because a class method is non-enumerable (15.7.10) where an object
+     * literal's is not -- `for…in` and `Object.keys` must not see it.
+     */
+    public const DEFINE_METHOD = 113;      // k
+    public const DEFINE_METHOD_ELEM = 114; //
+    /** The class-method forms of DEFINE_GETTER/SETTER: non-enumerable. */
+    public const DEFINE_CLASS_GETTER = 115;      // k
+    public const DEFINE_CLASS_SETTER = 116;      // k
+    public const DEFINE_CLASS_GETTER_ELEM = 117; //
+    public const DEFINE_CLASS_SETTER_ELEM = 118; //
+    /**
+     * Sets `[[HomeObject]]` (15.7.9): `[func home] -> [func]`. Follows the
+     * NEW_FUNC that built a class method, before it is attached to the
+     * prototype/constructor -- `super.prop` inside that method resolves
+     * against `home`'s own `[[Prototype]]`, read back off the running
+     * function at evaluation time (see GET_SUPER).
+     */
+    public const SET_HOME_OBJECT = 119;
+    /**
+     * `super.prop` / `super[expr]` (13.3.7.1, 13.3.7.2): `[] -> [value]` /
+     * `[key] -> [value]`. Reads the current frame's function's
+     * `[[HomeObject]]`, gets *its* `[[Prototype]]`, and reads `key` there with
+     * the current `this` as receiver -- not `home` itself, which is why this
+     * cannot be GET_PROP on a value already in hand.
+     */
+    public const GET_SUPER = 120;      // k
+    public const GET_SUPER_ELEM = 121; //
+    /** Same lookup, packaged as `[func, this]` for a call: `super.method(...)`. */
+    public const GET_SUPER_METHOD = 122;      // k
+    public const GET_SUPER_METHOD_ELEM = 123; //
+    /**
+     * `super(...)` (13.3.7.1's SuperCall): `[parentCtor this args...] -> [this]`.
+     * Not CALL, because a class constructor refuses ordinary `[[Call]]` --
+     * this invokes it the way `new` does, against the `this` already built by
+     * the derived class's own construction, and yields that `this` rather than
+     * the callee's return value (which SuperCall's spec algorithm also
+     * discards in the common case).
+     */
+    public const SUPER_CALL = 124; // c
+    /** SUPER_CALL's CALL_SPREAD counterpart: `[parentCtor this argsArray] -> [this]`. */
+    public const SUPER_CALL_SPREAD = 125;
+
     public const NOT = 38;
     public const BNOT = 39;
     public const TYPEOF = 40;
@@ -276,6 +342,14 @@ final class Op
         self::DEFINE_DATA_ELEM => '', self::DEFINE_GETTER_ELEM => '',
         self::DEFINE_SETTER_ELEM => '',
         self::NEW_TAG_TEMPLATE => 'kkk',
+        self::NEW_CLASS => 'fi',
+        self::DEFINE_METHOD => 'k', self::DEFINE_METHOD_ELEM => '',
+        self::DEFINE_CLASS_GETTER => 'k', self::DEFINE_CLASS_SETTER => 'k',
+        self::DEFINE_CLASS_GETTER_ELEM => '', self::DEFINE_CLASS_SETTER_ELEM => '',
+        self::SET_HOME_OBJECT => '',
+        self::GET_SUPER => 'k', self::GET_SUPER_ELEM => '',
+        self::GET_SUPER_METHOD => 'k', self::GET_SUPER_METHOD_ELEM => '',
+        self::SUPER_CALL => 'c', self::SUPER_CALL_SPREAD => '',
         self::BAND => '', self::BOR => '', self::BXOR => '',
         self::SHL => '', self::SHR => '', self::USHR => '',
         self::EQ => '', self::NEQ => '', self::SEQ => '', self::SNEQ => '',
