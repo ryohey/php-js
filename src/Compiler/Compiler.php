@@ -671,6 +671,13 @@ final class Compiler
                     $this->analyzeNode($node->getProperty(), $ctx);
                 }
                 return;
+            case 'ChainExpression':
+                // Optional chaining (`?.`) is a codegen-only concern -- which
+                // steps in the chain might not run at runtime changes nothing
+                // about which identifiers this subtree references or
+                // captures, so analysis just sees through the wrapper.
+                $this->analyzeNode($node->getExpression(), $ctx);
+                return;
             case 'ObjectExpression':
                 foreach ($node->getProperties() as $p) {
                     if ($p->getType() === 'SpreadElement') {
@@ -1058,6 +1065,16 @@ final class Compiler
      * @var list<EnvScope>
      */
     private array $loopEnvStack = [];
+    /**
+     * Codegen-only, pushed and popped around a `ChainExpression`'s own
+     * wrapped expression (nesting for an optional chain used as, say, a call
+     * argument inside an outer one): each entry collects the patch sites of
+     * every `?.` short-circuit jump `genChain` finds while compiling that
+     * one chain, so they can all be pointed at the single shared landing pad
+     * once the whole chain is known.
+     * @var list<list<int>>
+     */
+    private array $chainStack = [];
     /**
      * Loop node -> its EnvScope, decided once during analysis (`Compiler::
      * analyzeLoopEnv`) and looked up again during codegen (`Compiler::
@@ -2949,6 +2966,143 @@ final class Compiler
         $c->tempFree($sentSlot);
     }
 
+    // ---- optional chaining ------------------------------------------------------
+
+    /**
+     * A `ChainExpression`'s wrapped expression: compiles exactly like the
+     * ordinary `MemberExpression`/`CallExpression` cases (recursing into
+     * `getObject()`/`getCallee()` the same way), except that each one now
+     * also calls `emitOptionalCheck` for a step actually marked `?.` --
+     * every other step, optional or not, is unaffected and unaware it sits
+     * inside a chain at all, which is exactly why a non-optional step after
+     * an earlier `?.` still gets skipped: the earlier check's jump lands
+     * past all of it, not because the later step does anything different.
+     *
+     * `$chainStack` collects one entry per short-circuit jump found while
+     * compiling `$node`; once done, they all get patched to a single shared
+     * landing pad placed after the chain's own normal-path result, which
+     * pops the leftover nullish value every jump site leaves behind and
+     * pushes `undefined` in its place -- the chain's real result either way.
+     * A chain with no `?.` step at all that somehow reached here (impossible
+     * by construction: Peast only wraps a chain that has one) would just
+     * compile through with nothing to patch, which is why this only emits
+     * the landing pad when `$pending` is non-empty.
+     */
+    private function genChain(object $node): void
+    {
+        $this->chainStack[] = [];
+        $this->genExpr($node);
+        $pending = array_pop($this->chainStack);
+        if ($pending === []) {
+            return;
+        }
+        $c = $this->cur;
+        $jEnd = $c->emitJump(Op::JMP);
+        foreach ($pending as $site) {
+            $c->patch($site);
+        }
+        $c->emit(Op::POP);
+        $c->emit(Op::PUSH_UNDEF);
+        $c->patch($jEnd);
+    }
+
+    /**
+     * `?.`'s own check: the value to test is already on top of the stack:
+     * `DUP` gives the check something to consume while leaving the original
+     * in place for the fallthrough (not-nullish) path to keep working with,
+     * same as `??`'s own `JNN_KEEP` does it the other way around. Every call
+     * site in `genExpr` arranges for exactly one value -- never more -- to
+     * be on the stack at this point (a member access's object, a bare
+     * call's callee, or a method call's already-isolated function value),
+     * which is what lets every jump this records converge on `genChain`'s
+     * one shared landing pad.
+     */
+    private function emitOptionalCheck(): void
+    {
+        $c = $this->cur;
+        $c->emit(Op::DUP);
+        $site = $c->emitJump(Op::JNULLISH);
+        $this->chainStack[count($this->chainStack) - 1][] = $site;
+    }
+
+    /**
+     * `[func, this]` for a member-expression call target -- `a.b(...)` and
+     * every `?.` variant of it. Honors the member's own optional step
+     * (checked against whatever chain scope is already open; the caller's
+     * job to have one open) and, separately, the call's own optional step
+     * (`a.b?.()`/`(a.b)?.()`): `GET_METHOD`/`GET_METHOD_ELEM` normally fuse
+     * `[func, this]` into one step with `this` landing on top, which makes
+     * `func` awkward to check once it is buried underneath -- a temp isolates
+     * `this` off the operand stack instead, so the check still runs against
+     * a single value the same as every other step in a chain does, and
+     * `this` is only read back once the call is known to happen at all.
+     */
+    private function genMemberCallTarget(object $member, bool $callOptional): void
+    {
+        $c = $this->cur;
+        $this->genExpr($member->getObject());
+        if ($member->getOptional()) {
+            $this->emitOptionalCheck();
+        }
+        if ($callOptional) {
+            $t = $c->tempAlloc();
+            $c->emit(Op::SET_LOCAL, $t);
+            $c->emit(Op::POP);
+            $c->emit(Op::GET_LOCAL, $t);
+            if ($member->getComputed()) {
+                $this->genExpr($member->getProperty());
+                $c->emit(Op::GET_ELEM);
+            } else {
+                $c->emit(Op::GET_PROP, $c->constIndex($member->getProperty()->getName()));
+            }
+            $this->emitOptionalCheck();
+            $c->emit(Op::GET_LOCAL, $t);
+            $c->tempFree($t);
+        } elseif ($member->getComputed()) {
+            $this->genExpr($member->getProperty());
+            $c->emit(Op::GET_METHOD_ELEM);
+        } else {
+            $c->emit(Op::GET_METHOD, $c->constIndex($member->getProperty()->getName()));
+        }
+    }
+
+    /**
+     * `delete` on a chain ending in a member access (`delete a?.b`, or
+     * `delete a?.b.c`, never `delete a?.b()` -- see the call site). Reuses
+     * `genChain`'s own machinery for everything up to the last step (a
+     * nested `?.` in the object position registers into the same
+     * `$chainStack` entry exactly like it would compiling an ordinary
+     * chain), but the last step is a real `DEL_ELEM` instead of a
+     * `GET_ELEM`/`GET_PROP` read, and short-circuiting means "nothing to
+     * delete" -- trivially `true`, not the ordinary chain's `undefined`.
+     */
+    private function genDeleteChain(object $member): void
+    {
+        $c = $this->cur;
+        $this->chainStack[] = [];
+        $this->genExpr($member->getObject());
+        if ($member->getOptional()) {
+            $this->emitOptionalCheck();
+        }
+        if ($member->getComputed()) {
+            $this->genExpr($member->getProperty());
+        } else {
+            $c->emit(Op::PUSH_CONST, $c->constIndex($member->getProperty()->getName()));
+        }
+        $c->emit(Op::DEL_ELEM);
+        $pending = array_pop($this->chainStack);
+        if ($pending === []) {
+            return;
+        }
+        $jEnd = $c->emitJump(Op::JMP);
+        foreach ($pending as $site) {
+            $c->patch($site);
+        }
+        $c->emit(Op::POP);
+        $c->emit(Op::PUSH_TRUE);
+        $c->patch($jEnd);
+    }
+
     /**
      * `yield* expr` (13.3.8.1): a compiled loop around `YIELD_DELEGATE_STEP`,
      * which does one call into the inner iterable per pass and reports back
@@ -3200,12 +3354,18 @@ final class Compiler
                     return;
                 }
                 $this->genExpr($node->getObject());
+                if ($node->getOptional()) {
+                    $this->emitOptionalCheck();
+                }
                 if ($node->getComputed()) {
                     $this->genExpr($node->getProperty());
                     $c->emit(Op::GET_ELEM);
                 } else {
                     $c->emit(Op::GET_PROP, $c->constIndex($node->getProperty()->getName()));
                 }
+                return;
+            case 'ChainExpression':
+                $this->genChain($node->getExpression());
                 return;
             case 'CallExpression': {
                 $callee = self::unwrapParens($node->getCallee());
@@ -3235,15 +3395,63 @@ final class Compiler
                         $c->emit(Op::GET_SUPER_METHOD, $c->constIndex($callee->getProperty()->getName()));
                     }
                 } elseif ($callee->getType() === 'MemberExpression') {
-                    $this->genExpr($callee->getObject());
-                    if ($callee->getComputed()) {
-                        $this->genExpr($callee->getProperty());
-                        $c->emit(Op::GET_METHOD_ELEM);
-                    } else {
-                        $c->emit(Op::GET_METHOD, $c->constIndex($callee->getProperty()->getName()));
+                    $this->genMemberCallTarget($callee, $node->getOptional());
+                } elseif ($callee->getType() === 'ChainExpression' && $callee->getExpression()->getType() === 'MemberExpression') {
+                    // `(a?.b)()`/`(a?.b)?.()`: parens close the inner chain
+                    // right here -- it never reaches past this call -- but
+                    // the parenthesized member expression's `this`-preserving
+                    // Reference semantics survive exactly like `(a.b)()`'s
+                    // already do. Its own optional step has nowhere else to
+                    // land, so it gets a chain scope of its own here rather
+                    // than relying on an enclosing `genChain`'s.
+                    $member = $callee->getExpression();
+                    $this->chainStack[] = [];
+                    $this->genMemberCallTarget($member, $node->getOptional());
+                    if ($node->getOptional()) {
+                        // The call is *also* optional: a short circuit from
+                        // either step -- the member's own or the call's own,
+                        // both landing in this same local scope -- must skip
+                        // the call entirely, not just feed it two undefineds
+                        // and let it throw, so the scope has to stay open
+                        // through the args and CALL below (inlined here)
+                        // rather than closing right after the target.
+                        if (self::hasSpread($args)) {
+                            $this->genArgumentArray($args);
+                            $c->emit(Op::CALL_SPREAD);
+                        } else {
+                            foreach ($args as $a) {
+                                $this->genExpr($a);
+                            }
+                            $c->emit(Op::CALL, count($args));
+                        }
+                        $pending = array_pop($this->chainStack);
+                        if ($pending !== []) {
+                            $jEnd = $c->emitJump(Op::JMP);
+                            foreach ($pending as $site) {
+                                $c->patch($site);
+                            }
+                            $c->emit(Op::POP);
+                            $c->emit(Op::PUSH_UNDEF);
+                            $c->patch($jEnd);
+                        }
+                        return;
+                    }
+                    $pending = array_pop($this->chainStack);
+                    if ($pending !== []) {
+                        $jEnd = $c->emitJump(Op::JMP);
+                        foreach ($pending as $site) {
+                            $c->patch($site);
+                        }
+                        $c->emit(Op::POP);
+                        $c->emit(Op::PUSH_UNDEF);
+                        $c->emit(Op::PUSH_UNDEF);
+                        $c->patch($jEnd);
                     }
                 } else {
                     $this->genExpr($callee);
+                    if ($node->getOptional()) {
+                        $this->emitOptionalCheck();
+                    }
                     $c->emit(Op::PUSH_UNDEF);
                 }
                 if (self::hasSpread($args)) {
@@ -3779,6 +3987,16 @@ final class Compiler
                         $c->emit(Op::PUSH_CONST, $c->constIndex($arg->getProperty()->getName()));
                     }
                     $c->emit(Op::DEL_ELEM);
+                } elseif ($arg->getType() === 'ChainExpression' && $arg->getExpression()->getType() === 'MemberExpression') {
+                    // `delete a?.b`: unlike every other chain, a short circuit
+                    // here means "there was nothing to delete", which is
+                    // trivially successful -- `true`, not `undefined` -- and
+                    // reaching the end for real means an actual DEL_ELEM, not
+                    // a GET_ELEM/GET_PROP read. `delete a?.b()` doesn't reach
+                    // here at all: deleting a call's result is exactly the
+                    // ordinary "evaluate for side effects, then true" case
+                    // below regardless of what chain it ends in.
+                    $this->genDeleteChain($arg->getExpression());
                 } elseif ($arg->getType() === 'Identifier') {
                     if ($this->cur->strict) {
                         $this->fail($node, 'Delete of an unqualified identifier in strict mode');

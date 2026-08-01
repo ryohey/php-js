@@ -47,7 +47,6 @@ WeakRef
 FinalizationRegistry
 BigInt
 globalThis
-optional-chaining
 logical-assignment-operators
 exponentiation
 new.target

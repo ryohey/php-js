@@ -1570,6 +1570,14 @@ final class Vm
                         }
                         break;
                     }
+                    case Op::JNULLISH: {
+                        $t = $code[$pc++];
+                        $v = $stack[--$sp];
+                        if ($v === null || $v instanceof JSUndefined) {
+                            $pc = $t;
+                        }
+                        break;
+                    }
 
                     case Op::CALL: {
                         $argc = $code[$pc++];

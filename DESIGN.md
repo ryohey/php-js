@@ -783,13 +783,69 @@ argument for growing the surface: the skips were hiding real defects.
   Node refuses it. The same flag now gates both, since every current caller
   already wanted them disabled together.
 
-**Next:** optional chaining (`?.`) is the one candidate this look turned up
-that is still on the table -- comparable in the same 2000-file sample
-(4.6%, edging out async's own 4.3%) but deferred in favor of first landing
-async, not ruled out. Beyond that, none queued -- future syntax work keeps
-starting from a fresh look at what real `node_modules` code still rejects
-(`tests/acceptance/run.php`'s own rejection breakdown), not from a backlog
-written up front.
+- **Optional chaining** (`?.`, `?.[]`, `?.()`) — the other candidate the
+  fresh look turned up, landed right after async since nothing about it
+  depended on that choice. `a?.b`, `a?.[k]` and `a?.()` all short-circuit the
+  *whole rest of the chain* to `undefined` the moment any step in it meets a
+  nullish value, not just that one step -- `a?.b.c.d` skips `.c` and `.d`
+  too if `a` is nullish, even though neither is itself marked `?.`.
+
+  Peast already gives this to the compiler as ESTree does: one `?.` step
+  anywhere sets `optional: true` on that specific `MemberExpression`/
+  `CallExpression` node, and the *whole* chain it belongs to is wrapped once
+  in an outer `ChainExpression` (however many `?.` steps it has, one wrapper
+  covers all of them). Compiling it is one new opcode, `JNULLISH` (pop and
+  jump if nullish -- the mirror image of `??`'s own `JNN_KEEP`, which jumps
+  keeping the value when it is *not* nullish), plus a compile-time-only
+  `$chainStack`: entering a `ChainExpression` pushes a fresh list, every `?.`
+  step found while compiling its wrapped expression (an ordinary recursive
+  walk of nested `MemberExpression`/`CallExpression`s, unchanged from how
+  they already compiled) appends its jump site to whichever list is
+  currently open, and once the walk finishes every site gets patched to one
+  shared landing pad placed after the chain's own normal-path result --
+  `POP` the leftover nullish value every jump site leaves behind, `PUSH_UNDEF`.
+  A non-optional step later in the same chain needs no special handling *at
+  all* to end up skipped: it simply sits, in program order, between an
+  earlier jump and where that jump lands.
+
+  Parens close a chain (`(a?.b).c` does not propagate `a`'s short circuit to
+  `.c` -- it throws instead, same as `(undefined).c` always would), which
+  falls out for free: a `ParenthesizedExpression` is not a `MemberExpression`/
+  `CallExpression`, so the recursive walk simply cannot see through one, the
+  same reason it does not see through a `CallExpression`'s own arguments
+  either (`f(a?.b)`'s argument is its own independent chain). One shape
+  needs its own handling anyway: `(a.b)()`/`(a?.b)()` already had to preserve
+  `this` through parens even without any chain involved (`(a.b)()` calls
+  with `this === a`, not `undefined` -- parens do not strip a
+  MemberExpression's Reference-ness for a call specifically), so a
+  parenthesized chain used as a call's callee gets a chain scope of its own,
+  opened and closed right there instead of relying on an enclosing one,
+  since there is nothing enclosing it once the parens have closed it off.
+
+  `delete a?.b` is the one place a chain's short circuit does not mean
+  `undefined`: nothing to delete is trivially successful, `true`, and
+  reaching the member for real means an actual deletion, not a read -- its
+  own small variant of the chain-compiling machinery, sharing everything
+  except the final opcode and the landing value.
+
+  A genuinely tricky case surfaced building the call-target handling:
+  `GET_METHOD`/`GET_METHOD_ELEM` fuse `[func, this]` into one opcode with
+  `this` landing on top, which makes `func` awkward to nullish-check once it
+  is buried underneath. A temp local isolates `this` off the operand stack
+  for exactly as long as the check needs, so it still runs against a single
+  value the same as every other step in a chain does.
+
+  **Left as a pre-existing, unrelated gap:** `eval?.('x')` should be an
+  *indirect* eval (direct eval requires the literal syntactic form
+  `eval(...)`, which `?.` is never part of), but the compiler does not
+  distinguish direct from indirect eval by the call's syntactic shape at
+  all -- a limitation of eval's own existing implementation, not something
+  optional chaining introduces or could fix on its own.
+
+**Next:** none queued. Both candidates this section's fresh look turned up
+have landed. Future syntax work keeps starting from a fresh look at what
+real `node_modules` code still rejects (`tests/acceptance/run.php`'s own
+rejection breakdown), not from a backlog written up front.
 
 **Deliberately out of scope for now:** ES modules (node-compat resolves
 CommonJS, and published packages overwhelmingly ship it), Proxy and Reflect

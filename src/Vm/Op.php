@@ -368,6 +368,18 @@ final class Op
      */
     public const AWAIT = 133; // nn
 
+    /**
+     * Optional chaining (`?.`/`?.()`/`?.[]`): pops the value being checked
+     * and jumps if it is `null` or `undefined`. Always preceded by `DUP`, so
+     * the fallthrough (not-nullish) path still has the original value on the
+     * stack to continue the chain with, and every jump site this can produce
+     * lands with exactly the checked (nullish) value as the only thing left
+     * on the stack -- `Compiler::genChain`'s single shared landing pad relies
+     * on that to pop it and push the chain's real result, `undefined`,
+     * uniformly regardless of which step in the chain short-circuited.
+     */
+    public const JNULLISH = 134; // a
+
     public const NOT = 38;
     public const BNOT = 39;
     public const TYPEOF = 40;
@@ -485,6 +497,7 @@ final class Op
         self::CAPTURE_ENV => 'n', self::NEW_ITER_ENV => 'ni', self::RESTORE_ENV => '',
         self::JNN_KEEP => 'a',
         self::AWAIT => 'nn',
+        self::JNULLISH => 'a',
         self::BAND => '', self::BOR => '', self::BXOR => '',
         self::SHL => '', self::SHR => '', self::USHR => '',
         self::EQ => '', self::NEQ => '', self::SEQ => '', self::SNEQ => '',

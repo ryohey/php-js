@@ -88,6 +88,68 @@ final class LanguageTest extends EvalTestCase
         ];
         yield 'parenthesizing one side of a mix is fine' => [1, '(1 ?? 2) || 3'];
 
+        // --- optional chaining ---
+        yield 'optional member access on a value' => [1, 'var a = {b: 1}; a?.b'];
+        yield 'optional member access short-circuits on null' => ['undefined', 'var a = null; typeof a?.b'];
+        yield 'optional member access short-circuits on undefined' => [
+            'undefined', 'var a; typeof a?.b',
+        ];
+        // A short circuit anywhere in the chain skips every step after it,
+        // optional or not -- `.c` and `.d` here are never reached.
+        yield 'a short circuit skips the rest of the chain, not just one step' => [
+            'undefined', 'var a = null; typeof a?.b.c.d',
+        ];
+        yield 'a non-optional step after a passing optional one still runs' => [
+            5, 'var a = {b: {c: {d: 5}}}; a?.b.c.d',
+        ];
+        yield 'optional computed member access' => [2, 'var a = [1, 2, 3]; a?.[1]'];
+        yield 'optional computed access short-circuits without evaluating the key' => [
+            0, 'var calls = 0; function k() { calls++; return 0; } var a = null; a?.[k()]; calls',
+        ];
+        yield 'optional call short-circuits on a nullish callee' => ['undefined', 'var a = null; typeof a?.()'];
+        yield 'optional call on a real function still calls it' => [42, 'var a = () => 42; a?.()'];
+        yield 'optional method call' => [42, 'var a = {b: () => 42}; a?.b()'];
+        yield 'optional method call short-circuits without evaluating arguments' => [
+            0, 'var calls = 0; function f() { calls++; return 1; } var a = null; a?.method(f()); calls',
+        ];
+        yield 'a?.b?.() short-circuits when b itself is nullish' => [
+            'undefined', 'var a = {b: null}; typeof a?.b?.()',
+        ];
+        yield 'a?.b?.() still calls b when it is not nullish' => [
+            42, 'var a = {b: () => 42}; a?.b?.()',
+        ];
+        yield 'a.b?.() preserves this the same as a plain method call' => [
+            42, 'var a = {b() { return this.v; }, v: 42}; a.b?.()',
+        ];
+        yield 'an optional call preserves this' => [
+            '42,42,42,42,42,42', 'const a = {b() { return this._b; }, _b: {c: 42}};'
+                . ' [a?.b().c, (a?.b)().c, a.b?.().c, (a.b)?.().c, a?.b?.().c, (a?.b)?.().c].join(",")',
+        ];
+        // Parens close a chain: `(a?.b)` resolves to a plain value (or
+        // undefined), and a non-optional step after it does not inherit the
+        // parenthesized chain's own short-circuiting.
+        yield 'parens terminate a chain' => [
+            'TypeError', 'var a = null; try { (a?.b).c; "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'a parenthesized nullish callee still throws when called plainly' => [
+            'TypeError', 'var a = null; try { (a?.b)(); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'a parenthesized callee chain can itself stay optional' => [
+            'undefined', 'var a = null; typeof (a?.b)?.()',
+        ];
+        // `delete` on a chain is the one place short-circuiting means
+        // "nothing to delete" (true), not the chain's usual `undefined`; not
+        // short-circuiting means a real deletion happens.
+        yield 'delete through a chain actually deletes when not short-circuited' => [
+            '[true,{}]', 'var o = {b: 1}; var r = delete o?.b; JSON.stringify([r, o])',
+        ];
+        yield 'delete through a chain short-circuits to true, deleting nothing' => [
+            true, 'var o = null; delete o?.b',
+        ];
+        yield 'an optional chain used as a call argument is its own independent chain' => [
+            'undefined', 'function f(x) { return x; } var a = null; typeof f(a?.b)',
+        ];
+
         // --- objects & prototypes ---
         yield 'object literal' => [3, 'var o={a:1,b:{c:2}}; o.a + o.b.c'];
         yield 'string and numeric keys' => [5, 'var o={"a b":2, 3:3}; o["a b"] + o[3]'];

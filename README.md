@@ -23,33 +23,33 @@ says whether the syntax work is aimed at anything:
 
 ```console
 $ php tests/acceptance/run.php --dir path/to/node_modules
-  accepted   354   88.5%
-  rejected    46   11.5%
+  accepted   369   92.2%
+  rejected    31    7.8%
 
 what the rejections tripped on:
-  ChainExpression                16   4.0%
   unexpected from                 8   2.0%
   unexpected export               4   1.0%
+  Class fields are not supported yet (line 16)   2   0.5%
   ...
 ```
 
 Template literals, arrow functions, default/rest parameters, `let`/`const`,
 destructuring, `for…of`, spread, tagged templates, classes, generators,
-nullish coalescing, catch-clause patterns and `async`/`await` have landed
-since — 46.8% to 88.5% (async alone moves a larger, async-heavier sample of
-`node_modules` from 51.8% to 55.0%; this repo's own fixed 400-file sample
-happens to have few plain-async-without-other-blockers files in it). What is
-left is mostly optional chaining, ES modules, and the class subfeatures
-(private/public fields, static blocks) still deliberately out of scope — see
-[DESIGN.md §2.5](./DESIGN.md).
+nullish coalescing, catch-clause patterns, `async`/`await` and optional
+chaining (`?.`) have landed since — 46.8% to 92.2% (async alone moves a
+larger, async-heavier sample of `node_modules` from 51.8% to 55.0%; this
+repo's own fixed 400-file sample happens to have few plain-async-without-
+other-blockers files in it). What is left is mostly ES modules and the class
+subfeatures (private/public fields, static blocks) still deliberately out of
+scope — see [DESIGN.md §2.5](./DESIGN.md).
 
 **Conformance** — the test262 pass rate over what is implemented. Against a
 current tc39/test262 checkout:
 
 | Area | Pass rate | Run |
 |---|---|---|
-| **overall** | **96.3%** | 20195 |
-| `language/` | 96.0% | 11171 |
+| **overall** | **96.3%** | 20244 |
+| `language/` | 96.0% | 11220 |
 | `built-ins/` | 96.6% | 9024 |
 
 A further ~15900 tests are skipped as out of scope: features the engine cannot
@@ -84,10 +84,10 @@ The core language works end to end:
   ES2019 optional catch binding), `for…of`, spread, tagged templates, classes
   (`extends`, `super`, getters/setters, static members; private fields and
   public class fields are refused, not silently ignored), generators
-  (`yield`, `yield*`), nullish coalescing (`??`) and `async`/`await`
+  (`yield`, `yield*`), nullish coalescing (`??`), `async`/`await`
   (functions, arrows and methods; async generators and `for await` are
-  refused, not silently ignored) so far; DESIGN.md §2.5 has the order for
-  the rest
+  refused, not silently ignored) and optional chaining (`?.`, `?.[]`,
+  `?.()`) so far; DESIGN.md §2.5 has the order for the rest
 - **VM**: single `while/switch` dispatch loop, own frame stack (JS calls never
   consume the PHP call stack), in-VM exception handling, wall-clock execution
   limit
