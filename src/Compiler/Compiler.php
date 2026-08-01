@@ -35,7 +35,12 @@ final class Compiler
 
     /** @var \SplObjectStorage<object, Ctx> function node -> analyzed context */
     private \SplObjectStorage $fnCtx;
-    /** @var \SplObjectStorage<object, Binding> CatchClause -> catch binding */
+    /**
+     * CatchClause -> its parameter's bindings, keyed by name -- one entry for
+     * a plain identifier, one per bound name for a destructuring pattern.
+     * Absent for a handler with no parameter at all (optional catch binding).
+     * @var \SplObjectStorage<object, array<string, Binding>>
+     */
     private \SplObjectStorage $catchBind;
     /**
      * ClassDeclaration/ClassExpression node -> its synthesized default
@@ -924,17 +929,48 @@ final class Compiler
                 $this->analyzeNode($node->getBlock(), $ctx);
                 if (($handler = $node->getHandler()) !== null) {
                     $param = $handler->getParam();
-                    if ($param === null || $param->getType() !== 'Identifier') {
-                        $this->unsupported($handler, 'Catch parameter patterns are not supported (ES5 target)');
-                    }
-                    $this->checkBindingName($ctx, $param->getName(), $param);
-                    $b = new Binding($ctx, $param->getName(), 'catch');
-                    $ctx->extraBindings[] = $b;
-                    $this->catchBind[$handler] = $b;
-                    $ctx->catchBindings[$handler] = $b;
-                    $this->lexStack[] = ['ctx' => $ctx, 'names' => [$param->getName() => $b]];
                     $body = $handler->getBody();
-                    $opened = $this->enterBlock($body, $body->getBody(), $ctx, true, [$param->getName()]);
+                    if ($param === null) {
+                        // Optional catch binding: the thrown value is simply
+                        // discarded, and the body is an ordinary block scope
+                        // with nothing reserved in it.
+                        $opened = $this->enterBlock($body, $body->getBody(), $ctx, true);
+                        foreach ($body->getBody() as $s) {
+                            $this->analyzeNode($s, $ctx);
+                        }
+                        if ($opened) {
+                            array_pop($this->lexStack);
+                        }
+                        $this->analyzeNode($node->getFinalizer(), $ctx);
+                        return;
+                    }
+                    $isPattern = self::isPattern($param);
+                    if (!$isPattern && $param->getType() !== 'Identifier') {
+                        $this->unsupported($param, 'Unsupported catch parameter: ' . $param->getType());
+                    }
+                    $catchNames = [];
+                    foreach ($isPattern ? $this->patternNames($param) : [$param->getName()] as $name) {
+                        if (isset($catchNames[$name])) {
+                            $this->fail($param, "Identifier '$name' has already been declared");
+                        }
+                        $this->checkBindingName($ctx, $name, $param);
+                        $b = new Binding($ctx, $name, 'catch');
+                        $ctx->extraBindings[] = $b;
+                        $catchNames[$name] = $b;
+                    }
+                    $this->catchBind[$handler] = $catchNames;
+                    if (!$isPattern) {
+                        $ctx->catchBindings[$handler] = $catchNames[$param->getName()];
+                    }
+                    $this->lexStack[] = ['ctx' => $ctx, 'names' => $catchNames];
+                    // A pattern's own computed keys and defaults are
+                    // expressions evaluated with the pattern's own names
+                    // already visible, same as a `var`/`let` pattern's are --
+                    // `catch ({a, b = a}) {}`'s `b` may reach `a`.
+                    if ($isPattern) {
+                        $this->analyzePattern($param, $ctx);
+                    }
+                    $opened = $this->enterBlock($body, $body->getBody(), $ctx, true, array_keys($catchNames));
                     foreach ($body->getBody() as $s) {
                         $this->analyzeNode($s, $ctx);
                     }
@@ -2577,12 +2613,34 @@ final class Compiler
         $c->emit(Op::TRY_LEAVE);
         $jEnd = $c->emitJump(Op::JMP);
         $c->patch($jCatch);
-        $b = $this->catchBind[$handler];
-        $this->emitStoreBinding($b);
-        $c->emit(Op::POP);
-        // The catch parameter sits outside the body's block scope, so a `let`
-        // in the body may not reuse its name (see the analysis pass).
-        $this->lexStack[] = ['ctx' => $c, 'names' => [$b->name => $b]];
+        $param = $handler->getParam();
+        if ($param === null) {
+            // Optional catch binding: nothing to store, no name to shadow.
+            $c->emit(Op::POP);
+            $this->genScopedList($handler->getBody(), $handler->getBody()->getBody());
+            $c->patch($jEnd);
+            return;
+        }
+        $names = $this->catchBind[$handler];
+        // Pushed before the pattern is destructured (not just before the
+        // body, below): a leaf store resolves its own name through lexStack
+        // same as any other, and the catch parameter sits outside the body's
+        // block scope, so a `let` in the body may not reuse any of its names
+        // either (see the analysis pass).
+        $this->lexStack[] = ['ctx' => $c, 'names' => $names];
+        if (self::isPattern($param)) {
+            // The thrown value is materialised once into a temp, the same
+            // way a destructuring assignment's right-hand side is, since the
+            // pattern's leaves may read it more than once.
+            $t = $c->tempAlloc();
+            $c->emit(Op::SET_LOCAL, $t);
+            $c->emit(Op::POP);
+            $this->genPattern($param, static fn () => $c->emit(Op::GET_LOCAL, $t), true);
+            $c->tempFree($t);
+        } else {
+            $this->emitStoreBinding(reset($names));
+            $c->emit(Op::POP);
+        }
         $this->genScopedList($handler->getBody(), $handler->getBody()->getBody());
         array_pop($this->lexStack);
         $c->patch($jEnd);
@@ -3213,11 +3271,14 @@ final class Compiler
             }
             case 'LogicalExpression': {
                 $op = $node->getOperator();
-                if ($op !== '&&' && $op !== '||') {
-                    $this->unsupported($node, "Operator '$op' is not supported (ES5 target)");
-                }
+                $jumpOp = match ($op) {
+                    '&&' => Op::JF_KEEP,
+                    '||' => Op::JT_KEEP,
+                    '??' => Op::JNN_KEEP,
+                    default => $this->unsupported($node, "Operator '$op' is not supported (ES5 target)"),
+                };
                 $this->genExpr($node->getLeft());
-                $j = $c->emitJump($op === '&&' ? Op::JF_KEEP : Op::JT_KEEP);
+                $j = $c->emitJump($jumpOp);
                 $this->genExpr($node->getRight());
                 $c->patch($j);
                 return;

@@ -108,7 +108,10 @@ final class Ctx
     /**
      * CatchClause node -> its parameter binding, for consumers that work from
      * the AST rather than the bytecode (the ahead-of-time PHP compiler needs
-     * the slot the analysis assigned; see docs/aot-php.md §3).
+     * the slot the analysis assigned; see docs/aot-php.md §3). Populated only
+     * for a plain-identifier catch parameter -- absent for a destructuring
+     * pattern (more than one binding) or no parameter at all, which is fine
+     * since that consumer already refuses both before ever looking here.
      * @var \SplObjectStorage<object, Binding>
      */
     public \SplObjectStorage $catchBindings;

@@ -646,10 +646,73 @@ argument for growing the surface: the skips were hiding real defects.
   errant write and the later read degraded to the same global lookup. Fixed
   and landed on its own, ahead of and separate from this feature.
 
-**Next:** none queued. Every item this section originally listed has landed;
-future syntax work starts from a fresh look at what real `node_modules` code
-still rejects (`tests/acceptance/run.php`'s own rejection breakdown), not from
-a backlog written up front.
+- **Nullish coalescing** (`??`) — chosen from a fresh look at what real
+  `node_modules` code still rejects, per the note above: a 2000-file sample of
+  a large real corpus put it at 4.6% of files (`ChainExpression`, optional
+  chaining, was close behind at the same look but stayed out of scope; async
+  functions matched it almost exactly and are next).
+
+  One new opcode, `JNN_KEEP`: jumps past the right side keeping the left
+  side's value when it is neither `null` nor `undefined`, otherwise pops it
+  and falls through — the same jump-keeping-or-popping shape `JT_KEEP`/
+  `JF_KEEP` already use for `||`/`&&`, just with "nullish" in place of
+  "falsy" as the test. Peast already enforces the one early error specific to
+  this operator (mixing it with `&&`/`||` without parentheses is a
+  SyntaxError), so nothing extra was needed on that front.
+
+  **Deliberately left refused:** the logical assignment operators (`&&=`,
+  `||=`, `??=`), which need genuinely different codegen from the ordinary
+  compound-assignment path (`+=` and friends evaluate both sides
+  unconditionally; these three must not evaluate the right side, or
+  re-evaluate a member expression's object, unless the short-circuit
+  condition allows it) rather than falling out of this operator's own
+  addition for free.
+
+- **Catch clause patterns and the optional catch binding** — two related
+  gaps in the same statement, both retired together since both touch
+  `genTryCatchPart`: a catch parameter can now be a destructuring pattern
+  (`catch ({message}) {}`), and a catch clause can omit its parameter
+  entirely (`catch {}`, ES2019), discarding the thrown value with nothing
+  bound at all.
+
+  A pattern parameter binds every name `patternNames` finds in it, each its
+  own `catch`-kind `Binding` — reusing the exact `genPattern` machinery a
+  `var`/`let` declaration or a function parameter pattern already goes
+  through, materializing the thrown value into a temp once (its leaves may
+  read it more than once) the same way a destructuring assignment's
+  right-hand side is. All of a pattern's names, like the single name the
+  identifier case already had, sit in a mini-scope of their own outside the
+  catch body's block scope, so a `let` in the body may not redeclare any of
+  them — `Compiler::$catchBind` generalized from one `Binding` per
+  `CatchClause` to one per bound name to carry this through. A name repeated
+  within the same pattern (`catch ({a, a}) {}`) is a SyntaxError Peast itself
+  does not catch, so the compiler checks for it directly.
+
+  One bug surfaced building this: the pattern's own destructuring was wired
+  up to run *before* its names were pushed onto `lexStack`, so every leaf's
+  store found nothing to resolve against and fell through to the global
+  object — the same failure mode, and same class of ordering mistake, as the
+  `lexStack` double-pop fixed just above. Caught immediately by comparing
+  against Node rather than shipping on the strength of "it compiled and
+  didn't throw."
+
+  **Left as a separate, pre-existing gap:** a catch clause's own parameter
+  name (pattern or plain) may not be redeclared by a *nested function
+  declaration* in its body either, per an early error test262 checks for
+  directly — sloppy-mode Annex B function hoisting is not modeled as adding
+  a lexically-declared name for the purpose of this specific check. Fails the
+  same way, with or without this feature, on a plain identifier catch
+  parameter too.
+
+**Next:** none decided. The same fresh look turned up two live candidates
+besides the two just landed — optional chaining (`?.`, 4.6% of the sample)
+and async functions/arrows/methods (`async`/`await`, 4.3%, and the one this
+section's own commentary already singles out: generators proved the
+suspended-frame mechanism it needs, and the Promise machinery it resumes
+through already exists) — deferred in favor of these smaller ones, not ruled
+out. Future syntax work keeps starting from a fresh look at what real
+`node_modules` code still rejects (`tests/acceptance/run.php`'s own rejection
+breakdown), not from a backlog written up front.
 
 **Deliberately out of scope for now:** ES modules (node-compat resolves
 CommonJS, and published packages overwhelmingly ship it), Proxy and Reflect

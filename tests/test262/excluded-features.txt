@@ -49,8 +49,6 @@ FinalizationRegistry
 BigInt
 globalThis
 optional-chaining
-optional-catch-binding
-nullish-coalescing-operator
 logical-assignment-operators
 exponentiation
 new.target
@@ -144,7 +142,6 @@ json-parse-with-source
 top-level-await
 hashbang
 numeric-separator-literal
-coalesce-expression
 error-cause
 AggregateError
 Intl

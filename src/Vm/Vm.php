@@ -1407,6 +1407,16 @@ final class Vm
                         }
                         break;
                     }
+                    case Op::JNN_KEEP: {
+                        $t = $code[$pc++];
+                        $v = $stack[$sp - 1];
+                        if (!($v === null || $v instanceof JSUndefined)) {
+                            $pc = $t;
+                        } else {
+                            $sp--;
+                        }
+                        break;
+                    }
 
                     case Op::CALL: {
                         $argc = $code[$pc++];

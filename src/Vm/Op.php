@@ -347,6 +347,14 @@ final class Op
     public const NEW_ITER_ENV = 130; // ni
     public const RESTORE_ENV = 131;  //
 
+    /**
+     * `a ?? b`: jumps past `b` keeping `a`'s value when it is neither `null`
+     * nor `undefined`, otherwise pops it and falls through to evaluate `b` --
+     * the same jump-keeping-or-popping shape `JT_KEEP`/`JF_KEEP` already use
+     * for `||`/`&&`, just with "nullish" in place of "falsy" as the test.
+     */
+    public const JNN_KEEP = 132; // a
+
     public const NOT = 38;
     public const BNOT = 39;
     public const TYPEOF = 40;
@@ -462,6 +470,7 @@ final class Op
         self::YIELD => 'nn', self::YIELD_DELEGATE_STEP => '',
         self::SET_FUNC_NAME => 'k',
         self::CAPTURE_ENV => 'n', self::NEW_ITER_ENV => 'ni', self::RESTORE_ENV => '',
+        self::JNN_KEEP => 'a',
         self::BAND => '', self::BOR => '', self::BXOR => '',
         self::SHL => '', self::SHR => '', self::USHR => '',
         self::EQ => '', self::NEQ => '', self::SEQ => '', self::SNEQ => '',

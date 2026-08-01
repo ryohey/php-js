@@ -63,6 +63,31 @@ final class LanguageTest extends EvalTestCase
         yield 'logical value' => ['a', '"" || "a"'];
         yield 'comma' => [3, '(1, 2, 3)'];
 
+        // --- nullish coalescing ---
+        // The whole difference from `||`: only null/undefined fall through to
+        // the right side, not every other falsy value.
+        yield 'nullish coalescing on undefined' => [5, 'undefined ?? 5'];
+        yield 'nullish coalescing on null' => [5, 'null ?? 5'];
+        yield 'nullish coalescing keeps a falsy left value' => [0, '0 ?? 5'];
+        yield 'nullish coalescing keeps false' => [false, 'false ?? true'];
+        yield 'nullish coalescing keeps NaN' => [true, 'isNaN(NaN ?? 5)'];
+        yield 'nullish coalescing short-circuits the right side' => [
+            0,
+            'var calls = 0; function f() { calls++; return 1; } (5 ?? f()); calls',
+        ];
+        yield 'nullish coalescing evaluates the right side when nullish' => [
+            1,
+            'var calls = 0; function f() { calls++; return 1; } (null ?? f()); calls',
+        ];
+        yield 'nullish coalescing chains' => [3, 'null ?? undefined ?? 3'];
+        // `??` may not mix directly with `&&`/`||` without parentheses -- a
+        // grammar restriction Peast itself already enforces.
+        yield 'mixing ?? with || without parens is refused' => [
+            'SyntaxError',
+            'try { eval("1 ?? 2 || 3"); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'parenthesizing one side of a mix is fine' => [1, '(1 ?? 2) || 3'];
+
         // --- objects & prototypes ---
         yield 'object literal' => [3, 'var o={a:1,b:{c:2}}; o.a + o.b.c'];
         yield 'string and numeric keys' => [5, 'var o={"a b":2, 3:3}; o["a b"] + o[3]'];
@@ -118,6 +143,50 @@ final class LanguageTest extends EvalTestCase
         yield 'catch binding scoped' => [true, 'var e = 1; try { throw 2; } catch(e) {} e === 1'];
         yield 'break through finally' => ['ff1', 'var s=""; for(var i=0;i<9;i++){ try { if(i===1) break; } finally { s+="f"; } } s+i'];
         yield 'throw non-error' => [42, 'try { throw 42; } catch(e) { e }'];
+        // Optional catch binding (ES2019): the thrown value is simply
+        // discarded, with nothing at all bound in the catch body.
+        yield 'catch with no binding' => ['caught', 'try { throw 1; } catch { "caught"; }'];
+        yield 'catch with no binding leaves no name in scope' => [
+            'undefined',
+            'try { throw 1; } catch { } typeof e',
+        ];
+        // Catch clause destructuring patterns, reusing the same genPattern
+        // machinery a declaration or parameter pattern already goes through.
+        yield 'catch with an object pattern' => [
+            'boom,42',
+            'try { throw {message: "boom", code: 42}; } catch ({message, code}) { message + "," + code; }',
+        ];
+        yield 'catch with an array pattern' => [
+            '1,2',
+            'try { throw [1, 2, 3]; } catch ([a, b]) { a + "," + b; }',
+        ];
+        yield 'catch with a nested pattern' => [
+            'deep',
+            'try { throw {error: {message: "deep"}}; } catch ({error: {message}}) { message; }',
+        ];
+        yield 'catch pattern with a default' => [99, 'try { throw {}; } catch ({code = 99}) { code; }'];
+        // A later property's default may reach an earlier one in the same
+        // pattern, same as any other object pattern.
+        yield 'catch pattern default reaches an earlier property' => [
+            '1,2',
+            'try { throw {a: 1}; } catch ({a, b = a + 1}) { a + "," + b; }',
+        ];
+        yield 'catch pattern with a rest element' => [
+            '1,{"b":2,"c":3}',
+            'try { throw {a: 1, b: 2, c: 3}; } catch ({a, ...rest}) { a + "," + JSON.stringify(rest); }',
+        ];
+        yield 'catch pattern binding is captured by a closure' => [
+            7,
+            'var f; try { throw {v: 7}; } catch ({v}) { f = () => v; } f();',
+        ];
+        yield 'catch pattern binding is scoped to the catch body' => [
+            'SyntaxError',
+            'try { eval("try {} catch ({a}) { let a; }"); "none" } catch (e) { e.constructor.name; }',
+        ];
+        yield 'a duplicate name within a catch pattern is refused' => [
+            'SyntaxError',
+            'try { eval("try {} catch ({a, a}) {}"); "none" } catch (e) { e.constructor.name; }',
+        ];
 
         // --- typeof / void / misc operators ---
         yield 'typeof undeclared' => ['undefined', 'typeof nope'];

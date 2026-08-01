@@ -23,31 +23,30 @@ says whether the syntax work is aimed at anything:
 
 ```console
 $ php tests/acceptance/run.php --dir path/to/node_modules
-  accepted   348   87.0%
-  rejected    52   13.0%
+  accepted   353   88.2%
+  rejected    47   11.8%
 
 what the rejections tripped on:
   ChainExpression                16   4.0%
   unexpected from                 8   2.0%
-  Catch parameter patterns        5   1.2%
   unexpected export               4   1.0%
   ...
 ```
 
 Template literals, arrow functions, default/rest parameters, `let`/`const`,
-destructuring, `for…of`, spread, tagged templates, classes and generators
-have landed since — 46.8% to 87.0%. What is left of that 13.0% is mostly
-optional chaining, ES modules, catch-clause destructuring, and the class
-subfeatures (private/public fields, static blocks) still deliberately out
-of scope — see [DESIGN.md §2.5](./DESIGN.md).
+destructuring, `for…of`, spread, tagged templates, classes, generators,
+nullish coalescing and catch-clause patterns have landed since — 46.8% to
+88.2%. What is left of that 11.8% is mostly optional chaining, ES modules,
+`async`/`await`, and the class subfeatures (private/public fields, static
+blocks) still deliberately out of scope — see [DESIGN.md §2.5](./DESIGN.md).
 
 **Conformance** — the test262 pass rate over what is implemented. Against a
 current tc39/test262 checkout:
 
 | Area | Pass rate | Run |
 |---|---|---|
-| **overall** | **96.4%** | 19741 |
-| `language/` | 96.1% | 10728 |
+| **overall** | **96.4%** | 19864 |
+| `language/` | 96.1% | 10851 |
 | `built-ins/` | 96.7% | 9013 |
 
 A further ~15900 tests are skipped as out of scope: features the engine cannot
@@ -78,10 +77,12 @@ The core language works end to end:
   a real workload actually executes. ES5.1 plus template literals, arrow
   functions, default/rest parameters, `let`/`const` (block scopes, temporal dead
   zone, redeclaration errors, a fresh binding per loop iteration when one is
-  captured), destructuring, `for…of`, spread, tagged templates, classes
+  captured), destructuring (including a catch clause's own parameter, and the
+  ES2019 optional catch binding), `for…of`, spread, tagged templates, classes
   (`extends`, `super`, getters/setters, static members; private fields and
-  public class fields are refused, not silently ignored) and generators
-  (`yield`, `yield*`) so far; DESIGN.md §2.5 has the order for the rest
+  public class fields are refused, not silently ignored), generators
+  (`yield`, `yield*`) and nullish coalescing (`??`) so far; DESIGN.md §2.5 has
+  the order for the rest
 - **VM**: single `while/switch` dispatch loop, own frame stack (JS calls never
   consume the PHP call stack), in-VM exception handling, wall-clock execution
   limit
