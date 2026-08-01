@@ -10,6 +10,7 @@ use PhpJs\Runtime\JSArray;
 use PhpJs\Runtime\JSBoundFunction;
 use PhpJs\Runtime\JSFunction;
 use PhpJs\Runtime\JSFunctionBase;
+use PhpJs\Runtime\JSGeneratorObject;
 use PhpJs\Runtime\JSHole;
 use PhpJs\Runtime\JSNativeFunction;
 use PhpJs\Runtime\JSObject;
@@ -129,6 +130,13 @@ final class Vm
                 $fn
             );
         }
+        if ($fn->isGenerator) {
+            // [[Call]] on a generator function never runs the body -- it
+            // creates and returns a Generator object, suspended before its
+            // first instruction (27.5.5.2). `construct()` already refuses
+            // `new` on one, so $ctorObj is never set here.
+            return $this->createGenerator($fn, $thisVal, $args);
+        }
         if (++$this->reentry > self::MAX_REENTRY) {
             $this->reentry--;
             $this->throwError('RangeError', 'Maximum call stack size exceeded');
@@ -157,7 +165,7 @@ final class Vm
             }
             return (BuiltinRegistry::get($ctor->ctorId))($this, $args, $ctor);
         }
-        if (!$ctor instanceof JSFunction || $ctor->isArrow) {
+        if (!$ctor instanceof JSFunction || $ctor->isArrow || $ctor->isGenerator) {
             $this->throwError('TypeError', ($ctor instanceof JSFunctionBase && $ctor->name !== ''
                 ? $ctor->name : 'value') . ' is not a constructor');
         }
@@ -209,6 +217,167 @@ final class Vm
             return $t;
         }
         return Conversions::toObject($this, $t);
+    }
+
+    /**
+     * [[Call]] on a generator function (27.5.5.2, via EvaluateGeneratorBody
+     * 15.5.2): FunctionDeclarationInstantiation -- parameter binding
+     * (which can throw, e.g. a bad destructuring parameter) and hoisting --
+     * runs *now*, synchronously, the same as it would for an ordinary call.
+     * Only once that succeeds does the compiled body reach the barrier
+     * `Compiler::genFunction` inserts before its first real statement and
+     * suspend there (GeneratorStart), which is why this always drives the
+     * frame through one `execute()` pass up front rather than deferring
+     * everything to the first `resumeGenerator()` call.
+     */
+    private function createGenerator(JSFunction $func, mixed $thisVal, array $args): JSGeneratorObject
+    {
+        if (!$func->template['strict']) {
+            $thisVal = $this->coerceThis($thisVal);
+        }
+        if (++$this->reentry > self::MAX_REENTRY) {
+            $this->reentry--;
+            $this->throwError('RangeError', 'Maximum call stack size exceeded');
+        }
+        try {
+            $this->pushFrame($func, $thisVal, $args, null);
+            $result = $this->execute(count($this->frames) - 1);
+        } finally {
+            $this->reentry--;
+        }
+        // Only now -- after FunctionDeclarationInstantiation has run and
+        // could have reassigned `func.prototype` as a side effect of a
+        // parameter default -- is the generator's own [[Prototype]] read
+        // (test262 generator-created-after-decl-inst.js); constructing the
+        // JSGeneratorObject any earlier would read the wrong value.
+        $proto = $func->get('prototype', $this);
+        $gen = new JSGeneratorObject(
+            $proto instanceof JSObject ? $proto : $this->realm->generatorPrototype(),
+            $func,
+            $thisVal,
+            $args
+        );
+        // The compiled barrier always suspends before any RETURN can be
+        // reached, so this is never anything but a GeneratorSuspend.
+        $gen->suspended = $result->state;
+        return $gen;
+    }
+
+    /**
+     * GeneratorResume / GeneratorResumeAbrupt (27.5.3.2/.3), collapsed into
+     * one entry point selected by `$mode` (`Op::YIELD_NEXT/THROW/RETURN`).
+     * Returns `[value, done]`, the pieces of the `{value, done}` object
+     * `next`/`throw`/`return` hand back; a JS exception either escaped the
+     * generator body or was thrown directly here and crosses out as
+     * `JSThrowSignal`, same as everywhere else at the native boundary.
+     */
+    public function resumeGenerator(JSGeneratorObject $gen, int $mode, mixed $value): array
+    {
+        if ($gen->state === JSGeneratorObject::EXECUTING) {
+            $this->throwError('TypeError', 'Generator is already running');
+        }
+        if ($gen->state === JSGeneratorObject::COMPLETED) {
+            if ($mode === Op::YIELD_THROW) {
+                $this->throwValue($value);
+            }
+            return [$mode === Op::YIELD_RETURN ? $value : JSUndefined::$undefined, true];
+        }
+
+        // suspendedYield -- including the pre-first-statement barrier every
+        // generator starts at, which is what makes a `.throw()`/`.return()`
+        // before any `.next()` complete on the spot rather than running
+        // anything: no exception handler is registered there yet. Restore
+        // the captured frame at a fresh base -- possibly different from
+        // where it suspended, since arbitrary JS has run in between -- and
+        // continue right where YIELD left off.
+        if (count($this->frames) >= self::MAX_FRAMES) {
+            $this->throwError('RangeError', 'Maximum call stack size exceeded');
+        }
+        if (++$this->reentry > self::MAX_REENTRY) {
+            $this->reentry--;
+            $this->throwError('RangeError', 'Maximum call stack size exceeded');
+        }
+        $gen->state = JSGeneratorObject::EXECUTING;
+        $saved = $gen->suspended;
+        $gen->suspended = null;
+        $newBase = $this->sp;
+        $len = count($saved['saved']);
+        for ($i = 0; $i < $len; $i++) {
+            $this->stack[$newBase + $i] = $saved['saved'][$i];
+        }
+        $this->sp = $newBase + $len;
+        $handlers = [];
+        foreach ($saved['handlers'] as $h) {
+            $handlers[] = [$h[0], $h[1] + $newBase];
+        }
+        $this->stack[$newBase + $saved['sentSlot']] = $value;
+        $this->stack[$newBase + $saved['modeSlot']] = $mode;
+        $tpl = $gen->func->template;
+        $this->frames[] = [
+            $tpl, $newBase, $saved['pc'], $saved['env'], $gen->thisVal,
+            $tpl['usesArgs'] ? $gen->args : null, $handlers, $gen->func, null, $newBase, $saved['argsObj'],
+        ];
+        try {
+            $result = $this->execute(count($this->frames) - 1);
+        } catch (JSThrowSignal $e) {
+            $gen->state = JSGeneratorObject::COMPLETED;
+            throw $e;
+        } finally {
+            $this->reentry--;
+        }
+        return $this->settleGeneratorStep($gen, $result);
+    }
+
+    /** @return array{0: mixed, 1: bool} */
+    private function settleGeneratorStep(JSGeneratorObject $gen, mixed $result): array
+    {
+        if ($result instanceof GeneratorSuspend) {
+            $gen->state = JSGeneratorObject::SUSPENDED_YIELD;
+            $gen->suspended = $result->state;
+            return [$result->value, false];
+        }
+        $gen->state = JSGeneratorObject::COMPLETED;
+        return [$result, true];
+    }
+
+    /**
+     * One `yield*` delegation-loop pass (13.3.8.1): call `next`/`throw`/
+     * `return` on the inner iterable per `$mode` and unpack its result.
+     * `$next` is the method GetIterator captured once; `throw`/`return` are
+     * looked up on `$iter` fresh every pass, per spec -- unlike `next`,
+     * mutating them mid-delegation is observable.
+     *
+     * @return array{0: mixed, 1: bool}
+     */
+    private function yieldDelegateStep(mixed $iter, mixed $next, int $mode, mixed $sentValue): array
+    {
+        if (!$iter instanceof JSObject) {
+            $this->throwError('TypeError', 'Result of the Symbol.iterator method is not an object');
+        }
+        if ($mode === Op::YIELD_THROW) {
+            $throwM = $iter->get('throw', $this);
+            if ($throwM === null || $throwM instanceof JSUndefined) {
+                // Give the inner iterator a chance to clean up before this
+                // becomes the protocol-violation error the spec asks for.
+                $this->closeIterator($iter, false);
+                $this->throwError('TypeError', 'The iterator does not provide a "throw" method');
+            }
+            $result = $this->invoke($throwM, $iter, [$sentValue]);
+        } elseif ($mode === Op::YIELD_RETURN) {
+            $returnM = $iter->get('return', $this);
+            if ($returnM === null || $returnM instanceof JSUndefined) {
+                // No cleanup possible or needed: the received value becomes
+                // the delegation's result directly.
+                return [$sentValue, true];
+            }
+            $result = $this->invoke($returnM, $iter, [$sentValue]);
+        } else {
+            $result = $this->invoke($next, $iter, [$sentValue]);
+        }
+        if (!$result instanceof JSObject) {
+            $this->throwError('TypeError', 'Iterator result is not an object');
+        }
+        return [$result->get('value', $this), Conversions::toBoolean($result->get('done', $this))];
     }
 
     /**
@@ -667,6 +836,43 @@ final class Vm
                         $frame[self::F_PC] = $pc;
                         $this->invoke($parentCtor, $thisVal, $this->arrayToArgs($argsArr), $thisVal);
                         $stack[$sp++] = $thisVal;
+                        break;
+                    }
+                    case Op::YIELD: {
+                        $sentSlot = $code[$pc++];
+                        $modeSlot = $code[$pc++];
+                        $value = $stack[--$sp];
+                        // Everything live in this frame right now -- locals
+                        // plus whatever operand-stack values a partially
+                        // evaluated enclosing expression left behind -- has
+                        // to survive the suspension, relative to base so it
+                        // replays at whatever base the resume lands on.
+                        $saved = array_slice($stack, $base, $sp - $base);
+                        $handlers = [];
+                        foreach ($frame[self::F_HANDLERS] as $h) {
+                            $handlers[] = [$h[0], $h[1] - $base];
+                        }
+                        array_pop($frames);
+                        $this->sp = $base;
+                        return new GeneratorSuspend($value, [
+                            'saved' => $saved,
+                            'pc' => $pc,
+                            'env' => $env,
+                            'handlers' => $handlers,
+                            'argsObj' => $frame[self::F_ARGSOBJ],
+                            'sentSlot' => $sentSlot,
+                            'modeSlot' => $modeSlot,
+                        ]);
+                    }
+                    case Op::YIELD_DELEGATE_STEP: {
+                        $sentValue = $stack[--$sp];
+                        $mode = $stack[--$sp];
+                        $next = $stack[--$sp];
+                        $iter = $stack[--$sp];
+                        $this->sp = $sp;
+                        [$value, $done] = $this->yieldDelegateStep($iter, $next, $mode, $sentValue);
+                        $stack[$sp++] = $value;
+                        $stack[$sp++] = $done;
                         break;
                     }
                     case Op::NEW_TAG_TEMPLATE: {
@@ -1213,6 +1419,21 @@ final class Vm
                                 $stack[$sp++] = (BuiltinRegistry::get($func->nativeId))($this, $thisVal, $args, $func);
                                 break;
                             }
+                            if ($func->isGenerator) {
+                                // [[Call]] on a generator function creates a
+                                // Generator object instead of running the
+                                // body -- no frame to push here at all.
+                                $args = [];
+                                for ($i = 0; $i < $argc; $i++) {
+                                    $args[] = $stack[$funcPos + 2 + $i];
+                                }
+                                $thisVal = $stack[$funcPos + 1];
+                                $sp = $funcPos;
+                                $this->sp = $sp;
+                                $frame[self::F_PC] = $pc;
+                                $stack[$sp++] = $this->createGenerator($func, $thisVal, $args);
+                                break;
+                            }
                             if ($fi + 1 >= self::MAX_FRAMES) {
                                 $this->throwError('RangeError', 'Maximum call stack size exceeded');
                             }
@@ -1284,7 +1505,8 @@ final class Vm
                         $argc = $code[$pc++];
                         $ctorPos = $sp - $argc - 1;
                         $ctor = $stack[$ctorPos];
-                        if ($ctor instanceof JSFunction && $ctor->nativeId === null && !$ctor->isArrow) {
+                        if ($ctor instanceof JSFunction && $ctor->nativeId === null
+                            && !$ctor->isArrow && !$ctor->isGenerator) {
                             if ($fi + 1 >= self::MAX_FRAMES) {
                                 $this->throwError('RangeError', 'Maximum call stack size exceeded');
                             }

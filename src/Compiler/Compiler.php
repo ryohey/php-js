@@ -132,13 +132,13 @@ final class Compiler
         if ($isProgram) {
             $body = $node->getBody();
         } else {
-            if ($node->getGenerator()) {
-                $this->unsupported($node, 'Generators are not supported (ES5 target)');
-            }
             if (method_exists($node, 'getAsync') && $node->getAsync()) {
                 $this->unsupported($node, 'Async functions are not supported (ES5 target)');
             }
             $ctx->isArrow = $node->getType() === 'ArrowFunctionExpression';
+            // Arrow functions cannot be generators (no such syntax exists),
+            // so this is always exactly `function*`/`*method(){}`.
+            $ctx->isGenerator = $node->getGenerator();
             $ctx->name = $classMethodName
                 ?? ((!$ctx->isArrow && $node->getId() !== null) ? $node->getId()->getName() : '');
             $bodyNode = $node->getBody();
@@ -656,6 +656,9 @@ final class Compiler
                 return;
             case 'UnaryExpression':
             case 'UpdateExpression':
+                $this->analyzeNode($node->getArgument(), $ctx);
+                return;
+            case 'YieldExpression':
                 $this->analyzeNode($node->getArgument(), $ctx);
                 return;
             case 'ConditionalExpression':
@@ -1579,6 +1582,22 @@ final class Compiler
             $ctx->emit(Op::POP);
         }
 
+        if ($ctx->isGenerator) {
+            // GeneratorStart (27.5.3.2): parameter binding and hoisting --
+            // everything above -- run *now*, synchronously, as part of
+            // calling the generator function (so e.g. a bad destructuring
+            // parameter throws from the call itself); the body proper does
+            // not start until the first `.next()`. Reusing the ordinary
+            // yield-suspend primitive for that boundary costs nothing extra
+            // to support: a `.throw()`/`.return()` before any `.next()`
+            // hits it with no exception handlers registered yet (nothing
+            // has run to register one), which already gives exactly
+            // GeneratorResumeAbrupt's suspendedStart behavior for free.
+            $ctx->emit(Op::PUSH_UNDEF);
+            $this->genYieldSuspend();
+            $ctx->emit(Op::POP);
+        }
+
         foreach ($body as $stmt) {
             $this->genStmt($stmt);
         }
@@ -2294,6 +2313,126 @@ final class Compiler
         }
     }
 
+    // ---- generators -----------------------------------------------------------
+
+    private function genYield(object $node): void
+    {
+        if ($node->getDelegate()) {
+            $this->genYieldDelegate($node);
+            return;
+        }
+        if ($node->getArgument() !== null) {
+            $this->genExpr($node->getArgument());
+        } else {
+            $this->cur->emit(Op::PUSH_UNDEF);
+        }
+        $this->genYieldSuspend();
+    }
+
+    /**
+     * Emits `YIELD` plus the fixed three-way dispatch every suspension point
+     * shares, driven by the resume mode a later `next`/`throw`/`return`
+     * writes into the two local slots YIELD takes: NEXT leaves the sent
+     * value as this expression's result; THROW re-throws it, which the
+     * frame's own (already-restored) exception-handler table catches
+     * exactly as it would a real `THROW` at this point; RETURN runs this
+     * point's enclosing finalizers (`emitExitCleanup`, the same one a
+     * written `return` statement here would use) and returns it. `yield*`'s
+     * delegation loop emits a `YIELD` of its own but reads the mode itself
+     * instead of this fixed shape, to decide how to forward to the inner
+     * iterator.
+     */
+    private function genYieldSuspend(): void
+    {
+        $c = $this->cur;
+        $sentSlot = $c->tempAlloc();
+        $modeSlot = $c->tempAlloc();
+        $c->emit(Op::YIELD, $sentSlot, $modeSlot);
+
+        $c->emit(Op::GET_LOCAL, $modeSlot);
+        $c->emit(Op::PUSH_INT, Op::YIELD_THROW);
+        $jThrow = $c->emitJump(Op::JSEQ);
+        $c->emit(Op::GET_LOCAL, $modeSlot);
+        $c->emit(Op::PUSH_INT, Op::YIELD_RETURN);
+        $jReturn = $c->emitJump(Op::JSEQ);
+        $jNormal = $c->emitJump(Op::JMP);
+
+        $c->patch($jThrow);
+        $c->emit(Op::GET_LOCAL, $sentSlot);
+        $c->emit(Op::THROW);
+
+        $c->patch($jReturn);
+        $c->emit(Op::GET_LOCAL, $sentSlot);
+        $this->emitExitCleanup(0);
+        $c->emit(Op::RETURN);
+
+        $c->patch($jNormal);
+        $c->emit(Op::GET_LOCAL, $sentSlot);
+        $c->tempFree($modeSlot);
+        $c->tempFree($sentSlot);
+    }
+
+    /**
+     * `yield* expr` (13.3.8.1): a compiled loop around `YIELD_DELEGATE_STEP`,
+     * which does one call into the inner iterable per pass and reports back
+     * `[value, done]`. Not done: yield `value` out through a plain `YIELD`
+     * (reusing the exact same primitive `genYieldSuspend` uses) and feed how
+     * *this* yield* got resumed back in as next pass's mode/value -- which is
+     * exactly what YIELD's own resume already writes into `sentSlot`/
+     * `modeSlot`, so the loop reuses them as its "received completion"
+     * tracking variables too. Done: `value` is the delegation's result,
+     * unless the pass that produced it was itself a RETURN, in which case
+     * it is an outward return propagating through this yield*'s own
+     * enclosing finalizers, not this expression's value.
+     */
+    private function genYieldDelegate(object $node): void
+    {
+        $c = $this->cur;
+        $this->genExpr($node->getArgument());
+        $c->emit(Op::ITER_GET);
+        $nextSlot = $c->tempAlloc();
+        $c->emit(Op::SET_LOCAL, $nextSlot);
+        $c->emit(Op::POP);
+        $iterSlot = $c->tempAlloc();
+        $c->emit(Op::SET_LOCAL, $iterSlot);
+        $c->emit(Op::POP);
+
+        $sentSlot = $c->tempAlloc();
+        $modeSlot = $c->tempAlloc();
+        $c->emit(Op::PUSH_UNDEF);
+        $c->emit(Op::SET_LOCAL, $sentSlot);
+        $c->emit(Op::POP);
+        $c->emit(Op::PUSH_INT, Op::YIELD_NEXT);
+        $c->emit(Op::SET_LOCAL, $modeSlot);
+        $c->emit(Op::POP);
+
+        $lLoop = $c->here();
+        $c->emit(Op::GET_LOCAL, $iterSlot);
+        $c->emit(Op::GET_LOCAL, $nextSlot);
+        $c->emit(Op::GET_LOCAL, $modeSlot);
+        $c->emit(Op::GET_LOCAL, $sentSlot);
+        $c->emit(Op::YIELD_DELEGATE_STEP);
+        $jDone = $c->emitJump(Op::JT);
+        $c->emit(Op::YIELD, $sentSlot, $modeSlot);
+        $c->emit(Op::JMP, $lLoop);
+
+        $c->patch($jDone);
+        $c->emit(Op::GET_LOCAL, $modeSlot);
+        $c->emit(Op::PUSH_INT, Op::YIELD_RETURN);
+        $jPropagate = $c->emitJump(Op::JSEQ);
+        $jSkip = $c->emitJump(Op::JMP);
+
+        $c->patch($jPropagate);
+        $this->emitExitCleanup(0);
+        $c->emit(Op::RETURN);
+
+        $c->patch($jSkip);
+        $c->tempFree($modeSlot);
+        $c->tempFree($sentSlot);
+        $c->tempFree($iterSlot);
+        $c->tempFree($nextSlot);
+    }
+
     // ---- loops / labels -----------------------------------------------------
 
     /** @param list<string> $labels */
@@ -2377,6 +2516,9 @@ final class Compiler
             }
             case 'ClassExpression':
                 $this->genClass($node);
+                return;
+            case 'YieldExpression':
+                $this->genYield($node);
                 return;
             case 'ArrayExpression': {
                 $elements = $node->getElements();

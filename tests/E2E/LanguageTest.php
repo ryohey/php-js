@@ -1025,6 +1025,154 @@ final class LanguageTest extends EvalTestCase
         yield 'a method has a name' => ['foo', 'class A { foo() {} } A.prototype.foo.name'];
         yield 'a class has a name' => ['Foo', 'class Foo {} Foo.name'];
         yield "a constructor's length matches its parameters" => [2, 'class A { constructor(a, b) {} } A.length'];
+
+        // --- generators ---
+        yield 'a generator function is a function' => ['function', 'function* g(){} typeof g'];
+        yield 'calling a generator function does not run its body' => [false, 'var ran = false; function* g(){ ran = true; yield 1; } g(); ran'];
+        yield 'a generator instance is not a function' => ['object', 'function* g(){} typeof g()'];
+        yield 'next() steps through yields in order' => [
+            '1,2,3,true',
+            'function* g(){ yield 1; yield 2; yield 3; } var it = g();'
+                . ' var a = it.next(), b = it.next(), c = it.next(), d = it.next();'
+                . ' [a.value, b.value, c.value, d.done].join(",")',
+        ];
+        yield 'a value sent to next() becomes the yield expression\'s result' => [
+            50,
+            'function* g(){ var x = yield 1; return x * 10; } var it = g(); it.next(); it.next(5).value',
+        ];
+        yield 'a generator return value completes the iterator' => [
+            'true,99,true',
+            'function* g(){ yield 1; return 99; } var it = g(); it.next();'
+                . ' var r = it.next(); [r.done, r.value, it.next().done].join(",")',
+        ];
+        yield 'a generator without an explicit return completes with undefined' => [
+            true,
+            'function* g(){ yield 1; } var it = g(); it.next(); it.next().value === undefined',
+        ];
+        yield 'for-of drives a generator through the iteration protocol' => [
+            6, 'function* g(){ yield 1; yield 2; yield 3; } var s = 0; for (var x of g()) s += x; s',
+        ];
+        yield 'spread reads a generator to exhaustion' => [
+            '1,2,3', 'function* g(){ yield 1; yield 2; yield 3; } [...g()].join(",")',
+        ];
+        yield 'array destructuring reads from a generator' => [
+            '1,3', 'function* g(){ yield 1; yield 2; yield 3; } var [a,,c] = g(); a + "," + c',
+        ];
+        yield '.throw() is caught by a try inside the generator' => [
+            42, 'function* g(){ try { yield 1; } catch (e) { yield e + 1; } } var it = g(); it.next(); it.throw(41).value',
+        ];
+        yield 'an uncaught .throw() propagates to the caller' => [
+            'boom', 'function* g(){ yield 1; } var it = g(); it.next();'
+                . ' try { it.throw(new Error("boom")); "no throw"; } catch (e) { e.message; }',
+        ];
+        yield '.return() completes the generator with the given value' => [
+            '99,true', 'function* g(){ yield 1; yield 2; } var it = g(); it.next();'
+                . ' var r = it.return(99); r.value + "," + r.done',
+        ];
+        yield '.return() runs an enclosing finally' => [
+            true, 'function* g(){ try { yield 1; } finally { ran = true; } } var ran = false;'
+                . ' var it = g(); it.next(); it.return(5); ran',
+        ];
+        yield '.return() does not trigger an enclosing catch (it is not a throw)' => [
+            false, 'function* g(){ try { yield 1; } catch (e) { caught = true; } } var caught = false;'
+                . ' var it = g(); it.next(); it.return(5); caught',
+        ];
+        yield 'a generator suspended at start completes .return() without running the body' => [
+            '9,true,false', 'function* g(){ ran = true; yield 1; } var ran = false; var it = g();'
+                . ' var r = it.return(9); r.value + "," + r.done + "," + ran',
+        ];
+        yield 'a generator suspended at start rethrows .throw() without running the body' => [
+            false, 'function* g(){ ran = true; yield 1; } var ran = false; var it = g();'
+                . ' try { it.throw(new Error("x")); } catch (e) {} ran',
+        ];
+        yield 'a completed generator stays completed' => [
+            true, 'function* g(){ yield 1; } var it = g(); it.next(); it.next();'
+                . ' var r = it.next(); r.done && r.value === undefined',
+        ];
+        yield 'an uncaught error completes the generator' => [
+            true, 'function* g(){ yield 1; throw new Error("boom"); } var it = g(); it.next();'
+                . ' try { it.next(); } catch (e) {} it.next().done',
+        ];
+        yield 'new on a generator function throws' => [
+            'TypeError', 'function* g(){} try { new g(); "no throw"; } catch (e) { e.constructor.name; }',
+        ];
+        yield 'resuming a running generator from inside itself throws' => [
+            'TypeError', 'function* g(){ it.next(); yield 1; } var it = g();'
+                . ' try { it.next(); "no throw"; } catch (e) { e.constructor.name; }',
+        ];
+        yield 'arguments keeps its identity across a yield' => [
+            true, 'function* g(){ var a = arguments; yield; return a === arguments; } var it = g(1, 2);'
+                . ' it.next(); it.next().value',
+        ];
+        yield 'this inside a generator method is the receiver' => [
+            42, 'var o = { *m(){ yield this.x; }, x: 42 }; o.m().next().value',
+        ];
+        yield 'a generator instance is its own iterator' => [
+            true, 'function* g(){} var it = g(); it[Symbol.iterator]() === it',
+        ];
+        yield 'Object.prototype.toString tags a generator instance' => [
+            '[object Generator]', 'function* g(){} Object.prototype.toString.call(g())',
+        ];
+        yield "a generator instance's prototype chain runs through the function's own .prototype" => [
+            true, 'function* g(){} var it = g(); Object.getPrototypeOf(it) === g.prototype'
+                . ' && Object.getPrototypeOf(g.prototype) !== Object.prototype',
+        ];
+        yield 'independent generator instances do not share state' => [
+            '10,100,11,101', 'function* g(n){ yield n; yield n + 1; } var a = g(10), b = g(100);'
+                . ' [a.next().value, b.next().value, a.next().value, b.next().value].join(",")',
+        ];
+        yield 'a generator method on an object literal' => [
+            '1,2', 'var o = { *m(){ yield 1; yield 2; } }; [...o.m()].join(",")',
+        ];
+        yield 'a generator method on a class' => [
+            '1,2', 'class A { *m(){ yield 1; yield 2; } } [...new A().m()].join(",")',
+        ];
+        yield 'a static generator method' => [1, 'class A { static *m(){ yield 1; } } [...A.m()][0]'];
+        yield 'a computed generator method name' => [
+            5, 'var k = "foo"; var o = { *[k](){ yield 5; } }; [...o.foo()][0]',
+        ];
+        yield 'a bad destructuring parameter throws when the generator is called, not on first next()' => [
+            'TypeError', 'var f = function* ([[x]]) {}; try { f([null]); "no throw"; } catch (e) { e.constructor.name; }',
+        ];
+
+        // --- yield* ---
+        yield 'yield* delegates to an array' => [
+            '1,2,3', 'function* g(){ yield* [1, 2, 3]; } [...g()].join(",")',
+        ];
+        yield 'yield* delegates to a string, one code point per step' => [
+            '["a","b"]', 'function* g(){ yield* "ab"; } JSON.stringify([...g()])',
+        ];
+        yield 'yield* composes generators' => [
+            '0,1,2,3', 'function* inner(){ yield 1; yield 2; }'
+                . ' function* outer(){ yield 0; yield* inner(); yield 3; } [...outer()].join(",")',
+        ];
+        yield "yield*'s own value is the delegate's return value" => [
+            '1,99', 'function* inner(){ yield 1; return 99; }'
+                . ' function* outer(){ var r = yield* inner(); yield r; } [...outer()].join(",")',
+        ];
+        yield 'yield* forwards a sent value to the inner generator' => [
+            7, 'function* inner(){ var x = yield 1; return x; }'
+                . ' function* outer(){ var r = yield* inner(); yield r; }'
+                . ' var it = outer(); it.next(); it.next(7).value',
+        ];
+        yield 'yield* forwards .throw() to an inner catch' => [
+            141, 'function* inner(){ try { yield 1; } catch (e) { yield e + 100; } }'
+                . ' function* outer(){ yield* inner(); } var it = outer(); it.next(); it.throw(41).value',
+        ];
+        yield 'yield* with no inner throw method closes it and raises a TypeError' => [
+            'TypeError',
+            'function* outer(){ yield* { [Symbol.iterator](){ return { next(){ return {value:1,done:false}; } }; } }; }'
+                . ' var it = outer(); it.next(); try { it.throw(1); "no throw"; } catch (e) { e.constructor.name; }',
+        ];
+        yield 'yield* forwards .return() to an inner finally' => [
+            true, 'function* inner(){ try { yield 1; } finally { ran = true; } }'
+                . ' function* outer(){ yield* inner(); } var ran = false; var it = outer();'
+                . ' it.next(); it.return(5); ran',
+        ];
+        yield 'yield* .return() propagates outward once the delegate is exhausted' => [
+            '7,true', 'function* inner(){ yield 1; } function* outer(){ yield* inner(); yield 99; }'
+                . ' var it = outer(); it.next(); var r = it.return(7); r.value + "," + r.done',
+        ];
     }
 
     #[DataProvider('cases')]
@@ -1043,7 +1191,7 @@ final class LanguageTest extends EvalTestCase
     public function testUnsupportedSyntaxFailsCompilation(): void
     {
         $this->expectException(CompileError::class);
-        $this->evalJs('function* g() {}');
+        $this->evalJs('async function f() {}');
     }
 
     /**

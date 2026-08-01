@@ -44,6 +44,14 @@ final class JSFunction extends JSFunctionBase
      * a compile-time refusal rather than a runtime null-check.
      */
     public ?JSObject $homeObject = null;
+    /**
+     * `[[Call]]` on a generator function does not run the body: it creates
+     * and returns a Generator object instead (27.5.5.2), and the body only
+     * starts on the first `.next()`. Set from the template, which is also
+     * what the compiler's `analyzeFunction` uses to decide whether `yield`
+     * is legal in this body at all.
+     */
+    public bool $isGenerator = false;
 
     public function __construct(
         /** @var array<string, mixed> function template (plain array, shared) */
@@ -63,6 +71,7 @@ final class JSFunction extends JSFunctionBase
     ) {
         parent::__construct($realm->functionPrototype());
         $this->isArrow = !empty($template['arrow']);
+        $this->isGenerator = !empty($template['generator']);
         $this->name = $template['name'];
         $this->arity = $template['length'] ?? $template['nparams'];
         $id = $template['nativeId'] ?? null;
@@ -82,8 +91,14 @@ final class JSFunction extends JSFunctionBase
         // a TypeError rather than a call with an empty object.
         if ($key === 'prototype' && !$this->protoMade && !$this->isArrow) {
             $this->protoMade = true;
-            $proto = new JSObject($this->realm->objectPrototype());
-            $proto->defineOwnData('constructor', $this, self::W | self::C);
+            if ($this->isGenerator) {
+                // No `constructor` link: OrdinaryFunctionCreate does not add
+                // one for a generator's own (implicit) prototype (27.5.3).
+                $proto = new JSObject($this->realm->generatorPrototype());
+            } else {
+                $proto = new JSObject($this->realm->objectPrototype());
+                $proto->defineOwnData('constructor', $this, self::W | self::C);
+            }
             $this->defineOwnData('prototype', $proto, self::W);
         } else {
             parent::ensureOwn($key);

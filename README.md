@@ -46,11 +46,11 @@ current tc39/test262 checkout:
 
 | Area | Pass rate | Run |
 |---|---|---|
-| **overall** | **94.7%** | 16845 |
-| `language/` | 92.5% | 7835 |
-| `built-ins/` | 96.7% | 9010 |
+| **overall** | **93.9%** | 19025 |
+| `language/` | 91.5% | 10013 |
+| `built-ins/` | 96.7% | 9012 |
 
-A further ~18800 tests are skipped as out of scope: features the engine cannot
+A further ~16600 tests are skipped as out of scope: features the engine cannot
 attempt at all by front-matter tag, out-of-scope builtins by path, and — the
 largest group — tests whose *own source* uses syntax the compiler does not accept
 yet, which it cannot run by construction. The runner reports those as skips
@@ -78,9 +78,10 @@ The core language works end to end:
   a real workload actually executes. ES5.1 plus template literals, arrow
   functions, default/rest parameters, `let`/`const` (block scopes, temporal dead
   zone, redeclaration errors), destructuring, `for…of`, spread, tagged
-  templates and classes (`extends`, `super`, getters/setters, static members;
-  private fields and public class fields are refused, not silently ignored) so
-  far; DESIGN.md §2.5 has the order for the rest
+  templates, classes (`extends`, `super`, getters/setters, static members;
+  private fields and public class fields are refused, not silently ignored)
+  and generators (`yield`, `yield*`) so far; DESIGN.md §2.5 has the order for
+  the rest
 - **VM**: single `while/switch` dispatch loop, own frame stack (JS calls never
   consume the PHP call stack), in-VM exception handling, wall-clock execution
   limit

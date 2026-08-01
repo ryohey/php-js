@@ -238,6 +238,56 @@ final class Op
     /** SUPER_CALL's CALL_SPREAD counterpart: `[parentCtor this argsArray] -> [this]`. */
     public const SUPER_CALL_SPREAD = 125;
 
+    /**
+     * `yield expr` (13.3.8), and the "yield one value out" primitive `yield*`
+     * compiles its delegation loop around: `nt` -> `[value] -> []`.
+     *
+     * Pops the value being yielded and suspends the frame -- captures its
+     * live locals/operand-stack region, pc, environment and (base-relative,
+     * so they replay at whatever base the next resume happens to land on)
+     * exception-handler table, then hands control back to whichever of
+     * `next`/`throw`/`return` resumes it later (`GeneratorBuiltins`, via
+     * `Vm::resumeGenerator()`).
+     *
+     * A resume never pushes onto the operand stack: it writes the sent value
+     * into local `n` and a mode tag (0=next, 1=throw, 2=return -- `YIELD_*`
+     * below) into local `t`, then continues at the saved pc. The few
+     * instructions immediately following a YIELD are always the same fixed
+     * shape (see Compiler::genYield): branch on the mode, `THROW` the sent
+     * value, or run this yield's enclosing finalizers and `RETURN` it, or
+     * (the ordinary case) just read it as the expression's value. `yield*`
+     * uses the identical primitive but reads the mode itself instead of
+     * letting this fixed shape act on it, to decide whether to forward to
+     * the inner iterator's `next`/`throw`/`return`.
+     */
+    public const YIELD = 126; // nt
+
+    /**
+     * Resume-mode tags written to YIELD's `t` operand slot by a resume.
+     * Deliberately outside the 1..126 opcode range: `Op::name()` reflects
+     * every public int constant on this class, and a value colliding with a
+     * real opcode number would corrupt that lookup.
+     */
+    public const YIELD_NEXT = 1000;
+    public const YIELD_THROW = 1001;
+    public const YIELD_RETURN = 1002;
+
+    /**
+     * `yield* expr`'s one call into the inner iterable per delegation-loop
+     * pass (13.3.8.1): `[iter, next, mode, sentValue] -> [value, done]`.
+     *
+     * `next` is the method GetIterator captured once (like `ITER_GET`); the
+     * mode selects between calling it, or looking up `throw`/`return` on
+     * `iter` fresh (per spec, unlike `next` those are re-fetched every
+     * pass). Missing `throw` closes the inner iterator and raises the
+     * protocol-violation TypeError (13.3.8.1's Note); missing `return`
+     * completes the delegation with `sentValue` directly. `done` decides,
+     * back in the compiled loop, whether to yield `value` out and continue
+     * or -- only when `mode` was RETURN -- treat it as a `return` completion
+     * propagating out through this yield*'s own enclosing finalizers.
+     */
+    public const YIELD_DELEGATE_STEP = 127;
+
     public const NOT = 38;
     public const BNOT = 39;
     public const TYPEOF = 40;
@@ -350,6 +400,7 @@ final class Op
         self::GET_SUPER => 'k', self::GET_SUPER_ELEM => '',
         self::GET_SUPER_METHOD => 'k', self::GET_SUPER_METHOD_ELEM => '',
         self::SUPER_CALL => 'c', self::SUPER_CALL_SPREAD => '',
+        self::YIELD => 'nn', self::YIELD_DELEGATE_STEP => '',
         self::BAND => '', self::BOR => '', self::BXOR => '',
         self::SHL => '', self::SHR => '', self::USHR => '',
         self::EQ => '', self::NEQ => '', self::SEQ => '', self::SNEQ => '',

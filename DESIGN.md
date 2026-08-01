@@ -38,7 +38,7 @@ Compilation and execution are fully decoupled. The typical flow in a shared-noth
 
 Peast (ESTree-compliant) is adopted. We do not write our own.
 
-- Parse in ES5 mode; the compiler rejects out-of-scope syntax (generators, private fields, etc.) by AST node kind with an immediate error (never silently miscompile). See §2.5 for what has since grown beyond ES5.
+- Parse in ES5 mode; the compiler rejects out-of-scope syntax (`async`/`await`, private fields, etc.) by AST node kind with an immediate error (never silently miscompile). See §2.5 for what has since grown beyond ES5.
 - Peast is also a runtime dependency for the `Function` constructor / indirect `eval` (in production runs that execute only precompiled code it sits on a never-autoloaded path, so the cost is effectively zero).
 - A parser bug is fixed in the parser: `composer.json` points at
   [ryohey/peast](https://github.com/ryohey/peast) rather than working around a
@@ -381,23 +381,98 @@ argument for growing the surface: the skips were hiding real defects.
   static initialization blocks — all out of scope for the same reason as
   Proxy/Reflect below, an object-model change rather than a syntax one.
 
-**Next:** generators (2.5% of all rejections), which the VM's own frame stack
-was designed to make cheap (§4).
+- **Generators** — `function*`, `yield`, `yield*`, and the same on object-literal
+  and class methods — the VM's frame-as-our-own-data design (§4) existing
+  specifically to make this cheap, not bolted on afterward.
 
-Queued behind that: per-iteration loop bindings (which retires the refusal
-above), the separate parameter scope, and NamedEvaluation — the last is the
-largest single failure group in test262 and has been since arrow functions
-landed.
+  A generator function's `[[Call]]` never runs its body directly. Compiled
+  bytecode gets one addition: right after the parameter/hoisting prologue and
+  before the first real statement, every generator body has a `YIELD`
+  inserted as a barrier the compiler, not the source, put there.
+  `Vm::createGenerator()` pushes a frame and runs it exactly like an ordinary
+  call, which means parameter defaults and destructuring run and can throw
+  synchronously *as part of calling the function* (a bad destructuring
+  parameter is a `TypeError` from `f(...)`, not from the first `.next()`,
+  matching FunctionDeclarationInstantiation's place in
+  EvaluateGeneratorBody) — and then immediately hits that barrier and
+  suspends, before ever reaching a statement the source actually wrote. The
+  frame that suspend captures — the live locals-plus-operand-stack region
+  (relative to the frame's own base, so it replays at whatever base a later
+  resume lands on), `pc`, environment, and exception-handler table (also
+  rebased) — becomes the whole content of the returned Generator object.
+  Nothing about this is generator-specific machinery bolted beside the
+  dispatch loop; `YIELD`'s suspend path pops one frame and returns a small
+  internal sentinel (`Vm\GeneratorSuspend`) from `execute()` exactly the way
+  `RETURN` returns a value, and resuming pushes a frame and calls `execute()`
+  exactly the way any native re-entry into JS already does (the same pattern
+  `Array.prototype.map`'s callback invocation uses) — so the reentry guard,
+  frame-count limit and wall-clock deadline all apply for free.
+
+  `next`/`throw`/`return` collapse into one entry point,
+  `Vm::resumeGenerator()`, selected by a mode tag. A suspended `YIELD` always
+  resumes the same way regardless of which of the three woke it: the resumer
+  never pushes onto the operand stack (an already-inflight expression like
+  `1 + (yield x)` must find `1` exactly where it left it), it writes the sent
+  value and the mode into two ordinary local slots the compiler allocated for
+  that `YIELD` site, and lets bytecode immediately after it branch three ways
+  — `Compiler::genYieldSuspend()`, reused verbatim for the start barrier
+  above and for `yield*`'s delegation loop below. A next-mode resume just
+  reads the sent value as the yield expression's result. A throw-mode resume
+  emits an ordinary `THROW` of the sent value right there, which the frame's
+  own already-restored exception-handler table catches exactly as it would a
+  real `throw` at that point — no separate mechanism at all, and why a
+  `.throw()` before any `.next()` correctly does nothing but rethrow (no
+  handler has been registered yet). A return-mode resume runs
+  `emitExitCleanup(0)` — the identical call a written `return` statement at
+  that exact point would make — so a `.return()` reaching into a `try/finally`
+  around a `yield` runs the `finally` and nothing peculiar to generators had
+  to be taught to the exception/finally machinery to make that true.
+
+  `yield* expr` is the same `YIELD` primitive driving a compiled loop instead
+  of a single suspension. Each pass calls `next`/`throw`/`return` on the
+  inner iterable — `next` through the method GetIterator captured once,
+  `throw`/`return` looked up fresh every pass, per spec, since mutating them
+  mid-delegation is observable — validates and unpacks the result
+  (`Op::YIELD_DELEGATE_STEP`), and either yields the value out through a
+  plain `YIELD` (feeding next pass's mode/value straight from what *that*
+  suspension gets resumed with) or, once the inner iterable reports done,
+  either resolves `yield*`'s own value or — only when the pass that finished
+  it was itself return-mode — propagates an outward `return` through this
+  `yield*`'s own enclosing finalizers. A missing `throw` method closes the
+  inner iterable and raises the protocol-violation `TypeError` the spec
+  asks for; a missing `return` method completes the delegation with the
+  received value directly.
+
+  Two upstream Peast bugs surfaced building this, both fixed in
+  [ryohey/peast](https://github.com/ryohey/peast) rather than around it:
+  `MethodDefinition.kind` collapsing to `"constructor"` for any method
+  literally named `constructor` regardless of whether it was a
+  getter/setter/generator/async method (found via `get constructor(){}`,
+  fixed by only folding the kind for a plain method); and the parser's
+  context-keyword exclusion — what makes bare `yield` illegal as an
+  identifier inside a generator body — comparing a token's *raw* source text
+  against the keyword table, so an escaped `yield` silently read as an
+  ordinary identifier where the unescaped keyword was correctly rejected.
+
+  **Explicitly out of scope:** async generators and `for await` (both need
+  `async`/`await`, already out of scope below), and two narrower gaps
+  inherited from elsewhere in the compiler rather than anything about
+  generators specifically — a generator function declaration is not treated
+  as a lexical (redeclaration-checked) name the way `let`/`class` are, and a
+  generator's own `[[Prototype]]` stays `%Function.prototype%` rather than
+  the spec's separate (and practically unobservable) `%GeneratorFunction.prototype%`.
+
+**Next:** per-iteration loop bindings, which retires the refusal above; the
+separate parameter scope; and NamedEvaluation, the largest single failure
+group in test262 and has been since arrow functions landed.
 
 **Deliberately out of scope for now:** ES modules (node-compat resolves
 CommonJS, and published packages overwhelmingly ship it), Proxy and Reflect
-(an object-model change), and private fields. Generators and `async`/`await` are
-*not* dismissed: because JS frames are the VM's own data rather than PHP's call
-stack (§4), suspending one is copying a frame plus its operand-stack slice and
-resuming is restoring it at a new base with `base`, `retsp` and the handler
-stack shifted by the delta. That is mechanical here in a way it is not in an
-engine built on the host stack, and `async` then falls out of generators plus the
-Promise machinery that already exists.
+(an object-model change), and private fields. `async`/`await` is *not*
+dismissed the way those are: generators already prove the mechanism — a
+suspended frame is exactly the plain data `Vm\GeneratorSuspend` above holds,
+nothing that could not ride a snapshot (§11.3) — and `async` falls out of
+that plus the Promise machinery that already exists.
 
 ### 2.4 Peephole pass (superinstructions)
 
@@ -496,7 +571,7 @@ The VM proper is confined to a single method containing `while (true) { switch (
 Rationale (restating and concretizing the policy):
 
 - PHP function-call cost dominates; mapping JS-level calls onto PHP calls cannot win.
-- With frames as our own data, generators/async/deep recursion can be retrofitted as "frame suspend/restore" (that door closes the moment frames live on the PHP call stack).
+- With frames as our own data, generators (landed, §2.5) and `async`/deep recursion can be retrofitted as "frame suspend/restore" (that door closes the moment frames live on the PHP call stack).
 
 Hot-path discipline:
 

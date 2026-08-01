@@ -21,6 +21,13 @@ final class Ctx
      */
     public bool $isArrow = false;
     /**
+     * `function*`/`*method(){}`: `[[Call]]` creates a Generator object rather
+     * than running the body (DESIGN.md §2.5). `yield` never needs a context
+     * flag to validate its placement -- Peast itself refuses it anywhere but
+     * directly in a generator's own body, never even inside a nested arrow.
+     */
+    public bool $isGenerator = false;
+    /**
      * A class's constructor: `[[Call]]` is refused (must be `new`ed), and
      * `.prototype` is non-writable/non-enumerable/non-configurable rather than
      * the writable slot an ordinary function gets.
@@ -201,6 +208,7 @@ final class Ctx
             'nenv' => $this->nenv,
             'usesArgs' => $this->usesArguments,
             'arrow' => $this->isArrow,
+            'generator' => $this->isGenerator,
             'classCtor' => $this->isClassConstructor,
             'argMap' => $this->argMap,
             'code' => $this->code,

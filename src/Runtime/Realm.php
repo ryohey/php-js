@@ -410,6 +410,25 @@ final class Realm
         return $this->memo['%StringIteratorPrototype%'];
     }
 
+    /**
+     * %GeneratorPrototype% (27.5.1): `next`/`return`/`throw`, sitting on
+     * %IteratorPrototype% so a generator is iterable through the same
+     * `[Symbol.iterator]` every other iterator gets. Each generator
+     * function's own (lazily materialized) `.prototype` object -- what a
+     * generator instance actually inherits from -- points here, matching
+     * how an ordinary function's `.prototype` points at
+     * `%Object.prototype%` (`JSFunction::ensureOwn`).
+     */
+    public function generatorPrototype(): JSObject
+    {
+        if (!isset($this->memo['%GeneratorPrototype%'])) {
+            $proto = new JSObject($this->iteratorPrototype());
+            $this->memo['%GeneratorPrototype%'] = $proto;
+            \PhpJs\Builtins\GeneratorBuiltins::populateGeneratorProto($this, $proto);
+        }
+        return $this->memo['%GeneratorPrototype%'];
+    }
+
     /** `Symbol.iterator` and the rest; described in SymbolBuiltins. */
     public function wellKnownSymbol(string $name): JSSymbol
     {
