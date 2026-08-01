@@ -399,7 +399,7 @@ argument for growing the surface: the skips were hiding real defects.
   rebased) — becomes the whole content of the returned Generator object.
   Nothing about this is generator-specific machinery bolted beside the
   dispatch loop; `YIELD`'s suspend path pops one frame and returns a small
-  internal sentinel (`Vm\GeneratorSuspend`) from `execute()` exactly the way
+  internal sentinel (`Vm\FrameSuspend`) from `execute()` exactly the way
   `RETURN` returns a value, and resuming pushes a frame and calls `execute()`
   exactly the way any native re-entry into JS already does (the same pattern
   `Array.prototype.map`'s callback invocation uses) — so the reentry guard,
@@ -704,23 +704,97 @@ argument for growing the surface: the skips were hiding real defects.
   same way, with or without this feature, on a plain identifier catch
   parameter too.
 
-**Next:** none decided. The same fresh look turned up two live candidates
-besides the two just landed — optional chaining (`?.`, 4.6% of the sample)
-and async functions/arrows/methods (`async`/`await`, 4.3%, and the one this
-section's own commentary already singles out: generators proved the
-suspended-frame mechanism it needs, and the Promise machinery it resumes
-through already exists) — deferred in favor of these smaller ones, not ruled
-out. Future syntax work keeps starting from a fresh look at what real
-`node_modules` code still rejects (`tests/acceptance/run.php`'s own rejection
-breakdown), not from a backlog written up front.
+- **Async functions, arrows and methods** (`async`/`await`) — the candidate
+  this section's own commentary had already singled out, on the reasoning
+  that generators proved the suspended-frame mechanism and the Promise
+  machinery it resumes through already existed. Both proved out exactly as
+  expected: this landed by teaching two existing mechanisms to drive each
+  other, with no third one built from scratch.
+
+  `Vm\GeneratorSuspend` — `execute()`'s return value when a suspend point
+  pops its own frame mid-body — is renamed `FrameSuspend`, since `YIELD` no
+  longer has sole claim to producing one: `await` suspends exactly the same
+  way, through a new `AWAIT` opcode sharing `YIELD`'s own case body outright
+  (identical mechanics either way; only who drives the resume differs).
+  `FrameSuspend` also grew three fields, `func`/`thisVal`/`args`, redundant
+  for a generator's own resume (it already has them on its
+  `JSGeneratorObject`) but load-bearing for async: nothing wraps an
+  in-flight async call the way a generator wraps a suspended one, so the
+  suspend state has to be self-contained.
+
+  `Vm::createAsyncCall` is the async analogue of `createGenerator`: instead
+  of creating a Generator object suspended before its first instruction, it
+  runs FunctionDeclarationInstantiation and the body synchronously up to the
+  first `await` (or to completion) -- there is no barrier suspending before
+  the first statement the way a generator's `GeneratorStart` needs, since an
+  async function's body always starts running immediately (27.7.5.1) -- and
+  always returns a Promise, created up front, that this call is the only
+  thing that will ever settle. A throw escaping *before* any `await` rejects
+  that promise rather than propagating synchronously out of the call: per
+  spec, calling an async function never throws directly, whatever runs
+  synchronously inside it.
+
+  Resuming is where the two mechanisms actually meet: `await`'s operand goes
+  through `PromiseResolve` (adopting an existing promise or thenable rather
+  than double-wrapping it) and a reaction registered on it via the ordinary
+  `Promise.prototype.then` machinery -- a native job (`AsyncBuiltins.
+  resumeJob`, never JS-visible, the same shape `Promise.reactionJob`/
+  `Promise.thenableJob` already use) that calls `Vm::resumeAsync`, which
+  restores the frame exactly like `resumeGenerator` does and runs it forward
+  from the microtask queue automatically, with no external driver at all.
+  Nothing here runs inline: even an already-resolved value's continuation
+  waits for a microtask, which is what makes `await x` observably suspend at
+  least once regardless of what `x` is.
+
+  Everything downstream of "the frame suspends and resumes" needed no
+  changes at all: `this`, closures, a per-iteration loop binding, and
+  `try`/`catch`/`finally` (including the exception-handler-table env capture
+  built for loops and reused by generators) all already survive a suspend
+  crossing them, since none of that machinery knows or cares which of the
+  two reasons caused it.
+
+  `.prototype` and `[[Construct]]` follow the arrow's own precedent exactly:
+  an async function has neither, the same reasoning as an arrow (never
+  constructible) rather than a generator's own special case (constructible
+  only via its own iterator protocol).
+
+  **Explicitly refused, not silently ignored:** `async function*`
+  (async generators) and `for await` -- both still need each other and
+  neither is in scope yet, same as before this landed.
+
+  **Left as narrower, separate gaps, all pre-existing and none unique to
+  async:** the compiler's own wider-than-spec refusal of a parameter default
+  referencing a later parameter (§2.5's opening) also blocks referencing an
+  `await`ed later parameter, where the spec is more precise about it; a
+  function/generator/class/async-function *declaration*'s completion value
+  is not the spec's `empty` (the same gap `try`'s own completion-value tests
+  already surface); and Peast does not yet track "inside an async function"
+  precisely enough to refuse `await` as an ordinary expression inside a
+  *parameter default* specifically (it correctly refuses `await` as a
+  *binding name* there) -- the identical gap already exists for `yield` in a
+  generator's own parameter defaults, unaffected by this feature landing.
+
+  One genuine Peast bug did surface and was fixed upstream, not worked
+  around: `parseFunctionOrGeneratorDeclaration`'s `$allowGenerator=false`
+  callers (a labelled statement's body, and the Annex B.3.4 if-statement-body
+  position) correctly blocked `function*` there but had no way to also block
+  `async function`, since the async check ran unconditionally before that
+  flag was ever consulted -- `label: async function f(){}` compiled when
+  Node refuses it. The same flag now gates both, since every current caller
+  already wanted them disabled together.
+
+**Next:** optional chaining (`?.`) is the one candidate this look turned up
+that is still on the table -- comparable in the same 2000-file sample
+(4.6%, edging out async's own 4.3%) but deferred in favor of first landing
+async, not ruled out. Beyond that, none queued -- future syntax work keeps
+starting from a fresh look at what real `node_modules` code still rejects
+(`tests/acceptance/run.php`'s own rejection breakdown), not from a backlog
+written up front.
 
 **Deliberately out of scope for now:** ES modules (node-compat resolves
 CommonJS, and published packages overwhelmingly ship it), Proxy and Reflect
-(an object-model change), and private fields. `async`/`await` is *not*
-dismissed the way those are: generators already prove the mechanism — a
-suspended frame is exactly the plain data `Vm\GeneratorSuspend` above holds,
-nothing that could not ride a snapshot (§11.3) — and `async` falls out of
-that plus the Promise machinery that already exists.
+(an object-model change), private fields, and async generators/`for await`
+(both need each other, neither built yet).
 
 ### 2.4 Peephole pass (superinstructions)
 

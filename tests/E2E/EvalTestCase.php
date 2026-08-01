@@ -22,23 +22,50 @@ abstract class EvalTestCase extends TestCase
      */
     protected function assertJs(mixed $expected, string $source, string $message = ''): void
     {
-        $actual = $this->evalJs($source);
+        $this->assertJsValue($expected, $this->evalJs($source), $message !== '' ? $message : "from: $source");
+    }
+
+    private function assertJsValue(mixed $expected, mixed $actual, string $message): void
+    {
         if (is_float($expected) && is_nan($expected)) {
-            $this->assertTrue(is_float($actual) && is_nan($actual), $message !== '' ? $message : "expected NaN from: $source");
+            $this->assertTrue(is_float($actual) && is_nan($actual), "expected NaN $message");
             return;
         }
         if (is_float($expected) || is_int($expected)) {
             $this->assertTrue(
                 (is_int($actual) || is_float($actual)) && $actual == $expected,
-                ($message !== '' ? $message : "from: $source") . ' — got ' . var_export($actual, true)
+                "$message — got " . var_export($actual, true)
             );
             return;
         }
-        $this->assertSame($expected, $actual, $message !== '' ? $message : "from: $source");
+        $this->assertSame($expected, $actual, $message);
     }
 
     protected function assertJsUndefined(string $source): void
     {
         $this->assertInstanceOf(JSUndefined::class, $this->evalJs($source), "expected undefined from: $source");
+    }
+
+    /**
+     * A source's own completion value is captured before the microtask queue
+     * drains (Engine::evaluate), so it can never observe an `await`'s result
+     * directly. This runs the source through `eval` inside an `async` IIFE
+     * of its own -- awaiting whatever it completes with, promise or plain
+     * value either way -- and reads the settled result back with a second
+     * `evaluate()` call, by which point the first call's own drain has
+     * already run.
+     */
+    protected function evalJsAsync(string $source): mixed
+    {
+        $engine = new Engine();
+        $engine->evaluate(
+            'var __asyncResult; (async () => { __asyncResult = await eval(' . json_encode($source) . '); })();'
+        );
+        return $engine->evaluate('__asyncResult');
+    }
+
+    protected function assertJsAsync(mixed $expected, string $source, string $message = ''): void
+    {
+        $this->assertJsValue($expected, $this->evalJsAsync($source), $message !== '' ? $message : "from: $source");
     }
 }

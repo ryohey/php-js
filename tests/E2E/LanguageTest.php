@@ -1516,6 +1516,83 @@ final class LanguageTest extends EvalTestCase
         $this->assertJs($expected, $source);
     }
 
+    /**
+     * Async cases run separately from the synchronous ones above: their
+     * completion is only observable after the microtask queue drains, which
+     * `assertJsAsync` (EvalTestCase) handles by awaiting the source itself
+     * from inside an `async` IIFE of its own and reading the result back
+     * with a second `evaluate()` call.
+     */
+    public static function asyncCases(): iterable
+    {
+        yield 'an async function returns a promise' => [true, 'async function f() { return 1; } f() instanceof Promise'];
+        yield 'awaiting a plain value resolves with it' => [1, 'async function f() { return await 1; } f()'];
+        yield 'awaiting a resolved promise unwraps it' => [
+            6, 'async function f() { var x = await Promise.resolve(5); return x + 1; } f()',
+        ];
+        yield 'awaiting a thenable adopts its resolution' => [
+            42, 'async function f() { return await { then(res) { res(42); } }; } f()',
+        ];
+        // The body runs synchronously up to the first await -- observable
+        // only because nothing after `f()` in the source can see "b" until
+        // the microtask that pushes it has had a chance to run, same timing
+        // this whole async test path exists to exercise.
+        yield 'the body runs synchronously up to the first await' => [
+            'a,c', 'var log = []; async function f() { log.push("a"); await null; log.push("b"); }'
+                . ' f(); log.push("c"); log.join(",")',
+        ];
+        yield 'a rejection is catchable across an await' => [
+            'x', 'async function f() { try { await Promise.reject(new Error("x")); return "no"; }'
+                . ' catch (e) { return e.message; } } f()',
+        ];
+        yield 'an uncaught throw becomes a rejection, not a synchronous throw' => [
+            'boom', 'async function f() { throw new Error("boom"); } f().catch(e => e.message)',
+        ];
+        yield 'a throw after an await also becomes a rejection' => [
+            'boom', 'async function f() { await 1; throw new Error("boom"); } f().catch(e => e.message)',
+        ];
+        yield 'a finally block still runs when its try awaits' => [
+            'try,finally', 'var log = []; async function f() { try { await null; log.push("try"); }'
+                . ' finally { log.push("finally"); } return log.join(","); } f()',
+        ];
+        yield 'nested async functions compose' => [
+            6, 'async function inner() { return await 5; } async function outer() { return (await inner()) + 1; } outer()',
+        ];
+        yield 'an async arrow function' => [6, 'var f = async (x) => await x + 1; f(5)'];
+        yield 'an async object literal method' => [6, '({ async m(x) { return await x * 2; } }).m(3)'];
+        yield 'an async class method' => [8, 'class C { async m(x) { return await x * 2; } } new C().m(4)'];
+        // `this` travels across the suspension exactly like any other local.
+        yield 'this is preserved across a suspend in an async method' => [
+            5, 'var o = { x: 5, async m() { await null; return this.x; } }; o.m()',
+        ];
+        // A per-iteration loop binding a closure captures survives a suspend
+        // inside the loop body the same way it does without one.
+        yield 'a per-iteration loop binding survives an await in the body' => [
+            '0,1,2', 'async function f() { var fns = []; for (let i = 0; i < 3; i++) { await null; fns.push(() => i); }'
+                . ' return fns.map(fn => fn()).join(","); } f()',
+        ];
+        yield 'an error escaping a nested async call propagates through await' => [
+            'deep', 'async function inner() { throw new Error("deep"); } async function outer() { await inner(); return "no"; }'
+                . ' outer().catch(e => e.message)',
+        ];
+        yield 'Promise.all resolves once every async function does' => [
+            '1,2,3', 'async function f(n) { return await n; } Promise.all([f(1), f(2), f(3)]).then(a => a.join(","))',
+        ];
+        yield 'async function has no own prototype' => ['undefined', 'async function f(){} typeof f.prototype'];
+        yield 'new on an async function is refused' => [
+            'TypeError', 'try { new (async function(){}); "none" } catch (e) { e.constructor.name }',
+        ];
+        yield 'async generators are refused, not silently accepted' => [
+            'SyntaxError', 'try { eval("async function* g(){}"); "none" } catch (e) { e.constructor.name }',
+        ];
+    }
+
+    #[DataProvider('asyncCases')]
+    public function testAsyncCase(mixed $expected, string $source): void
+    {
+        $this->assertJsAsync($expected, $source);
+    }
+
     public function testUncaughtBecomesHostException(): void
     {
         $this->expectException(JSException::class);
@@ -1526,7 +1603,7 @@ final class LanguageTest extends EvalTestCase
     public function testUnsupportedSyntaxFailsCompilation(): void
     {
         $this->expectException(CompileError::class);
-        $this->evalJs('async function f() {}');
+        $this->evalJs('async function* f() {}');
     }
 
     /**

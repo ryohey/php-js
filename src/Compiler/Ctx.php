@@ -34,6 +34,15 @@ final class Ctx
      */
     public bool $isGenerator = false;
     /**
+     * `async function`/`async () => {}`/`async m(){}`: `[[Call]]` returns a
+     * Promise immediately and drives the body through `await` suspend points
+     * automatically (`Vm::createAsyncCall`), rather than running it straight
+     * through or handing back a Generator object. Combined with `isGenerator`
+     * is refused at compile time -- async generators need `for await` too,
+     * both still out of scope (DESIGN.md §2.5).
+     */
+    public bool $isAsync = false;
+    /**
      * A class's constructor: `[[Call]]` is refused (must be `new`ed), and
      * `.prototype` is non-writable/non-enumerable/non-configurable rather than
      * the writable slot an ordinary function gets.
@@ -239,6 +248,7 @@ final class Ctx
             'usesArgs' => $this->usesArguments,
             'arrow' => $this->isArrow,
             'generator' => $this->isGenerator,
+            'async' => $this->isAsync,
             'classCtor' => $this->isClassConstructor,
             'argMap' => $this->argMap,
             'code' => $this->code,

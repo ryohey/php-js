@@ -52,6 +52,14 @@ final class JSFunction extends JSFunctionBase
      * is legal in this body at all.
      */
     public bool $isGenerator = false;
+    /**
+     * `async function`/`async () => {}`/`async m(){}`: `[[Call]]` returns a
+     * Promise immediately rather than running the body straight through or
+     * handing back a Generator object (`Vm::createAsyncCall`). Like an
+     * arrow, has no `prototype` at all -- an async function is never
+     * constructible either.
+     */
+    public bool $isAsync = false;
 
     public function __construct(
         /** @var array<string, mixed> function template (plain array, shared) */
@@ -72,6 +80,7 @@ final class JSFunction extends JSFunctionBase
         parent::__construct($realm->functionPrototype());
         $this->isArrow = !empty($template['arrow']);
         $this->isGenerator = !empty($template['generator']);
+        $this->isAsync = !empty($template['async']);
         $this->name = $template['name'];
         $this->arity = $template['length'] ?? $template['nparams'];
         $id = $template['nativeId'] ?? null;
@@ -87,9 +96,10 @@ final class JSFunction extends JSFunctionBase
 
     protected function ensureOwn(string $key): void
     {
-        // An arrow has no `prototype` at all, which is what makes `new` on one
-        // a TypeError rather than a call with an empty object.
-        if ($key === 'prototype' && !$this->protoMade && !$this->isArrow) {
+        // An arrow or an async function has no `prototype` at all, which is
+        // what makes `new` on either a TypeError rather than a call with an
+        // empty object.
+        if ($key === 'prototype' && !$this->protoMade && !$this->isArrow && !$this->isAsync) {
             $this->protoMade = true;
             if ($this->isGenerator) {
                 // No `constructor` link: OrdinaryFunctionCreate does not add
@@ -107,7 +117,7 @@ final class JSFunction extends JSFunctionBase
 
     public function ensureAllOwn(): void
     {
-        if (!$this->isArrow) {
+        if (!$this->isArrow && !$this->isAsync) {
             $this->ensureOwn('prototype');
         }
         parent::ensureAllOwn();

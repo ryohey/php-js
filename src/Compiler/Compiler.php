@@ -160,13 +160,14 @@ final class Compiler
         if ($isProgram) {
             $body = $node->getBody();
         } else {
-            if (method_exists($node, 'getAsync') && $node->getAsync()) {
-                $this->unsupported($node, 'Async functions are not supported (ES5 target)');
-            }
             $ctx->isArrow = $node->getType() === 'ArrowFunctionExpression';
             // Arrow functions cannot be generators (no such syntax exists),
             // so this is always exactly `function*`/`*method(){}`.
             $ctx->isGenerator = $node->getGenerator();
+            $ctx->isAsync = method_exists($node, 'getAsync') && $node->getAsync();
+            if ($ctx->isAsync && $ctx->isGenerator) {
+                $this->unsupported($node, 'Async generators are not supported');
+            }
             $ctx->name = $inferredName
                 ?? ((!$ctx->isArrow && $node->getId() !== null) ? $node->getId()->getName() : '');
             $bodyNode = $node->getBody();
@@ -751,6 +752,7 @@ final class Compiler
                 $this->analyzeNode($node->getArgument(), $ctx);
                 return;
             case 'YieldExpression':
+            case 'AwaitExpression':
                 $this->analyzeNode($node->getArgument(), $ctx);
                 return;
             case 'ConditionalExpression':
@@ -2913,6 +2915,40 @@ final class Compiler
         $c->tempFree($sentSlot);
     }
 
+    // ---- async functions --------------------------------------------------------
+
+    /**
+     * `await expr`'s suspend plus the fixed two-way dispatch every resume
+     * reaches, driven by the mode `Vm::resumeAsync` writes into the same two
+     * local slots `YIELD`'s own suspend uses: fulfilled leaves the settled
+     * value as this expression's result, rejected re-throws it -- which the
+     * frame's own (already-restored) exception-handler table catches exactly
+     * as it would a real `THROW` here. No third mode: nothing external can
+     * `.return()` an in-flight await the way it can a suspended generator, so
+     * there is no enclosing-finalizer case to run, unlike `genYieldSuspend`.
+     */
+    private function genAwaitSuspend(): void
+    {
+        $c = $this->cur;
+        $sentSlot = $c->tempAlloc();
+        $modeSlot = $c->tempAlloc();
+        $c->emit(Op::AWAIT, $sentSlot, $modeSlot);
+
+        $c->emit(Op::GET_LOCAL, $modeSlot);
+        $c->emit(Op::PUSH_INT, Op::YIELD_THROW);
+        $jRejected = $c->emitJump(Op::JSEQ);
+        $jFulfilled = $c->emitJump(Op::JMP);
+
+        $c->patch($jRejected);
+        $c->emit(Op::GET_LOCAL, $sentSlot);
+        $c->emit(Op::THROW);
+
+        $c->patch($jFulfilled);
+        $c->emit(Op::GET_LOCAL, $sentSlot);
+        $c->tempFree($modeSlot);
+        $c->tempFree($sentSlot);
+    }
+
     /**
      * `yield* expr` (13.3.8.1): a compiled loop around `YIELD_DELEGATE_STEP`,
      * which does one call into the inner iterable per pass and reports back
@@ -3060,6 +3096,10 @@ final class Compiler
                 return;
             case 'YieldExpression':
                 $this->genYield($node);
+                return;
+            case 'AwaitExpression':
+                $this->genExpr($node->getArgument());
+                $this->genAwaitSuspend();
                 return;
             case 'ArrayExpression': {
                 $elements = $node->getElements();

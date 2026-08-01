@@ -31,7 +31,7 @@ final class JSGeneratorObject extends JSObject
 
     /**
      * Captured by a `YIELD` opcode while suspended; null only while
-     * `$state` is `executing` or `completed`. See `Vm\GeneratorSuspend` for
+     * `$state` is `executing` or `completed`. See `Vm\FrameSuspend` for
      * the shape.
      * @var array<string, mixed>|null
      */

@@ -355,6 +355,19 @@ final class Op
      */
     public const JNN_KEEP = 132; // a
 
+    /**
+     * `await expr` (27.7.5.3): suspends the frame exactly like `YIELD` does
+     * (same two operand slots, same `Vm` case) -- the only difference is who
+     * drives the resume. A generator's `YIELD` waits for an external
+     * `next`/`throw`/`return`; `AWAIT` instead has `Vm::createAsyncCall`
+     * itself register a promise reaction that calls `Vm::resumeAsync` once
+     * the awaited value settles, with no JS-visible driver at all. The mode
+     * written back on resume reuses `YIELD_NEXT`/`YIELD_THROW` (fulfilled /
+     * rejected) -- await has no third mode, since nothing external can
+     * `.return()` an in-flight await the way it can a suspended generator.
+     */
+    public const AWAIT = 133; // nn
+
     public const NOT = 38;
     public const BNOT = 39;
     public const TYPEOF = 40;
@@ -471,6 +484,7 @@ final class Op
         self::SET_FUNC_NAME => 'k',
         self::CAPTURE_ENV => 'n', self::NEW_ITER_ENV => 'ni', self::RESTORE_ENV => '',
         self::JNN_KEEP => 'a',
+        self::AWAIT => 'nn',
         self::BAND => '', self::BOR => '', self::BXOR => '',
         self::SHL => '', self::SHR => '', self::USHR => '',
         self::EQ => '', self::NEQ => '', self::SEQ => '', self::SNEQ => '',

@@ -14,7 +14,6 @@ class-static-fields-public
 class-static-fields-private
 class-static-methods-private
 class-static-block
-async-functions
 async-iteration
 tail-call-optimization
 Symbol.asyncIterator
@@ -131,7 +130,6 @@ Promise.any
 Promise.prototype.finally
 Promise.try
 promise-with-resolvers
-async-await
 dynamic-import
 import.meta
 import-assertions

@@ -71,6 +71,7 @@ final class BuiltinRegistry
             RegExpBuiltins::entries(),
             DateBuiltins::entries(),
             PromiseBuiltins::entries(),
+            AsyncBuiltins::entries(),
         );
     }
 }

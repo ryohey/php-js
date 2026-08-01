@@ -259,8 +259,12 @@ final class PromiseBuiltins
         return $promise;
     }
 
-    /** PromiseResolve without the receiver check, for internal use. */
-    private static function promiseResolve(Vm $vm, mixed $v): JSPromise
+    /**
+     * PromiseResolve without the receiver check, for internal use --
+     * `Vm::createAsyncCall`'s `await` handling needs exactly this (25.6.4.1
+     * step 2), never the user-overridable `Promise.resolve`.
+     */
+    public static function promiseResolve(Vm $vm, mixed $v): JSPromise
     {
         if ($v instanceof JSPromise) {
             return $v;

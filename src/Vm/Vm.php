@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpJs\Vm;
 
 use PhpJs\Builtins\BuiltinRegistry;
+use PhpJs\Builtins\PromiseBuiltins;
 use PhpJs\Runtime\Conversions;
 use PhpJs\Runtime\JSArray;
 use PhpJs\Runtime\JSBoundFunction;
@@ -14,6 +15,7 @@ use PhpJs\Runtime\JSGeneratorObject;
 use PhpJs\Runtime\JSHole;
 use PhpJs\Runtime\JSNativeFunction;
 use PhpJs\Runtime\JSObject;
+use PhpJs\Runtime\JSPromise;
 use PhpJs\Runtime\JSThrowSignal;
 use PhpJs\Runtime\JSUndefined;
 use PhpJs\Runtime\Realm;
@@ -137,6 +139,14 @@ final class Vm
             // `new` on one, so $ctorObj is never set here.
             return $this->createGenerator($fn, $thisVal, $args);
         }
+        if ($fn->isAsync) {
+            // [[Call]] on an async function runs synchronously up to its
+            // first `await` (or to completion) and always returns a Promise,
+            // never a thrown value even for a throw before any await
+            // (AsyncFunctionStart, 27.7.5.1). `construct()` already refuses
+            // `new` on one, so $ctorObj is never set here.
+            return $this->createAsyncCall($fn, $thisVal, $args);
+        }
         if (++$this->reentry > self::MAX_REENTRY) {
             $this->reentry--;
             $this->throwError('RangeError', 'Maximum call stack size exceeded');
@@ -165,7 +175,7 @@ final class Vm
             }
             return (BuiltinRegistry::get($ctor->ctorId))($this, $args, $ctor);
         }
-        if (!$ctor instanceof JSFunction || $ctor->isArrow || $ctor->isGenerator) {
+        if (!$ctor instanceof JSFunction || $ctor->isArrow || $ctor->isGenerator || $ctor->isAsync) {
             $this->throwError('TypeError', ($ctor instanceof JSFunctionBase && $ctor->name !== ''
                 ? $ctor->name : 'value') . ' is not a constructor');
         }
@@ -258,7 +268,7 @@ final class Vm
             $args
         );
         // The compiled barrier always suspends before any RETURN can be
-        // reached, so this is never anything but a GeneratorSuspend.
+        // reached, so this is never anything but a FrameSuspend.
         $gen->suspended = $result->state;
         return $gen;
     }
@@ -331,13 +341,143 @@ final class Vm
     /** @return array{0: mixed, 1: bool} */
     private function settleGeneratorStep(JSGeneratorObject $gen, mixed $result): array
     {
-        if ($result instanceof GeneratorSuspend) {
+        if ($result instanceof FrameSuspend) {
             $gen->state = JSGeneratorObject::SUSPENDED_YIELD;
             $gen->suspended = $result->state;
             return [$result->value, false];
         }
         $gen->state = JSGeneratorObject::COMPLETED;
         return [$result, true];
+    }
+
+    /**
+     * [[Call]] on an async function (AsyncFunctionStart, 27.7.5.1): runs
+     * FunctionDeclarationInstantiation and the body synchronously, same as
+     * an ordinary call, up to its first `await` (if any) -- unlike a
+     * generator, there is no barrier suspending before the first statement,
+     * since an async function's body always starts running immediately. The
+     * Promise this returns is created up front and is the only one this
+     * call will ever settle, however many `await`s the body goes through
+     * before it does.
+     *
+     * A throw escaping *before* any `await` -- including one from a bad
+     * destructuring parameter, exactly the case that made `createGenerator`
+     * defer reading `.prototype` -- rejects the promise rather than
+     * propagating out of this call: per spec, calling an async function
+     * never throws synchronously, it always returns a promise.
+     */
+    private function createAsyncCall(JSFunction $func, mixed $thisVal, array $args): JSPromise
+    {
+        $promise = new JSPromise($this->realm->promisePrototype());
+        if (++$this->reentry > self::MAX_REENTRY) {
+            $this->reentry--;
+            PromiseBuiltins::rejectPromise($this, $promise, $this->realm->createError(
+                'RangeError',
+                'Maximum call stack size exceeded'
+            ));
+            return $promise;
+        }
+        try {
+            $this->pushFrame($func, $thisVal, $args, null);
+            $result = $this->execute(count($this->frames) - 1);
+        } catch (JSThrowSignal $e) {
+            PromiseBuiltins::rejectPromise($this, $promise, $e->value);
+            return $promise;
+        } finally {
+            $this->reentry--;
+        }
+        $this->settleAsyncStep($promise, $result);
+        return $promise;
+    }
+
+    /**
+     * Either the body suspended at an `await` -- register a reaction that
+     * resumes it once the awaited value settles -- or it ran to completion,
+     * in which case the promise settles right now, the same as any other
+     * `resolve(returnValue)`/an escaped throw already turned into a
+     * rejection by the caller.
+     */
+    private function settleAsyncStep(JSPromise $promise, mixed $result): void
+    {
+        if ($result instanceof FrameSuspend) {
+            $this->scheduleAsyncResume($promise, $result);
+            return;
+        }
+        PromiseBuiltins::resolvePromise($this, $promise, $result);
+    }
+
+    /**
+     * `Await` (27.7.5.3): wrap the awaited value through `PromiseResolve` --
+     * adopting an existing promise or thenable rather than double-wrapping
+     * it -- and drive the suspended frame's resume off its settlement,
+     * entirely through the ordinary microtask queue (`PromiseBuiltins::
+     * then`'s reaction jobs). No part of this ever runs inline: even an
+     * already-fulfilled value's continuation waits for a microtask, which is
+     * what makes `await x` observably suspend at least once even when `x` is
+     * not a promise at all.
+     */
+    private function scheduleAsyncResume(JSPromise $promise, FrameSuspend $suspend): void
+    {
+        $awaited = PromiseBuiltins::promiseResolve($this, $suspend->value);
+        $onFulfilled = $this->realm->nativeFn('Async.resumeJob', '', 1, null, [$promise, $suspend->state, Op::YIELD_NEXT]);
+        $onRejected = $this->realm->nativeFn('Async.resumeJob', '', 1, null, [$promise, $suspend->state, Op::YIELD_THROW]);
+        PromiseBuiltins::then($this, $awaited, [$onFulfilled, $onRejected]);
+    }
+
+    /**
+     * The reaction job `scheduleAsyncResume` registers, run from the
+     * microtask queue once the awaited value settles: restore the suspended
+     * frame exactly like `resumeGenerator` does (there is no wrapper object
+     * to read `func`/`thisVal`/`args` from here, which is why `FrameSuspend`
+     * carries them itself), write the settled value and fulfilled/rejected
+     * mode into `AWAIT`'s own two slots, and run it forward. A throw
+     * escaping this resumed execution rejects the async function's own
+     * promise rather than propagating into the microtask queue, which has
+     * nothing meaningful to do with a bare PHP exception.
+     */
+    public function resumeAsync(JSPromise $promise, array $state, int $mode, mixed $value): void
+    {
+        if (count($this->frames) >= self::MAX_FRAMES) {
+            PromiseBuiltins::rejectPromise($this, $promise, $this->realm->createError(
+                'RangeError',
+                'Maximum call stack size exceeded'
+            ));
+            return;
+        }
+        if (++$this->reentry > self::MAX_REENTRY) {
+            $this->reentry--;
+            PromiseBuiltins::rejectPromise($this, $promise, $this->realm->createError(
+                'RangeError',
+                'Maximum call stack size exceeded'
+            ));
+            return;
+        }
+        $newBase = $this->sp;
+        $len = count($state['saved']);
+        for ($i = 0; $i < $len; $i++) {
+            $this->stack[$newBase + $i] = $state['saved'][$i];
+        }
+        $this->sp = $newBase + $len;
+        $handlers = [];
+        foreach ($state['handlers'] as $h) {
+            $handlers[] = [$h[0], $h[1] + $newBase, $h[2]];
+        }
+        $this->stack[$newBase + $state['sentSlot']] = $value;
+        $this->stack[$newBase + $state['modeSlot']] = $mode;
+        $func = $state['func'];
+        $this->frames[] = [
+            $func->template, $newBase, $state['pc'], $state['env'], $state['thisVal'],
+            $state['args'], $handlers, $func, null, $newBase, $state['argsObj'],
+        ];
+        try {
+            $result = $this->execute(count($this->frames) - 1);
+        } catch (JSThrowSignal $e) {
+            PromiseBuiltins::rejectPromise($this, $promise, $e->value);
+            return;
+        } finally {
+            $this->reentry--;
+        }
+        $this->settleAsyncStep($promise, $result);
     }
 
     /**
@@ -862,7 +1002,13 @@ final class Vm
                         $stack[$sp++] = $thisVal;
                         break;
                     }
-                    case Op::YIELD: {
+                    case Op::YIELD:
+                    case Op::AWAIT: {
+                        // Identical suspend mechanics either way -- only who
+                        // drives the resume differs: `resumeGenerator`, called
+                        // externally by `next`/`throw`/`return`, for YIELD;
+                        // `resumeAsync`, called automatically off a promise
+                        // reaction, for AWAIT (Vm::createAsyncCall).
                         $sentSlot = $code[$pc++];
                         $modeSlot = $code[$pc++];
                         $value = $stack[--$sp];
@@ -879,16 +1025,23 @@ final class Vm
                             // carries through unchanged.
                             $handlers[] = [$h[0], $h[1] - $base, $h[2]];
                         }
+                        $func = $frame[self::F_FUNC];
+                        $thisVal = $frame[self::F_THIS];
+                        $frameArgs = $frame[self::F_ARGS];
+                        $argsObj = $frame[self::F_ARGSOBJ];
                         array_pop($frames);
                         $this->sp = $base;
-                        return new GeneratorSuspend($value, [
+                        return new FrameSuspend($value, [
                             'saved' => $saved,
                             'pc' => $pc,
                             'env' => $env,
                             'handlers' => $handlers,
-                            'argsObj' => $frame[self::F_ARGSOBJ],
+                            'argsObj' => $argsObj,
                             'sentSlot' => $sentSlot,
                             'modeSlot' => $modeSlot,
+                            'func' => $func,
+                            'thisVal' => $thisVal,
+                            'args' => $frameArgs,
                         ]);
                     }
                     case Op::YIELD_DELEGATE_STEP: {
@@ -1471,6 +1624,23 @@ final class Vm
                                 $stack[$sp++] = $this->createGenerator($func, $thisVal, $args);
                                 break;
                             }
+                            if ($func->isAsync) {
+                                // [[Call]] on an async function runs the body
+                                // synchronously up to its first `await` (or to
+                                // completion) and always returns a Promise --
+                                // no frame to push here at all, same shape as
+                                // the generator case above.
+                                $args = [];
+                                for ($i = 0; $i < $argc; $i++) {
+                                    $args[] = $stack[$funcPos + 2 + $i];
+                                }
+                                $thisVal = $func->isArrow ? $func->lexicalThis : $stack[$funcPos + 1];
+                                $sp = $funcPos;
+                                $this->sp = $sp;
+                                $frame[self::F_PC] = $pc;
+                                $stack[$sp++] = $this->createAsyncCall($func, $thisVal, $args);
+                                break;
+                            }
                             if ($fi + 1 >= self::MAX_FRAMES) {
                                 $this->throwError('RangeError', 'Maximum call stack size exceeded');
                             }
@@ -1543,7 +1713,7 @@ final class Vm
                         $ctorPos = $sp - $argc - 1;
                         $ctor = $stack[$ctorPos];
                         if ($ctor instanceof JSFunction && $ctor->nativeId === null
-                            && !$ctor->isArrow && !$ctor->isGenerator) {
+                            && !$ctor->isArrow && !$ctor->isGenerator && !$ctor->isAsync) {
                             if ($fi + 1 >= self::MAX_FRAMES) {
                                 $this->throwError('RangeError', 'Maximum call stack size exceeded');
                             }
