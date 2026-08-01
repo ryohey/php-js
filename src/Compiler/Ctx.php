@@ -11,7 +11,13 @@ namespace PhpJs\Compiler;
 final class Ctx
 {
     // ---- analysis ----
-    public ?Ctx $parent = null;
+    /**
+     * The enclosing scope this function was declared in -- almost always
+     * another function's Ctx, but a `LoopEnvScope` when the declaration site
+     * sits inside a loop that turns out to need its own per-iteration
+     * environment (`Compiler::envDepth` walks through either uniformly).
+     */
+    public Ctx|LoopEnvScope|null $parent = null;
     public bool $isProgram = false;
     public bool $strict = false;
     public bool $usesArguments = false;

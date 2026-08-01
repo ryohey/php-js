@@ -309,6 +309,44 @@ final class Op
      */
     public const SET_FUNC_NAME = 128; // k
 
+    /**
+     * Per-iteration loop bindings (CreatePerIterationEnvironment, 14.7.4.3),
+     * for a loop with a `let`/`const`/`class` binding a closure inside it
+     * captures -- the one place this VM creates an environment record
+     * anywhere but a function call. Three opcodes, used together by
+     * `Compiler::genLoopIterEnv`/`emitExitCleanup`:
+     *
+     * `CAPTURE_ENV n` -- `[] -> []`. Stashes the *current* environment (the
+     * loop's own outer scope, unchanged for the loop's whole lifetime) into
+     * local `n`, once, before the first per-iteration environment replaces
+     * it as current. Every later per-iteration environment is created as a
+     * *sibling* of the previous one, not a child of it -- chaining them
+     * would grow the parent chain without bound over a long-running loop,
+     * and every iteration's environment needs the same depth relative to
+     * whatever is outside the loop regardless of how many have run -- so
+     * this same stashed reference, not "whatever is current", is `NEW_ITER_ENV`'s
+     * parent on every call.
+     *
+     * `NEW_ITER_ENV n, i` -- `[] -> []`. Replaces the current environment
+     * with a fresh one of `i` slots, parented on local `n` (what `CAPTURE_ENV`
+     * stashed). The old one is not reachable from here afterward, but stays
+     * alive through any closure that already captured it -- that is the
+     * entire point.
+     *
+     * `RESTORE_ENV` -- `[env] -> []`. Pops an environment reference (what
+     * `CAPTURE_ENV` stashed, read back with `GET_LOCAL`) and makes it current
+     * again. Emitted at every statically-known exit from the loop
+     * (`emitExitCleanup`, the same mechanism a `for…of` loop's iterator-close
+     * already uses to unwind on `break`/`return`) -- an exception unwinding
+     * through instead needs no opcode of its own, because `TRY_ENTER` now
+     * captures the environment live at that point in its handler-table entry
+     * and the unwind path restores exactly that, which already used to be
+     * true for `sp` and just needed doing for `env` too.
+     */
+    public const CAPTURE_ENV = 129;  // n
+    public const NEW_ITER_ENV = 130; // ni
+    public const RESTORE_ENV = 131;  //
+
     public const NOT = 38;
     public const BNOT = 39;
     public const TYPEOF = 40;
@@ -423,6 +461,7 @@ final class Op
         self::SUPER_CALL => 'c', self::SUPER_CALL_SPREAD => '',
         self::YIELD => 'nn', self::YIELD_DELEGATE_STEP => '',
         self::SET_FUNC_NAME => 'k',
+        self::CAPTURE_ENV => 'n', self::NEW_ITER_ENV => 'ni', self::RESTORE_ENV => '',
         self::BAND => '', self::BOR => '', self::BXOR => '',
         self::SHL => '', self::SHR => '', self::USHR => '',
         self::EQ => '', self::NEQ => '', self::SEQ => '', self::SNEQ => '',

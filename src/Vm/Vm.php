@@ -308,7 +308,7 @@ final class Vm
         $this->sp = $newBase + $len;
         $handlers = [];
         foreach ($saved['handlers'] as $h) {
-            $handlers[] = [$h[0], $h[1] + $newBase];
+            $handlers[] = [$h[0], $h[1] + $newBase, $h[2]];
         }
         $this->stack[$newBase + $saved['sentSlot']] = $value;
         $this->stack[$newBase + $saved['modeSlot']] = $mode;
@@ -502,6 +502,20 @@ final class Vm
                         $e->slots[$code[$pc++]] = $stack[$sp - 1];
                         break;
                     }
+                    case Op::CAPTURE_ENV:
+                        $stack[$base + $code[$pc++]] = $env;
+                        break;
+                    case Op::NEW_ITER_ENV: {
+                        $outerSlot = $code[$pc++];
+                        $size = $code[$pc++];
+                        $env = new \PhpJs\Runtime\JSEnv($stack[$base + $outerSlot], $size);
+                        $frame[self::F_ENV] = $env;
+                        break;
+                    }
+                    case Op::RESTORE_ENV:
+                        $env = $stack[--$sp];
+                        $frame[self::F_ENV] = $env;
+                        break;
                     case Op::GET_GLOBAL: {
                         $name = $consts[$code[$pc++]];
                         $g = $realm->globalObject;
@@ -860,7 +874,10 @@ final class Vm
                         $saved = array_slice($stack, $base, $sp - $base);
                         $handlers = [];
                         foreach ($frame[self::F_HANDLERS] as $h) {
-                            $handlers[] = [$h[0], $h[1] - $base];
+                            // $h[1] (sp) is rebased for the resume; $h[2] (env)
+                            // is an object reference, not a stack offset, and
+                            // carries through unchanged.
+                            $handlers[] = [$h[0], $h[1] - $base, $h[2]];
                         }
                         array_pop($frames);
                         $this->sp = $base;
@@ -1705,7 +1722,14 @@ final class Vm
                         $exc = $stack[--$sp];
                         goto unwind;
                     case Op::TRY_ENTER:
-                        $frame[self::F_HANDLERS][] = [$code[$pc++], $sp];
+                        // $env travels with the handler so that unwinding to
+                        // it restores whatever environment was live when this
+                        // try was entered -- in particular, a loop's own
+                        // per-iteration environment if the try sits inside
+                        // one, or the loop's outer environment if it sits
+                        // outside, either way with no separate mechanism
+                        // needed just because a loop is involved.
+                        $frame[self::F_HANDLERS][] = [$code[$pc++], $sp, $env];
                         break;
                     case Op::TRY_LEAVE:
                         array_pop($frame[self::F_HANDLERS]);
@@ -1816,7 +1840,7 @@ final class Vm
             $consts = $tpl['consts'];
             $strict = $tpl['strict'];
             $base = $frame[self::F_BASE];
-            $env = $frame[self::F_ENV];
+            $env = $h[2];
             $pc = $h[0];
             $sp = $h[1];
             $stack[$sp++] = $exc;

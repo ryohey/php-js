@@ -248,8 +248,6 @@ built-ins/Object/isFrozen/is-frozen-weakset.js requires an out-of-scope built-in
 built-ins/Object/isFrozen/is-frozen-sharedarraybuffer.js requires an out-of-scope built-in type
 built-ins/Object/isFrozen/is-frozen-float16array.js requires an out-of-scope built-in type
 
-# --- ES6 iteration statements reachable from language/statements ---
-language/statements/for-of/ ES6 iteration protocol, out of scope
 
 # --- Compound assignment tests that need direct eval to inject a binding ---
 language/expressions/compound-assignment/S11.13.2_A6.10_T1.js direct-eval scope injection is not implemented (DESIGN.md §15)

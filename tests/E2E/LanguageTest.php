@@ -1279,6 +1279,73 @@ final class LanguageTest extends EvalTestCase
         yield "a named function expression's own binding can still be read (recursion)" => [
             120, 'var f = function fact(n){ return n < 2 ? 1 : n * fact(n - 1); }; f(5)',
         ];
+
+        // --- per-iteration loop bindings ---
+        yield 'a classic for loop gives a captured let a fresh binding each pass' => [
+            '0,1,2', 'var fns=[]; for (let i=0;i<3;i++) { fns.push(function(){return i;}); }'
+                . ' fns.map(function(f){return f();}).join(",")',
+        ];
+        yield 'a while loop gives a captured let inside its body a fresh binding each pass' => [
+            '0,1,2', 'var fns=[]; var i=0; while (i<3) { let x=i; fns.push(function(){return x;}); i++; }'
+                . ' fns.map(function(f){return f();}).join(",")',
+        ];
+        yield 'a do-while loop gives a captured let inside its body a fresh binding each pass' => [
+            '0,1,2', 'var fns=[]; var i=0; do { let x=i; fns.push(function(){return x;}); i++; } while (i<3);'
+                . ' fns.map(function(f){return f();}).join(",")',
+        ];
+        yield 'a for-of loop gives its captured head binding a fresh value each pass' => [
+            '10,20,30', 'var fns=[]; for (let x of [10,20,30]) { fns.push(function(){return x;}); }'
+                . ' fns.map(function(f){return f();}).join(",")',
+        ];
+        yield 'a for-in loop gives its captured head binding a fresh value each pass' => [
+            'a,b,c', 'var o={a:1,b:2,c:3}; var fns=[]; for (let k in o) { fns.push(function(){return k;}); }'
+                . ' fns.map(function(f){return f();}).join(",")',
+        ];
+        yield 'an uncaptured loop-scoped let is unaffected -- an ordinary reused slot' => [
+            10, 'var s=0; for (let i=0;i<5;i++) { s+=i; } s',
+        ];
+        yield 'nested loops each get their own per-iteration binding' => [
+            '0,0|0,1|1,0|1,1',
+            'var fns=[]; for (let i=0;i<2;i++){ for (let j=0;j<2;j++){ fns.push(function(){return i+","+j;}); } }'
+                . ' fns.map(function(f){return f();}).join("|")',
+        ];
+        yield 'a function declared inside a loop is not itself treated as needing one' => [
+            'ok', 'for (let i=0;i<1;i++) { function f() { let x = 1; return (function(){ return x; })(); }'
+                . ' if (f() !== 1) throw new Error("bad"); } "ok"',
+        ];
+        yield 'break leaves the outer environment current for code after the loop' => [
+            '0,1|unset', 'var fns=[]; for (let i=0;i<5;i++) { if (i===2) break; fns.push(function(){return i;}); }'
+                . ' var outer = "unset"; fns.map(function(f){return f();}).join(",") + "|" + outer',
+        ];
+        yield 'continue still gets a fresh binding for the next pass' => [
+            '0,2', 'var fns=[]; for (let i=0;i<3;i++) { if (i===1) continue; fns.push(function(){return i;}); }'
+                . ' fns.map(function(f){return f();}).join(",")',
+        ];
+        yield 'a labeled continue out of a nested loop restores both environments' => [
+            '0,1|1,1|2,1',
+            'var fns=[]; outer: for (let i=0;i<3;i++) { for (let j=0;j<3;j++) {'
+                . ' if (j===1) { fns.push(function(){return i+","+j;}); continue outer; } } }'
+                . ' fns.map(function(f){return f();}).join("|")',
+        ];
+        yield 'an exception caught outside the loop restores the outer environment' => [
+            '0,1', 'var fns=[]; try { for (let i=0;i<3;i++) { fns.push(function(){return i;});'
+                . ' if (i===1) throw new Error("boom"); } } catch (e) {}'
+                . ' fns.map(function(f){return f();}).join(",")',
+        ];
+        yield 'a try/catch inside the loop body still sees the per-iteration binding' => [
+            '0,caught1,2',
+            'var fns=[]; for (let i=0;i<3;i++) { try { if (i===1) throw new Error("x");'
+                . ' fns.push(function(){return i;}); } catch (e) { fns.push(function(){return "caught"+i;}); } }'
+                . ' fns.map(function(f){return f();}).join(",")',
+        ];
+        yield 'a class declared inside a loop and captured gets a fresh binding each pass' => [
+            '0,1,2', 'var fns=[]; for (let i=0;i<3;i++) { class C { get val(){ return i; } } fns.push(new C()); }'
+                . ' fns.map(function(c){return c.val;}).join(",")',
+        ];
+        yield 'a finally still runs when a for-of loop with a per-iteration binding is broken' => [
+            true, 'var ran = false; for (const x of [1,2,3]) { try { if (x===2) break; }'
+                . ' finally { ran = true; } } ran',
+        ];
     }
 
     #[DataProvider('cases')]
@@ -1298,34 +1365,6 @@ final class LanguageTest extends EvalTestCase
     {
         $this->expectException(CompileError::class);
         $this->evalJs('async function f() {}');
-    }
-
-    /**
-     * A `let` captured by a closure inside a loop needs a fresh binding each
-     * iteration. One slot is reused instead, which would hand every closure the
-     * last value, so the shape is refused rather than answered wrongly.
-     */
-    public function testLetCapturedInALoopIsRejected(): void
-    {
-        $this->expectException(CompileError::class);
-        $this->expectExceptionMessage('fresh binding per iteration');
-        $this->evalJs('var f = []; for (var i = 0; i < 3; i++) { let j = i; f.push(function () { return j; }); }');
-    }
-
-    /** A `for` head's binding is per-iteration too, so the same refusal applies. */
-    public function testLetInAForHeadCapturedByAClosureIsRejected(): void
-    {
-        $this->expectException(CompileError::class);
-        $this->expectExceptionMessage('fresh binding per iteration');
-        $this->evalJs('var f = []; for (let i = 0; i < 3; i++) { f.push(function () { return i; }); }');
-    }
-
-    /** A for-in head binds per iteration too, so a capture is refused. */
-    public function testLetInAForInHeadCapturedByAClosureIsRejected(): void
-    {
-        $this->expectException(CompileError::class);
-        $this->expectExceptionMessage('fresh binding per iteration');
-        $this->evalJs('var f = []; for (const k in {a:1}) { f.push(function () { return k; }); }');
     }
 
     /**

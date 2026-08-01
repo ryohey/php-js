@@ -83,6 +83,7 @@ final class Compiler
         $this->fnCtx = new \SplObjectStorage();
         $this->catchBind = new \SplObjectStorage();
         $this->syntheticCtors = new \SplObjectStorage();
+        $this->loopEnvScopes = new \SplObjectStorage();
         $this->compilationId = self::$nextCompilationId++;
     }
 
@@ -119,17 +120,34 @@ final class Compiler
      */
     private function analyzeFunction(
         object $node,
-        ?Ctx $parent,
+        Ctx|LoopEnvScope|null $parent,
         bool $isProgram,
         bool $inClassMethod = false,
         bool $isDerivedConstructor = false,
         bool $isClassConstructor = false,
         ?string $inferredName = null,
     ): Ctx {
+        // Both are compile-time position, not lexical nesting: a nested
+        // function's own body is a fresh call each time regardless of which
+        // iteration of an enclosing loop declared it, so neither an outer
+        // loop's depth nor its still-open LoopEnvScope may leak into this
+        // function's own analysis (a `let` in *this* function's own loop is
+        // not automatically "in a loop" just because the function itself
+        // happens to sit inside one, and this function's own loops parent
+        // themselves on its own Ctx, not on the enclosing function's).
+        $savedLoopDepth = $this->loopDepth;
+        $savedLoopEnvStack = $this->loopEnvStack;
+        $this->loopDepth = 0;
+        $this->loopEnvStack = [];
+
         $ctx = new Ctx();
         $ctx->parent = $parent;
         $ctx->isProgram = $isProgram;
-        $ctx->strict = ($parent?->strict ?? false) || $inClassMethod;
+        // Strictness is a function-level concept -- a loop layer in between
+        // (a class or function declared inside a loop with a per-iteration
+        // environment) has no strictness of its own to inherit, so this
+        // walks through any to the nearest real enclosing function.
+        $ctx->strict = (self::nearestCtx($parent)?->strict ?? false) || $inClassMethod;
         $ctx->inClassMethod = $inClassMethod;
         $ctx->isDerivedConstructor = $isDerivedConstructor;
         $ctx->isClassConstructor = $isClassConstructor;
@@ -300,25 +318,12 @@ final class Compiler
             array_pop($this->lexStack);
         }
 
-        foreach ($ctx->extraBindings as $b) {
-            if ($b->inLoop && $b->captured
-                && ($b->kind === 'let' || $b->kind === 'const' || $b->kind === 'class')) {
-                // Each iteration should give `$b->name` a binding of its own, so
-                // that closures made in different iterations see different
-                // values. One slot is reused instead, which would hand every
-                // closure the last value -- a wrong answer, not a slow one.
-                $this->unsupported(
-                    null,
-                    "'{$b->kind} {$b->name}' is captured by a closure inside a loop, "
-                        . 'which needs a fresh binding per iteration (not supported yet)'
-                );
-            }
-        }
-
         $this->assignSlots($ctx);
         if (!$isProgram) {
             $this->fnCtx[$node] = $ctx;
         }
+        $this->loopDepth = $savedLoopDepth;
+        $this->loopEnvStack = $savedLoopEnvStack;
         return $ctx;
     }
 
@@ -345,6 +350,12 @@ final class Compiler
         $names = [];
         if ($superClass !== null) {
             $superBinding = new Binding($ctx, self::SUPERCLASS_SLOT, 'var');
+            // A class declared inside a loop and captured by a closure --
+            // e.g. a method that outlives its own iteration -- needs the
+            // same per-iteration treatment as a captured `let`, the same as
+            // enterBlock already tags for every other binding.
+            $superBinding->inLoop = $this->loopDepth > 0;
+            $superBinding->loopScope = end($this->loopEnvStack) ?: null;
             $ctx->extraBindings[] = $superBinding;
             $names[self::SUPERCLASS_SLOT] = $superBinding;
         }
@@ -353,6 +364,8 @@ final class Compiler
             // Always strict, for the reason enterBlock's 'class' case is.
             $this->checkIdentifierName($selfName, true, $node->getId());
             $selfBinding = new Binding($ctx, $selfName, 'class');
+            $selfBinding->inLoop = $this->loopDepth > 0;
+            $selfBinding->loopScope = end($this->loopEnvStack) ?: null;
             $ctx->extraBindings[] = $selfBinding;
             $names[$selfName] = $selfBinding;
         }
@@ -408,7 +421,7 @@ final class Compiler
                 : ($el->getComputed() ? null : $this->methodDisplayName($el));
             $this->analyzeFunction(
                 $el->getValue(),
-                $ctx,
+                $this->loopEnvParent($ctx),
                 false,
                 inClassMethod: true,
                 isDerivedConstructor: $isCtor && $superClass !== null,
@@ -425,7 +438,7 @@ final class Compiler
             $this->syntheticCtors[$node] = $ctorNode;
             $this->analyzeFunction(
                 $ctorNode,
-                $ctx,
+                $this->loopEnvParent($ctx),
                 false,
                 inClassMethod: true,
                 isDerivedConstructor: $superClass !== null,
@@ -578,7 +591,7 @@ final class Compiler
             case 'FunctionDeclaration':
             case 'FunctionExpression':
             case 'ArrowFunctionExpression':
-                $this->analyzeFunction($node, $ctx, false);
+                $this->analyzeFunction($node, $this->loopEnvParent($ctx), false);
                 return;
             case 'ClassDeclaration':
             case 'ClassExpression':
@@ -634,7 +647,7 @@ final class Compiler
                         // A getter/setter's value is always an anonymous
                         // FunctionExpression by grammar -- there is no "own
                         // name" that could ever win over the key.
-                        $this->analyzeFunction($p->getValue(), $ctx, false, inferredName: $this->methodDisplayName($p));
+                        $this->analyzeFunction($p->getValue(), $this->loopEnvParent($ctx), false, inferredName: $this->methodDisplayName($p));
                     }
                 }
                 return;
@@ -762,6 +775,7 @@ final class Compiler
                 // entered before it is created, so a closure over it is caught
                 // by the same check as one over a `let` in the body.
                 $this->loopDepth++;
+                $iterScope = $this->enterLoopEnv($ctx);
                 // The body's vars land in the enclosing function but are visible
                 // through the head's scope, so they cannot share a name with it.
                 $opened = $head && $this->enterBlock(
@@ -776,6 +790,7 @@ final class Compiler
                 $this->analyzeNode($node->getUpdate(), $ctx);
                 $this->analyzeNode($node->getBody(), $ctx);
                 $this->loopDepth--;
+                $this->leaveLoopEnv($node, $iterScope);
                 if ($opened) {
                     array_pop($this->lexStack);
                 }
@@ -788,6 +803,7 @@ final class Compiler
                 $left = $node->getLeft();
                 $head = $left->getType() === 'VariableDeclaration' && $left->getKind() !== 'var';
                 $this->loopDepth++;
+                $iterScope = $this->enterLoopEnv($ctx);
                 $opened = $head && $this->enterBlock(
                     $node,
                     [$left],
@@ -799,6 +815,7 @@ final class Compiler
                 $this->analyzeForTarget($left, $ctx);
                 $this->analyzeNode($node->getBody(), $ctx);
                 $this->loopDepth--;
+                $this->leaveLoopEnv($node, $iterScope);
                 if ($opened) {
                     array_pop($this->lexStack);
                 }
@@ -816,6 +833,7 @@ final class Compiler
                 // A for-of head binds afresh on every pass, so it counts as
                 // being inside the loop for the capture check.
                 $this->loopDepth++;
+                $iterScope = $this->enterLoopEnv($ctx);
                 $opened = $head && $this->enterBlock(
                     $node,
                     [$left],
@@ -827,6 +845,7 @@ final class Compiler
                 $this->analyzeForTarget($left, $ctx);
                 $this->analyzeNode($node->getBody(), $ctx);
                 $this->loopDepth--;
+                $this->leaveLoopEnv($node, $iterScope);
                 if ($opened) {
                     array_pop($this->lexStack);
                 }
@@ -836,8 +855,10 @@ final class Compiler
             case 'DoWhileStatement':
                 $this->analyzeNode($node->getTest(), $ctx);
                 $this->loopDepth++;
+                $iterScope = $this->enterLoopEnv($ctx);
                 $this->analyzeNode($node->getBody(), $ctx);
                 $this->loopDepth--;
+                $this->leaveLoopEnv($node, $iterScope);
                 return;
             case 'SwitchStatement': {
                 // The discriminant is evaluated before the case block is
@@ -952,6 +973,25 @@ final class Compiler
     private \SplObjectStorage $blockScopes;
     /** Loop nesting during analysis; see Binding::$inLoop. */
     private int $loopDepth = 0;
+    /**
+     * Currently-open per-iteration loop layers, innermost last -- both
+     * passes push and pop these around a qualifying loop the same way
+     * `lexStack` brackets a block, so `envDepth`'s walk (and a nested
+     * function's own `Ctx::$parent`, via `loopEnvParent`) sees exactly the
+     * loop layers actually enclosing the current position.
+     * @var list<LoopEnvScope>
+     */
+    private array $loopEnvStack = [];
+    /**
+     * Loop node -> its LoopEnvScope, decided once during analysis (`Compiler::
+     * analyzeLoopEnv`) and looked up again during codegen (`Compiler::
+     * genLoopEnvEnter`) -- the same node-keyed handoff `blockScopes`/`fnCtx`
+     * use elsewhere. Every qualifying loop gets an entry, even one that turns
+     * out not to need an environment at all (`size === 0`): codegen treats
+     * that as "nothing to do here," rather than "nothing was decided yet."
+     * @var \SplObjectStorage<object, LoopEnvScope>
+     */
+    private \SplObjectStorage $loopEnvScopes;
 
     /**
      * The `let` and `const` names declared directly in a statement list.
@@ -1090,7 +1130,7 @@ final class Compiler
         $inner = self::unwrapParens($node);
         $type = $inner->getType();
         if ($type === 'ArrowFunctionExpression') {
-            $this->analyzeFunction($inner, $ctx, false, inferredName: $name);
+            $this->analyzeFunction($inner, $this->loopEnvParent($ctx), false, inferredName: $name);
             return;
         }
         if ($type === 'FunctionExpression') {
@@ -1098,7 +1138,7 @@ final class Compiler
                 $this->analyzeNode($inner, $ctx);
                 return;
             }
-            $this->analyzeFunction($inner, $ctx, false, inferredName: $name);
+            $this->analyzeFunction($inner, $this->loopEnvParent($ctx), false, inferredName: $name);
             return;
         }
         if ($type === 'ClassExpression') {
@@ -1398,6 +1438,13 @@ final class Compiler
                 }
                 $b = new Binding($ctx, $name, $kind);
                 $b->inLoop = $this->loopDepth > 0;
+                // Whichever loop's per-iteration layer is innermost right
+                // now, if any -- assignSlots only actually uses this once
+                // $b also turns out captured, but it costs nothing to record
+                // unconditionally, and every binding created while a given
+                // loop's layer is open belongs to that same loop by
+                // construction (its own head, or its body's own block).
+                $b->loopScope = end($this->loopEnvStack) ?: null;
                 $ctx->extraBindings[] = $b;
                 $bindings[$name] = $b;
             }
@@ -1565,7 +1612,13 @@ final class Compiler
             }
         }
         foreach ($ctx->extraBindings as $b) {
-            if ($b->captured) {
+            if ($b->captured && $b->loopScope !== null) {
+                // A closure captured it, and it lives in a loop that turned
+                // out to need per-iteration environments -- its slot is in
+                // that loop's own environment, not this function's flat one,
+                // however many loop layers are nested at this point.
+                $b->envIndex = $b->loopScope->size++;
+            } elseif ($b->captured) {
                 $b->envIndex = $ctx->nenv++;
             } else {
                 $b->slot = $ctx->nlocals++;
@@ -1616,6 +1669,17 @@ final class Compiler
     {
         $prevCur = $this->cur ?? null;
         $prevLabels = $this->pendingLabels;
+        // Mirrors analyzeFunction's own save/reset: codegen re-descends into
+        // this function via compileChild from wherever the enclosing
+        // function's own codegen currently is -- possibly inside one of
+        // *its* loops -- and that loop's LoopEnvScope must not leak into
+        // this function's own envDepth walks. This function's own loops (or
+        // none) push fresh entries as they're reached below; nothing here
+        // needs the enclosing ones, since every binding this function
+        // actually references already recorded, at analysis time, exactly
+        // how many layers separate it (Ctx::$parent / Binding::$loopScope).
+        $prevLoopEnvStack = $this->loopEnvStack;
+        $this->loopEnvStack = [];
         $this->cur = $ctx;
         $this->pendingLabels = [];
 
@@ -1742,6 +1806,7 @@ final class Compiler
             $this->cur = $prevCur;
         }
         $this->pendingLabels = $prevLabels;
+        $this->loopEnvStack = $prevLoopEnvStack;
         $tpl = $ctx->toTemplate();
         if ($this->onFunction !== null) {
             $nativeId = ($this->onFunction)($node, $ctx, $isProgram);
@@ -1985,32 +2050,53 @@ final class Compiler
             case 'WhileStatement': {
                 $this->requireStatementBody($node->getBody());
                 $loop = $this->pushLoop($labels, true);
+                $iterEnv = $this->beginLoopEnv($node);
                 $lCond = $c->here();
                 $this->genExpr($node->getTest());
                 $jEnd = $c->emitJump(Op::JF);
+                if ($iterEnv !== null) {
+                    $this->freshLoopEnv($iterEnv);
+                }
                 $this->genStmt($node->getBody());
                 $this->patchContinues($loop, $lCond);
                 $c->emit(Op::JMP, $lCond);
                 $c->patch($jEnd);
                 $this->popLoop($loop);
+                if ($iterEnv !== null) {
+                    $this->endLoopEnv($iterEnv);
+                }
                 return;
             }
             case 'DoWhileStatement': {
                 $this->requireStatementBody($node->getBody());
                 $loop = $this->pushLoop($labels, true);
+                $iterEnv = $this->beginLoopEnv($node);
                 $lBody = $c->here();
+                if ($iterEnv !== null) {
+                    $this->freshLoopEnv($iterEnv);
+                }
                 $this->genStmt($node->getBody());
                 $lCond = $c->here();
                 $this->patchContinues($loop, $lCond);
                 $this->genExpr($node->getTest());
                 $c->emit(Op::JT, $lBody);
                 $this->popLoop($loop);
+                if ($iterEnv !== null) {
+                    $this->endLoopEnv($iterEnv);
+                }
                 return;
             }
             case 'ForStatement': {
                 $this->requireStatementBody($node->getBody());
                 $init = $node->getInit();
                 $headScope = $this->enterBlock($node, $init === null ? [] : [$init], $this->cur, false);
+                $iterEnv = $this->beginLoopEnv($node);
+                if ($iterEnv !== null) {
+                    // The first per-iteration environment, so that even the
+                    // head's own initializer (`let i = 0`) writes into it
+                    // rather than into what briefly wouldn't otherwise exist.
+                    $this->freshLoopEnv($iterEnv);
+                }
                 if ($headScope) {
                     $this->emitBlockPrologue($node);
                 }
@@ -2032,6 +2118,13 @@ final class Compiler
                 $this->genStmt($node->getBody());
                 $lCont = $c->here();
                 $this->patchContinues($loop, $lCont);
+                if ($iterEnv !== null) {
+                    // CreatePerIterationEnvironment runs again here, before
+                    // the update -- so the update mutates (and the next
+                    // test/body reads) the *new* per-iteration copy, not the
+                    // one any closure made during this pass already captured.
+                    $this->copyForwardLoopEnv($node, $iterEnv);
+                }
                 if ($node->getUpdate() !== null) {
                     if ($c->isProgram || !$this->emitDiscardedUpdate($node->getUpdate())) {
                         $this->genExpr($node->getUpdate());
@@ -2043,6 +2136,9 @@ final class Compiler
                     $c->patch($jEnd);
                 }
                 $this->popLoop($loop);
+                if ($iterEnv !== null) {
+                    $this->endLoopEnv($iterEnv);
+                }
                 if ($headScope) {
                     array_pop($this->lexStack);
                 }
@@ -2056,7 +2152,14 @@ final class Compiler
                 $loop = $this->pushLoop($labels, true);
                 $left = $node->getLeft();
                 $headScope = $this->enterBlock($node, [$left], $c, false);
+                $iterEnv = $this->beginLoopEnv($node);
                 $lNext = $c->here();
+                if ($iterEnv !== null) {
+                    // A fresh environment every pass, like for…of below --
+                    // for…in's own head binds afresh from the enumerated key
+                    // each time, never carrying a value forward.
+                    $this->freshLoopEnv($iterEnv);
+                }
                 if ($headScope) {
                     $this->emitBlockPrologue($node);
                 }
@@ -2073,6 +2176,9 @@ final class Compiler
                 $c->emit(Op::JMP, $lNext);
                 $c->patch($jEnd);
                 $this->popLoop($loop);
+                if ($iterEnv !== null) {
+                    $this->endLoopEnv($iterEnv);
+                }
                 if ($headScope) {
                     array_pop($this->lexStack);
                 }
@@ -2280,12 +2386,25 @@ final class Compiler
 
         $jThrow = $c->emitJump(Op::TRY_ENTER);
         $c->tryStack[] = ['finalizer' => null, 'iterSlot' => $iterSlot];
+        $headScope = $this->enterBlock($node, [$left], $c, false);
+        // Pushed after iterSlot's entry, so it is innermost: an ordinary
+        // break/continue targeting this same loop bypasses both the same
+        // way (handled by hand below, not emitExitCleanup -- see pushLoop's
+        // tryDepth), and an exit crossing further out restores the
+        // environment before closing the iterator, though nothing actually
+        // depends on that relative order (closing it is just a call, which
+        // runs under its own closure environment regardless of this one).
+        $iterEnv = $this->beginLoopEnv($node);
         // Pushed after the region, so the loop's own break and continue do not
         // unwind it: continue must not close, and break closes at its target.
         $loop = $this->pushLoop($labels, true);
-        $headScope = $this->enterBlock($node, [$left], $c, false);
 
         $lNext = $c->here();
+        if ($iterEnv !== null) {
+            // A fresh environment every pass: for…of's own head binds afresh
+            // from the iterator each time, never carrying a value forward.
+            $this->freshLoopEnv($iterEnv);
+        }
         if ($headScope) {
             // A fresh dead zone every pass: the head binds anew each iteration.
             $this->emitBlockPrologue($node);
@@ -2304,11 +2423,19 @@ final class Compiler
         $c->emit(Op::JMP, $lNext);
 
         $c->patch($jDone);                      // exhausted: nothing to close
+        // $iterEnv's tryStack entry sits above iterSlot's (pushed later), so
+        // it must come off first.
+        if ($iterEnv !== null) {
+            $this->endLoopEnv($iterEnv);
+        }
         array_pop($c->tryStack);
         $c->emit(Op::TRY_LEAVE);
         $jEndDone = $c->emitJump(Op::JMP);
 
         $this->popLoop($loop);                  // every `break` lands here
+        if ($iterEnv !== null) {
+            $this->endLoopEnv($iterEnv);
+        }
         $c->emit(Op::TRY_LEAVE);
         $c->emit(Op::GET_LOCAL, $iterSlot);
         $c->emit(Op::ITER_CLOSE, 0);
@@ -2419,7 +2546,14 @@ final class Compiler
         $c = $this->cur;
         for ($i = count($c->tryStack) - 1; $i >= $targetTryDepth; $i--) {
             $entry = $c->tryStack[$i];
-            $c->emit(Op::TRY_LEAVE);
+            $iterEnvOuterSlot = $entry['iterEnvOuterSlot'] ?? null;
+            if ($iterEnvOuterSlot === null) {
+                // Every other entry backs a real TRY_ENTER, which this must
+                // leave to match; a loop's per-iteration environment does
+                // not (see beginLoopEnv) -- there is no live handler here to
+                // unregister.
+                $c->emit(Op::TRY_LEAVE);
+            }
             if (($entry['iterSlot'] ?? null) !== null) {
                 // Leaving a `for…of` other than by exhausting it: the iterator
                 // is told, so a generator's `finally` runs (7.4.9).
@@ -2433,6 +2567,16 @@ final class Compiler
                 $c->emit(Op::ITER_FIN, $entry['iterRec'], 0);
                 continue;
             }
+            if ($iterEnvOuterSlot !== null) {
+                // Leaving a loop with a per-iteration environment other than
+                // by exhausting it: the environment active outside the loop
+                // must be current again before whatever this exit reaches
+                // next runs (a `catch`/`finally` at the target, or ordinary
+                // code after the loop).
+                $c->emit(Op::GET_LOCAL, $iterEnvOuterSlot);
+                $c->emit(Op::RESTORE_ENV);
+                continue;
+            }
             if ($entry['finalizer'] !== null) {
                 // Inline a copy with the outer regions only, so exits inside
                 // this copy don't re-run the same finalizer.
@@ -2442,6 +2586,97 @@ final class Compiler
                 $c->tryStack = $saved;
             }
         }
+    }
+
+    // ---- per-iteration loop bindings -------------------------------------------
+
+    /**
+     * Open a loop's per-iteration environment for codegen, if analysis
+     * decided it needs one at all (`$scope->size > 0` -- the overwhelming
+     * majority of loops have no entry, or an empty one, and this returns
+     * null for either, changing nothing about how they compile). Emits
+     * `CAPTURE_ENV` once, for the whole loop's lifetime, and records a
+     * bookkeeping-only `tryStack` entry for `emitExitCleanup` -- not a real
+     * `TRY_ENTER` -- since a `break`/`return` crossing the loop is the only
+     * thing that needs telling to restore the outer environment. An
+     * exception unwinding through needs nothing done here at all: whichever
+     * real handler actually catches it (inside the loop, or an ordinary
+     * `try` outside it) already captured the environment that was live *at
+     * its own* `TRY_ENTER`, which is exactly the one that should be current
+     * once it runs -- the per-iteration environment if the handler is
+     * inside the loop, the outer one if it is not. Nothing about a loop in
+     * between needs to add anything to that.
+     *
+     * @return array{scope: LoopEnvScope, outerSlot: int}|null
+     */
+    private function beginLoopEnv(object $node): ?array
+    {
+        $scope = $this->loopEnvScopes[$node] ?? null;
+        if ($scope === null || $scope->size === 0) {
+            return null;
+        }
+        $c = $this->cur;
+        $outerSlot = $c->tempAlloc();
+        $c->emit(Op::CAPTURE_ENV, $outerSlot);
+        $c->tryStack[] = ['finalizer' => null, 'iterEnvOuterSlot' => $outerSlot];
+        $this->loopEnvStack[] = $scope;
+        return ['scope' => $scope, 'outerSlot' => $outerSlot];
+    }
+
+    /**
+     * Replace the current environment with a brand new one -- for a loop
+     * form with no per-iteration value to carry forward (`for…of`, `for…in`,
+     * `while`, `do…while`: their own bound names, if any, are freshly
+     * (re-)declared every pass regardless, the same as entering an ordinary
+     * block would do). Called once per iteration, right before whatever
+     * declares those names runs.
+     */
+    private function freshLoopEnv(array $iterEnv): void
+    {
+        $this->cur->emit(Op::NEW_ITER_ENV, $iterEnv['outerSlot'], $iterEnv['scope']->size);
+    }
+
+    /**
+     * The one loop form that does carry a value forward: a classic `for`'s
+     * own head bindings (14.7.4.3's CreatePerIterationEnvironment). Reads
+     * each one's current value out of the environment about to be replaced,
+     * creates the fresh one, then writes them back -- the body's own block
+     * bindings (if it has one) are not among these, and need no carrying
+     * forward at all, only the fresh environment itself.
+     */
+    private function copyForwardLoopEnv(object $node, array $iterEnv): void
+    {
+        $c = $this->cur;
+        /** @var list<Binding> $carried */
+        $carried = array_values(array_filter(
+            $this->blockScopes[$node] ?? [],
+            static fn (Binding $b): bool => $b->captured && $b->loopScope !== null,
+        ));
+        foreach ($carried as $b) {
+            $c->emit(Op::GET_ENV, 0, $b->envIndex);
+        }
+        $this->freshLoopEnv($iterEnv);
+        foreach (array_reverse($carried) as $b) {
+            $c->emit(Op::SET_ENV, 0, $b->envIndex);
+            $c->emit(Op::POP);
+        }
+    }
+
+    /**
+     * Close a loop's per-iteration environment on the normal-exit path
+     * (running off the end, or every `break` -- both land here the same way
+     * `popLoop` already unifies them for everything else). Restores the
+     * environment that was current before the loop; see `beginLoopEnv` for
+     * why the exception path needs no equivalent of its own.
+     */
+    private function endLoopEnv(array $iterEnv): void
+    {
+        $c = $this->cur;
+        array_pop($this->loopEnvStack);
+        array_pop($c->tryStack);
+        $c->emit(Op::GET_LOCAL, $iterEnv['outerSlot']);
+        $c->emit(Op::RESTORE_ENV);
+        $c->tempFree($iterEnv['outerSlot']);
     }
 
     // ---- generators -----------------------------------------------------------
@@ -3723,18 +3958,89 @@ final class Compiler
         return null;
     }
 
-    private function envDepth(Ctx $owner): int
+    /**
+     * How many environment records `GET_ENV`/`SET_ENV` must walk from
+     * wherever codegen currently is to reach `$target`'s own -- a function
+     * (`Ctx`, counted only if it turned out to need one at all, `nenv > 0`)
+     * or a loop's per-iteration layer (`LoopEnvScope`, counted only if it
+     * turned out to need one, `size > 0`). The two compose uniformly: a
+     * closure declared inside a loop has that loop's `LoopEnvScope` as its
+     * own `Ctx::$parent` (`loopEnvParent`, at the point it was analyzed), so
+     * this walk crosses however many loop layers and function layers
+     * actually separate the two, in whatever order they nest, without
+     * needing to know which kind it is looking at except to decide whether
+     * that particular layer ended up owning an environment.
+     */
+    private function envDepth(Ctx|LoopEnvScope $target): int
     {
         $d = 0;
-        $f = $this->cur;
-        while ($f !== $owner) {
-            if ($f->nenv > 0) {
-                $d++;
+        $f = end($this->loopEnvStack) ?: $this->cur;
+        while ($f !== $target) {
+            if ($f instanceof LoopEnvScope) {
+                if ($f->size > 0) {
+                    $d++;
+                }
+                $f = $f->parent;
+            } else {
+                if ($f->nenv > 0) {
+                    $d++;
+                }
+                $f = $f->parent
+                    ?? throw new CompileError('Compiler bug: binding owner not on scope chain');
             }
-            $f = $f->parent
-                ?? throw new CompileError('Compiler bug: binding owner not on scope chain');
         }
         return $d;
+    }
+
+    /**
+     * The scope a function/class declared right here would list as its own
+     * `Ctx::$parent` -- the innermost currently-open loop layer if there is
+     * one, otherwise the enclosing function itself. Passed at every
+     * `analyzeFunction`/`analyzeClass` call site that used to just pass
+     * `$ctx`, so a closure declared inside a loop links through that loop's
+     * `LoopEnvScope` rather than skipping straight to the function -- which
+     * is what makes `envDepth` correctly cross that loop layer later.
+     */
+    private function loopEnvParent(Ctx $ctx): Ctx|LoopEnvScope
+    {
+        return end($this->loopEnvStack) ?: $ctx;
+    }
+
+    /** Unwrap any loop layers to the nearest real enclosing function. */
+    private static function nearestCtx(Ctx|LoopEnvScope|null $scope): ?Ctx
+    {
+        while ($scope instanceof LoopEnvScope) {
+            $scope = $scope->parent;
+        }
+        return $scope;
+    }
+
+    /**
+     * Open this loop's own per-iteration layer for the analysis pass, so
+     * every binding `enterBlock` creates while it is open -- the loop's own
+     * head and its body's block alike -- is tagged with it
+     * (`Binding::$loopScope`), and any function declared inside links its
+     * own `Ctx::$parent` through it (`loopEnvParent`). Whether the loop
+     * turns out to need an environment at all is not known until analysis of
+     * its own body finishes; every loop gets one of these regardless; an
+     * unused one costs nothing beyond the object itself (`leaveLoopEnv`).
+     */
+    private function enterLoopEnv(Ctx $ctx): LoopEnvScope
+    {
+        $scope = new LoopEnvScope($this->loopEnvParent($ctx));
+        $this->loopEnvStack[] = $scope;
+        return $scope;
+    }
+
+    /**
+     * Close $scope and hand the finished decision (its final `$size`) to
+     * codegen, keyed by the loop node the same way `blockScopes`/`fnCtx`
+     * hand other analysis results across.
+     */
+    private function leaveLoopEnv(object $node, LoopEnvScope $scope): void
+    {
+        array_pop($this->loopEnvStack);
+        $this->loopEnvScopes[$node] = $scope;
     }
 
     private function emitLoadName(string $name): void
@@ -3762,7 +4068,7 @@ final class Compiler
     {
         $c = $this->cur;
         if ($b->captured) {
-            $c->emit(Op::GET_ENV, $this->envDepth($b->owner), $b->envIndex);
+            $c->emit(Op::GET_ENV, $this->envDepth($b->loopScope ?? $b->owner), $b->envIndex);
         } else {
             $c->emit(Op::GET_LOCAL, $b->slot);
         }
@@ -3825,7 +4131,7 @@ final class Compiler
     {
         $c = $this->cur;
         if ($b->captured) {
-            $c->emit(Op::SET_ENV, $this->envDepth($b->owner), $b->envIndex);
+            $c->emit(Op::SET_ENV, $this->envDepth($b->loopScope ?? $b->owner), $b->envIndex);
         } else {
             $c->emit(Op::SET_LOCAL, $b->slot);
         }

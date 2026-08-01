@@ -152,10 +152,10 @@ for code you control; it is no longer the *only* way in.
   without appearing in it: parameters for a function body, the catch parameter for
   a catch body, the body's `var`s for a `for` head.
 
-  **Refused rather than approximated:** a `let` or `const` captured by a closure
-  inside a loop — including one declared in the `for` head — needs a fresh binding
-  per iteration, and one slot is reused instead. Answering would hand every
-  closure the last value. `for (let x in …)` is refused for the same reason.
+  A `let`/`const`/`class` captured by a closure inside a loop needs a fresh
+  binding per iteration, or every closure would see the last value; landed
+  later, once the VM had a way to give a loop its own environment layer
+  separate from its function's — see "Per-iteration loop bindings" below.
 
 - **Object destructuring**, in declarations, assignments and parameters, with
   nesting, defaults, computed keys and a rest element. The source arrives at
@@ -524,8 +524,83 @@ argument for growing the surface: the skips were hiding real defects.
   `.length`/`.name` does not match the spec's creation-time order when a
   class also defines its own static member under one of those keys.
 
-**Next:** per-iteration loop bindings, which retires the refusal above, and
-the separate parameter scope.
+- **Per-iteration loop bindings** (CreatePerIterationEnvironment, 14.7.4.3) —
+  the refusal above, retired. A `for`/`for…in`/`for…of`/`while`/`do…while`
+  whose head or body declares a `let`/`const`/`class` a closure captures now
+  gets a real environment of its own, created fresh every pass, rather than
+  sharing the one flat environment its enclosing function already has.
+
+  Every environment this VM had ever created before this belonged to a
+  function call (§4.5): one per invocation, sized once, indexed by depth
+  counting *function* boundaries (`Compiler::envDepth`, walking `Ctx::$parent`).
+  A loop is not a function call, so giving one its own environment meant a
+  second kind of scope that owns one — `Compiler\LoopEnvScope`, existing only
+  for a loop that actually turns out to need it (checked once, after
+  analyzing its own head and body; the overwhelming majority of loops get an
+  empty one and compile exactly as before) — chained into the *same*
+  `$parent`-walk `Ctx` already used, so a closure declared inside a loop
+  lists that loop's scope as its own parent (`Compiler::loopEnvParent`) and
+  `envDepth` crosses however many loop layers and function layers actually
+  separate two points, in whatever order they nest, never needing to know
+  which kind of layer it is looking at except whether that particular one
+  ended up owning an environment at all (a function's `nenv > 0`, a loop's
+  `size > 0`).
+
+  Three new opcodes do the runtime work. `CAPTURE_ENV` stashes the loop's
+  outer environment once, before the first iteration; every later
+  environment is created as that same environment's *sibling*, never a
+  child of the previous iteration's — chaining them would grow the parent
+  chain without bound over a long-running loop, and every iteration needs
+  the same depth relative to the outside regardless of how many have run.
+  `NEW_ITER_ENV` replaces the current environment with a fresh one. `RESTORE_ENV`
+  puts the stashed outer one back. Only a classic `for`'s own head bindings
+  carry a value forward from one pass to the next (14.7.4.3's actual
+  environment-copying step: read the current value out of the environment
+  about to be replaced, create the fresh one, write it back) — `for…in`/
+  `for…of`'s head and any loop body's own block bindings are simply fresh
+  and TDZ'd every pass, the same as re-entering an ordinary block already
+  works, just now into a new environment instead of the same reused slots.
+
+  Restoring the outer environment on the way out only needed solving once
+  for the two ways out actually differ. A `break`/`continue`/`return`
+  crossing the loop is compile-time-known control flow, so it is inlined
+  the same way closing a `for…of` iterator already is (`emitExitCleanup`) —
+  a bookkeeping entry, not a real `TRY_ENTER`, since nothing registered a
+  handler for it. An exception unwinding through needed nothing added at
+  the loop at all, once `TRY_ENTER`'s handler-table entry captured the
+  environment that was live *at that point* rather than reading whatever
+  the frame's environment happens to be when the handler runs: the nearest
+  real handler that actually catches it — inside the loop, or an ordinary
+  `try` outside it — already recorded the right one to restore, on its own,
+  for a reason that has nothing to do with loops.
+
+  Two bugs surfaced building this, both about state that has to reset at a
+  function boundary and did not:
+
+  - `Binding::$inLoop` and the new per-loop bookkeeping are compile-time
+    *position*, not lexical nesting — a function's own body is a fresh call
+    each time regardless of which iteration of an enclosing loop declared
+    it, so neither may leak into that function's own analysis (a `let` in
+    *that* function's own unrelated loop is not "captured inside a loop"
+    just because the function itself happens to sit inside one). Both passes
+    now save, reset, and restore this bookkeeping at every function boundary
+    (`analyzeFunction` and `genFunction` alike) — missing the codegen half
+    of this (the analysis half was there from the start) was the more subtle
+    of the two, and only surfaced compiling a real npm package with three
+    levels of nested closures reaching into an enclosing loop's own binding,
+    which needs the second one to line up depths correctly at all.
+  - A long-stale `skip.txt` entry excluded the entire `for…of` statement test
+    directory as "ES6 iteration protocol, out of scope" — true when it was
+    written, false since `for…of` itself landed (above), and worth removing
+    now specifically because it was hiding whether *this* feature actually
+    works against test262's own dedicated per-iteration-environment tests for
+    it, not just the hand-written cases here. It passes 693 of 701 once
+    unskipped; the eight remaining are a pre-existing, unrelated TDZ-timing
+    gap (the head's own binding should already be in its dead zone while the
+    iterable expression to its right is evaluated, which is not implemented)
+    and an iterator-close gap, neither touched by this feature.
+
+**Next:** the separate parameter scope, the last item queued in this section.
 
 **Deliberately out of scope for now:** ES modules (node-compat resolves
 CommonJS, and published packages overwhelmingly ship it), Proxy and Reflect

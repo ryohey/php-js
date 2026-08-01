@@ -23,34 +23,34 @@ says whether the syntax work is aimed at anything:
 
 ```console
 $ php tests/acceptance/run.php --dir path/to/node_modules
-  accepted   342   85.5%
-  rejected    58   14.5%
+  accepted   348   87.0%
+  rejected    52   13.0%
 
 what the rejections tripped on:
-  ChainExpression               15   3.8%
-  unexpected from                8   2.0%
-  Generators                     6   1.5%
-  Class fields are not supported 3   0.8%
+  ChainExpression                16   4.0%
+  unexpected from                 8   2.0%
+  Catch parameter patterns        5   1.2%
+  unexpected export               4   1.0%
   ...
 ```
 
 Template literals, arrow functions, default/rest parameters, `let`/`const`,
-destructuring, `for…of`, spread, tagged templates and classes have landed
-since — 46.8% to 85.5%. What is left of that 14.5% is mostly optional
-chaining, generators, ES modules, and the class subfeatures (private/public
-fields, static blocks) still deliberately out of scope — see
-[DESIGN.md §2.5](./DESIGN.md).
+destructuring, `for…of`, spread, tagged templates, classes and generators
+have landed since — 46.8% to 87.0%. What is left of that 13.0% is mostly
+optional chaining, ES modules, catch-clause destructuring, and the class
+subfeatures (private/public fields, static blocks) still deliberately out
+of scope — see [DESIGN.md §2.5](./DESIGN.md).
 
 **Conformance** — the test262 pass rate over what is implemented. Against a
 current tc39/test262 checkout:
 
 | Area | Pass rate | Run |
 |---|---|---|
-| **overall** | **96.2%** | 19025 |
-| `language/` | 95.7% | 10013 |
-| `built-ins/` | 96.7% | 9012 |
+| **overall** | **96.2%** | 19741 |
+| `language/` | 95.9% | 10728 |
+| `built-ins/` | 96.7% | 9013 |
 
-A further ~16600 tests are skipped as out of scope: features the engine cannot
+A further ~15900 tests are skipped as out of scope: features the engine cannot
 attempt at all by front-matter tag, out-of-scope builtins by path, and — the
 largest group — tests whose *own source* uses syntax the compiler does not accept
 yet, which it cannot run by construction. The runner reports those as skips
@@ -77,11 +77,11 @@ The core language works end to end:
   early errors) → stack bytecode → a peephole pass that fuses the opcode pairs
   a real workload actually executes. ES5.1 plus template literals, arrow
   functions, default/rest parameters, `let`/`const` (block scopes, temporal dead
-  zone, redeclaration errors), destructuring, `for…of`, spread, tagged
-  templates, classes (`extends`, `super`, getters/setters, static members;
-  private fields and public class fields are refused, not silently ignored)
-  and generators (`yield`, `yield*`) so far; DESIGN.md §2.5 has the order for
-  the rest
+  zone, redeclaration errors, a fresh binding per loop iteration when one is
+  captured), destructuring, `for…of`, spread, tagged templates, classes
+  (`extends`, `super`, getters/setters, static members; private fields and
+  public class fields are refused, not silently ignored) and generators
+  (`yield`, `yield*`) so far; DESIGN.md §2.5 has the order for the rest
 - **VM**: single `while/switch` dispatch loop, own frame stack (JS calls never
   consume the PHP call stack), in-VM exception handling, wall-clock execution
   limit

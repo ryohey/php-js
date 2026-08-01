@@ -13,11 +13,20 @@ final class Binding
     /** Environment-record slot when captured. */
     public int $envIndex = -1;
     /**
-     * Declared inside a loop. A `let` in a loop needs a fresh binding per
-     * iteration, which is not implemented; combined with `captured` this is
-     * what says the program would get a wrong answer rather than a slow one.
+     * Declared inside a loop. Combined with `captured`, this is what a fresh
+     * per-iteration binding is for (DESIGN.md §2.5) -- a name that is both
+     * gets `envIndex` assigned in `loopScope` instead of its owning
+     * function's flat environment.
      */
     public bool $inLoop = false;
+    /**
+     * The loop whose per-iteration environment this binding actually lives
+     * in, once `assignSlots` has decided it needs one -- null for every
+     * ordinary binding, including one that is merely `inLoop` but never
+     * captured (that one keeps a plain frame slot, reused each iteration,
+     * exactly like a `var` would).
+     */
+    public ?LoopEnvScope $loopScope = null;
 
     public function __construct(
         public Ctx $owner,
