@@ -1225,6 +1225,13 @@ final class LanguageTest extends EvalTestCase
         yield 'private methods are refused' => ['SyntaxError', 'try { eval("class A { #m() {} }"); "none" } catch (e) { e.constructor.name }'];
         yield 'public class fields are refused' => ['SyntaxError', 'try { eval("class A { x = 1; }"); "none" } catch (e) { e.constructor.name }'];
         yield 'public static class fields are refused' => ['SyntaxError', 'try { eval("class A { static x = 1; }"); "none" } catch (e) { e.constructor.name }'];
+        // Regression: a static block has no property key at all, and the
+        // refusal used to read one unconditionally before checking the
+        // element's own type, crashing with a raw PHP Error instead of a
+        // clean refusal naming the actual unsupported construct.
+        yield 'static initialization blocks are refused, not a PHP crash' => [
+            'SyntaxError', 'try { eval("class A { static { 1; } }"); "none" } catch (e) { e.constructor.name }',
+        ];
         yield 'a duplicate constructor is refused' => ['SyntaxError', 'try { eval("class A { constructor(){} constructor(){} }"); "none" } catch (e) { e.constructor.name }'];
         // A get/set accessor named "constructor" is a SpecialMethod and the
         // spec refuses it outright -- but a *static* one is a plain property

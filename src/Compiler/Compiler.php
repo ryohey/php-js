@@ -412,6 +412,14 @@ final class Compiler
         $className = $node->getId()?->getName() ?? $inferredName ?? '';
         $hasCtor = false;
         foreach ($node->getBody()->getBody() as $el) {
+            if ($el->getType() === 'StaticBlock') {
+                // Same reason as public/private fields: an object-model
+                // change (a static block runs against a binding environment
+                // of its own, closing over the class body's private names),
+                // out of scope for the same reason those are. Checked before
+                // getKey() below, which this element type does not have.
+                $this->unsupported($el, 'Static initialization blocks are not supported');
+            }
             $key = $el->getKey();
             if ($key->getType() === 'PrivateIdentifier') {
                 // An object-model change (DESIGN.md §2.5's "deliberately out of
