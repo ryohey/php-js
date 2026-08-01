@@ -384,6 +384,79 @@ final class LanguageTest extends EvalTestCase
             '(function (a, ...rest) { return arguments.length; })(1, 2, 3)',
         ];
 
+        // --- parameter/body variable scope (9.2.12) ---
+        // A default or a destructuring pattern anywhere in the parameter
+        // list gives the body its own variable environment, a child of the
+        // one the parameters live in -- a bare rest parameter alone does
+        // not (nothing then distinguishes the two), so this whole section
+        // is about the first two, not the third.
+        yield 'a body var of the same name as a parameter is a separate binding' => [
+            2,
+            'function f(x = 1) { var x = 2; return x; } f()',
+        ];
+        // The body's own binding starts as a copy of the parameter's current
+        // value, not undefined -- read before the body var's own assignment
+        // runs, it is still the parameter's value.
+        yield 'a same-named body var starts as the parameter current value' => [
+            '1,2',
+            'function f(x = 1) { var before = x; var x = 2; return before + "," + x; } f()',
+        ];
+        yield 'the copied-forward value reflects the actual argument, not the default' => [
+            5,
+            'function f(x = 1) { var before = x; var x = 2; return before; } f(5)',
+        ];
+        // A closure made in a parameter default closes over the parameter
+        // environment specifically -- the body's own variable environment is
+        // created later, as a *new* child environment, which an
+        // already-existing closure has no way back into even once it exists
+        // and even when the closure is only actually called from inside the
+        // body itself.
+        yield 'a closure in a parameter default cannot see a body-only var' => [
+            'undefined',
+            'function f(a = () => typeof y) { var y = 1; return a(); } f()',
+        ];
+        yield 'a closure in a parameter default cannot see a same-named body var either' => [
+            1,
+            'function f(x = 1, a = () => x) { var x = 2; return a(); } f()',
+        ];
+        // A closure made in the body, on the other hand, sees the body's own
+        // copy of a same-named parameter, not the parameter itself.
+        yield 'a closure in the body sees the body copy of a same-named parameter' => [
+            2,
+            'function f(x = 1) { var g = () => x; var x = 2; return g(); } f()',
+        ];
+        yield 'a hoisted function declaration in the body is also a body binding' => [
+            'function',
+            'function f(x = 1) { function x() { return "func"; } return typeof x; } f()',
+        ];
+        // Applies just the same when the non-simple part is a pattern rather
+        // than a default.
+        yield 'a destructuring parameter also splits the body from the params' => [
+            5,
+            'function f({x} = {x: 1}) { var y = () => x; var x = 5; return y(); } f()',
+        ];
+        // A generator's body does not start until the first `.next()`
+        // (DESIGN.md's generator barrier), but FunctionDeclarationInstantiation
+        // -- everything this section is about -- still runs synchronously at
+        // call time, before that suspension point.
+        yield 'the split applies to a generator too, ahead of its own barrier' => [
+            '6,99',
+            'function* g(x = 1) { var y = x + 1; yield y; var x = 99; yield x; }'
+                . ' var it = g(5); it.next().value + "," + it.next().value',
+        ];
+        yield 'the split applies to a class method' => [
+            2,
+            'class C { m(x = 1) { var y = () => x; var x = 2; return y(); } } new C().m()',
+        ];
+        // A rest parameter alone does not trigger the split: with no default
+        // and no pattern, nothing distinguishes the two environments, so a
+        // same-named body `var` is just an ordinary redeclaration of the one
+        // binding, same as a wholly simple parameter list.
+        yield 'a rest parameter alone does not split params from the body' => [
+            9,
+            'function f(...xs) { var xs = 9; return xs; } f(1, 2, 3)',
+        ];
+
         // --- let and const ---
         // A block is a scope of its own, which is the whole difference from
         // `var`: the outer binding is shadowed, not overwritten.

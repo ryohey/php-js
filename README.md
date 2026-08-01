@@ -46,8 +46,8 @@ current tc39/test262 checkout:
 
 | Area | Pass rate | Run |
 |---|---|---|
-| **overall** | **96.2%** | 19741 |
-| `language/` | 95.9% | 10728 |
+| **overall** | **96.4%** | 19741 |
+| `language/` | 96.1% | 10728 |
 | `built-ins/` | 96.7% | 9013 |
 
 A further ~15900 tests are skipped as out of scope: features the engine cannot

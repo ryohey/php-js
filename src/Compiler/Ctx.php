@@ -13,11 +13,11 @@ final class Ctx
     // ---- analysis ----
     /**
      * The enclosing scope this function was declared in -- almost always
-     * another function's Ctx, but a `LoopEnvScope` when the declaration site
+     * another function's Ctx, but a `EnvScope` when the declaration site
      * sits inside a loop that turns out to need its own per-iteration
      * environment (`Compiler::envDepth` walks through either uniformly).
      */
-    public Ctx|LoopEnvScope|null $parent = null;
+    public Ctx|EnvScope|null $parent = null;
     public bool $isProgram = false;
     public bool $strict = false;
     public bool $usesArguments = false;
@@ -81,9 +81,30 @@ final class Ctx
     public array $params = [];
     /** @var array<string, Binding> function-scoped names (params/vars/function decls) */
     public array $bindings = [];
+    /**
+     * The function body's own `var`/function declarations, kept apart from
+     * `$bindings` only when `$paramEnvScope` is set -- otherwise unused, and
+     * every such declaration lives in `$bindings` like any other. Bindings
+     * here are tagged `envScope = $paramEnvScope` regardless of whether they
+     * end up captured, the same convention `enterBlock` uses for a loop's
+     * per-iteration bindings.
+     * @var array<string, Binding>
+     */
+    public array $bodyBindings = [];
     public ?Binding $selfBinding = null;
     /** @var list<Binding> catch-parameter bindings owned by this function */
     public array $extraBindings = [];
+    /**
+     * This function's own variable environment (9.2.12), separate from the
+     * one its parameters live in -- exists only when the parameter list is
+     * non-simple in the spec's specific sense (`hasParameterExpressions`: a
+     * default or a destructuring pattern; a bare rest parameter alone does
+     * not count, since nothing then distinguishes the two environments) and
+     * only ever contains this function's own `var`/function declarations,
+     * never anything from a nested loop (those get their own `EnvScope`,
+     * chained as a child of this one when both are present).
+     */
+    public ?EnvScope $paramEnvScope = null;
     /**
      * CatchClause node -> its parameter binding, for consumers that work from
      * the AST rather than the bytecode (the ahead-of-time PHP compiler needs

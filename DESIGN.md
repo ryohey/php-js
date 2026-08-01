@@ -263,11 +263,11 @@ while the list initializes, nothing implements that zone yet, and answering
 parameter is only named inside a nested function, which the spec would allow.
 Both go away when TDZ lands with `let`.
 
-Defaults and rest also brought in tests for something not implemented: with a
-non-simple parameter list the parameters and the body's `var`s occupy *separate*
-scopes, so `function f(a = 1) { var a; }` has two `a`s. Seven test262 cases cover
-it and fail. `let` gave the compiler block scopes but not a second *var* scope,
-so this is still open.
+Defaults and rest also brought in tests for something not implemented at the
+time: with a non-simple parameter list the parameters and the body's `var`s
+occupy *separate* scopes, so `function f(a = 1) { var a; }` has two `a`s. Landed
+later in this section, once `let` had given the compiler block scopes to build
+the second one on top of.
 
 Widening the denominator also *exposed* four pre-existing builtin bugs —
 `Array.prototype` `pop`/`push`/`unshift` with a string receiver, and `shift`
@@ -600,7 +600,56 @@ argument for growing the surface: the skips were hiding real defects.
     iterable expression to its right is evaluated, which is not implemented)
     and an iterator-close gap, neither touched by this feature.
 
-**Next:** the separate parameter scope, the last item queued in this section.
+- **Parameter/body variable scope** (FunctionDeclarationInstantiation, 9.2.12) —
+  the gap flagged all the way back at defaults and rest, retired: a parameter
+  default carrying a value expression, or a destructuring pattern anywhere in
+  the parameter list, now gives the function body its own variable
+  environment, a child of the one the parameters live in. A bare rest
+  parameter alone still does not — nothing then distinguishes the two
+  environments, so the list stays "simple" for this purpose even though it
+  is not for `length`'s. Every one of the body's own `var`/function
+  declarations lives there, not just ones whose name collides with a
+  parameter's: `function f(a = 1) { var b = 2; return () => b; }`'s inner
+  closure sees `b` only because it is declared in the body's own environment,
+  not the parameters'; a closure made *in* a parameter default has no way
+  back into it even once it exists, since the default runs — and any closure
+  it creates closes over the parameter environment — before the body
+  environment is ever created, and the two are chained in one direction only,
+  parameters outward from body, never the reverse. A name that does collide
+  with a parameter starts as a copy of that parameter's *current* value
+  (post-defaults, post-destructuring), taken once, at body start; every other
+  name simply starts undefined, same as a parameter would.
+
+  Reused the same `EnvScope` a loop's per-iteration environment already
+  introduced above, renamed from `LoopEnvScope` to name what it now is:
+  compile-time bookkeeping for a nested environment smaller than a whole
+  function, exists only when analysis finds one is actually needed, and
+  composes through the same `envDepth` walk either way, without the walk ever
+  needing to know which of the two reasons created a given layer. Resolving a
+  name against the body's own declarations first, and the parameters second,
+  reuses `lexStack` shadowing exactly the way a nested block already shadows
+  an outer one — a new innermost layer for the body's own bindings, popped
+  before the parameter defaults/patterns are analyzed (which must resolve
+  against the parameters alone; the body's names do not exist yet at that
+  point in the spec's own instantiation order).
+
+  One bug surfaced building this, unrelated to the feature itself but found
+  while reading the code it touches: codegen popped the function body's own
+  block-scope `lexStack` layer twice where analysis only ever popped once,
+  silently discarding the *next* layer down — this function's own
+  parameter/var binding table — whenever the body happened to open one (a
+  top-level `let`/`const`/`class` of its own). Every var/function name
+  resolved afterward then fell through to the global object instead of the
+  enclosing function's own locals. It went unnoticed because the only
+  observable effect was a leaked local becoming reachable as a global
+  property — the value itself still read back correctly, since both the
+  errant write and the later read degraded to the same global lookup. Fixed
+  and landed on its own, ahead of and separate from this feature.
+
+**Next:** none queued. Every item this section originally listed has landed;
+future syntax work starts from a fresh look at what real `node_modules` code
+still rejects (`tests/acceptance/run.php`'s own rejection breakdown), not from
+a backlog written up front.
 
 **Deliberately out of scope for now:** ES modules (node-compat resolves
 CommonJS, and published packages overwhelmingly ship it), Proxy and Reflect

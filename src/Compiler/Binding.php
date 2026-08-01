@@ -15,18 +15,24 @@ final class Binding
     /**
      * Declared inside a loop. Combined with `captured`, this is what a fresh
      * per-iteration binding is for (DESIGN.md §2.5) -- a name that is both
-     * gets `envIndex` assigned in `loopScope` instead of its owning
+     * gets `envIndex` assigned in `envScope` instead of its owning
      * function's flat environment.
      */
     public bool $inLoop = false;
     /**
-     * The loop whose per-iteration environment this binding actually lives
-     * in, once `assignSlots` has decided it needs one -- null for every
-     * ordinary binding, including one that is merely `inLoop` but never
-     * captured (that one keeps a plain frame slot, reused each iteration,
-     * exactly like a `var` would).
+     * The nested environment this binding actually lives in, once
+     * `assignSlots` has decided it needs one, instead of its owning
+     * function's flat environment -- null for every ordinary binding,
+     * including one that is merely `inLoop` but never captured (that one
+     * keeps a plain frame slot, reused each iteration, exactly like a `var`
+     * would). Two unrelated things can set this: a loop's own per-iteration
+     * environment (`inLoop` above), or -- for a `var`/function declaration
+     * in a non-simple-parameter-list function's body -- that function's
+     * separate variable environment (`Ctx::$paramEnvScope`, 9.2.12), kept
+     * apart from its parameters so a closure made in a parameter default
+     * cannot see a name the body declares.
      */
-    public ?LoopEnvScope $loopScope = null;
+    public ?EnvScope $envScope = null;
 
     public function __construct(
         public Ctx $owner,
