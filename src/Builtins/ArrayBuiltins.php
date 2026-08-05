@@ -6,6 +6,7 @@ namespace PhpJs\Builtins;
 
 use PhpJs\Runtime\Conversions;
 use PhpJs\Runtime\JSArray;
+use PhpJs\Runtime\JSFunction;
 use PhpJs\Runtime\JSFunctionBase;
 use PhpJs\Runtime\JSNativeFunction;
 use PhpJs\Runtime\JSObject;
@@ -26,6 +27,7 @@ final class ArrayBuiltins
             'Array' => [self::class, 'callAsFunction'],
             'Array.ctor' => [self::class, 'ctor'],
             'Array.isArray' => [self::class, 'isArray'],
+            'Array.from' => [self::class, 'from'],
             'Array.prototype.toString' => [self::class, 'toString'],
             'Array.prototype.toLocaleString' => [self::class, 'toLocaleString'],
             'Array.prototype.join' => [self::class, 'join'],
@@ -69,6 +71,7 @@ final class ArrayBuiltins
         $ctor = $r->nativeFn('Array', 'Array', 1, 'Array.ctor');
         $r->linkPair($ctor, $r->arrayPrototype());
         $r->defineMethod($ctor, 'isArray', 'Array.isArray', 1);
+        $r->defineMethod($ctor, 'from', 'Array.from', 1);
         return $ctor;
     }
 
@@ -94,6 +97,77 @@ final class ArrayBuiltins
     public static function isArray(Vm $vm, mixed $t, array $args): mixed
     {
         return ($args[0] ?? null) instanceof JSArray;
+    }
+
+    /** True when $v is usable as `new $v(...)` -- an arrow/generator/async function is not. */
+    private static function isConstructorValue(mixed $v): bool
+    {
+        return ($v instanceof JSNativeFunction && $v->ctorId !== null)
+            || ($v instanceof JSFunction && !$v->isArrow && !$v->isGenerator && !$v->isAsync);
+    }
+
+    /**
+     * 23.1.2.1 Array.from: build a new array from an iterable or an
+     * array-like, optionally passing each element through mapFn. `this` is
+     * honored as a constructor (Array.from.call(SomeCtor, ...)) the same way
+     * the spec's `C` does, falling back to a plain array otherwise.
+     */
+    public static function from(Vm $vm, mixed $t, array $args): mixed
+    {
+        $items = \array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined;
+        $mapFn = \array_key_exists(1, $args) ? $args[1] : JSUndefined::$undefined;
+        $mapping = !($mapFn instanceof JSUndefined);
+        if ($mapping && !$mapFn instanceof JSFunctionBase) {
+            $vm->throwError('TypeError', 'Array.from: mapFn is not a function');
+        }
+        $thisArg = \array_key_exists(2, $args) ? $args[2] : JSUndefined::$undefined;
+        $useCtor = self::isConstructorValue($t);
+
+        $iterKey = $vm->realm->wellKnownSymbol('iterator')->propertyKey;
+        $usingIterator = ($items === null || $items instanceof JSUndefined)
+            ? JSUndefined::$undefined
+            : $vm->getMember($items, $iterKey);
+
+        if (!$usingIterator instanceof JSUndefined && $usingIterator !== null) {
+            $a = $useCtor ? $vm->construct($t, []) : $vm->realm->newArray();
+            if (!$a instanceof JSObject) {
+                $vm->throwError('TypeError', 'Array.from: constructor did not return an object');
+            }
+            [$iter, $next] = $vm->getIterator($items);
+            $k = 0;
+            while (true) {
+                $result = $vm->invoke($next, $iter, []);
+                if (!$result instanceof JSObject) {
+                    $vm->throwError('TypeError', 'Iterator result is not an object');
+                }
+                if (Conversions::toBoolean($result->get('done', $vm))) {
+                    $a->set('length', $k, $vm, true);
+                    return $a;
+                }
+                $value = $result->get('value', $vm);
+                if ($mapping) {
+                    $value = $vm->invoke($mapFn, $thisArg, [$value, $k]);
+                }
+                $a->set((string)$k, $value, $vm, true);
+                $k++;
+            }
+        }
+
+        $arrayLike = Conversions::toObject($vm, $items);
+        $len = self::lengthOf($vm, $arrayLike);
+        $a = $useCtor ? $vm->construct($t, [$len]) : self::speciesCreate($vm, $arrayLike, $len);
+        if (!$a instanceof JSObject) {
+            $vm->throwError('TypeError', 'Array.from: constructor did not return an object');
+        }
+        for ($k = 0; $k < $len; $k++) {
+            $value = $arrayLike->get((string)$k, $vm);
+            if ($mapping) {
+                $value = $vm->invoke($mapFn, $thisArg, [$value, $k]);
+            }
+            $a->set((string)$k, $value, $vm, true);
+        }
+        $a->set('length', $len, $vm, true);
+        return $a;
     }
 
     /** Coerce `this` for generic prototype methods. */
@@ -232,7 +306,11 @@ final class ArrayBuiltins
     public static function join(Vm $vm, mixed $t, array $args): mixed
     {
         $o = self::thisArray($vm, $t, 'join');
-        $sep = ($args[0] ?? null) === null || ((\array_key_exists(0, $args) ? $args[0] : JSUndefined::$undefined)) instanceof JSUndefined
+        // Only a genuinely absent or undefined separator defaults to ',' --
+        // an explicit `null` goes through ToString(null) = "null" like any
+        // other value, per 23.1.3.16. The old check folded null into the
+        // same case as undefined, which is wrong.
+        $sep = (!\array_key_exists(0, $args) || $args[0] instanceof JSUndefined)
             ? ',' : Conversions::toString($vm, $args[0]);
         $len = self::lengthOf($vm, $o);
         $parts = [];

@@ -34,11 +34,10 @@ Reflect
 Reflect.construct
 Reflect.set
 Reflect.setPrototypeOf
-TypedArray
-ArrayBuffer
 SharedArrayBuffer
-DataView
 Atomics
+immutable-arraybuffer
+align-detached-buffer-semantics-with-web-reality
 Map
 Set
 WeakMap
@@ -68,6 +67,7 @@ String.raw
 Array.from
 Array.of
 Array.prototype.at
+TypedArray.prototype.at
 Array.prototype.includes
 Array.prototype.flat
 Array.prototype.flatMap

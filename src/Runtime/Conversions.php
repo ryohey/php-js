@@ -131,6 +131,88 @@ final class Conversions
         return self::toInt32($vm, $v) & 0xFFFFFFFF;
     }
 
+    /** Shared truncate-to-N-bits step behind ToInt8/Uint8/Int16/Uint16, mirroring ToInt32 above. */
+    private static function toIntBits(Vm $vm, mixed $v, int $bits): int
+    {
+        $n = self::toNumber($vm, $v);
+        $mask = (1 << $bits) - 1;
+        if (is_int($n)) {
+            return $n & $mask;
+        }
+        if (is_nan($n) || is_infinite($n)) {
+            return 0;
+        }
+        $n = $n < 0 ? ceil($n) : floor($n);
+        $n = fmod($n, (float)(1 << $bits));
+        return (int)$n & $mask;
+    }
+
+    /** 7.1.10 ToInt8, for an Int8Array element. */
+    public static function toInt8(Vm $vm, mixed $v): int
+    {
+        $u = self::toIntBits($vm, $v, 8);
+        return ($u ^ 0x80) - 0x80;
+    }
+
+    /** 7.1.9 ToUint8, for a Uint8Array element. */
+    public static function toUint8(Vm $vm, mixed $v): int
+    {
+        return self::toIntBits($vm, $v, 8);
+    }
+
+    /**
+     * 7.1.11 ToUint8Clamp, for a Uint8ClampedArray element only -- clamps to
+     * [0, 255] instead of wrapping, and ties round to even rather than away
+     * from zero the way Math.round would.
+     */
+    public static function toUint8Clamp(Vm $vm, mixed $v): int
+    {
+        $n = self::toNumber($vm, $v);
+        if (is_nan($n) || $n <= 0) {
+            return 0;
+        }
+        if ($n >= 255) {
+            return 255;
+        }
+        $f = floor($n);
+        $diff = $n - $f;
+        if ($diff < 0.5) {
+            return (int)$f;
+        }
+        if ($diff > 0.5) {
+            return (int)$f + 1;
+        }
+        return ((int)$f % 2 === 0) ? (int)$f : (int)$f + 1;
+    }
+
+    /** 7.1.12 ToInt16, for an Int16Array element. */
+    public static function toInt16(Vm $vm, mixed $v): int
+    {
+        $u = self::toIntBits($vm, $v, 16);
+        return ($u ^ 0x8000) - 0x8000;
+    }
+
+    /** 7.1.13 ToUint16, for a Uint16Array element. */
+    public static function toUint16(Vm $vm, mixed $v): int
+    {
+        return self::toIntBits($vm, $v, 16);
+    }
+
+    /**
+     * 7.1.22 ToIndex: a non-negative integer up to 2^53-1, RangeError
+     * otherwise. Used for a typed array's/ArrayBuffer's own length and byte
+     * offset arguments, which reject a negative or out-of-range value rather
+     * than clamping or wrapping it the way ToLength does for array-likes.
+     */
+    public static function toIndex(Vm $vm, mixed $v): int
+    {
+        $n = self::toInteger($vm, $v);
+        if (is_infinite($n) || $n < 0 || $n > self::MAX_EXACT_INT - 1) {
+            $vm->throwError('RangeError', 'Invalid typed array length');
+        }
+        return (int)$n;
+    }
+
     /** 9.8 ToString */
     public static function toString(Vm $vm, mixed $v): string
     {

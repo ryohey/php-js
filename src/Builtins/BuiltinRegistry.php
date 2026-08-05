@@ -72,6 +72,9 @@ final class BuiltinRegistry
             DateBuiltins::entries(),
             PromiseBuiltins::entries(),
             AsyncBuiltins::entries(),
+            ArrayBufferBuiltins::entries(),
+            TypedArrayBuiltins::entries(),
+            DataViewBuiltins::entries(),
         );
     }
 }

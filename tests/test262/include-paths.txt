@@ -34,6 +34,11 @@ built-ins/NativeErrors
 built-ins/RegExp
 built-ins/Date
 built-ins/Promise
+built-ins/ArrayBuffer
+built-ins/DataView
+built-ins/TypedArray
+built-ins/TypedArrayConstructors
+built-ins/Uint8Array
 built-ins/global
 built-ins/parseInt
 built-ins/parseFloat

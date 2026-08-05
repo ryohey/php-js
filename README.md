@@ -48,9 +48,9 @@ current tc39/test262 checkout:
 
 | Area | Pass rate | Run |
 |---|---|---|
-| **overall** | **96.3%** | 20244 |
-| `language/` | 96.0% | 11220 |
-| `built-ins/` | 96.6% | 9024 |
+| **overall** | **96.4%** | 21477 |
+| `language/` | 95.8% | 11262 |
+| `built-ins/` | 97.0% | 10215 |
 
 A further ~15900 tests are skipped as out of scope: features the engine cannot
 attempt at all by front-matter tag, out-of-scope builtins by path, and — the
@@ -101,7 +101,9 @@ The core language works end to end:
 - **Builtins** (native PHP): Object, Function (`call`/`apply`/`bind`, the
   `Function` constructor), Array (generic over array-likes, sparse-aware),
   String, Number, Boolean, Math, JSON (spec `Walk`/`Str` with reviver and
-  replacer), Error family, console, RegExp (translated to PCRE2), Date
+  replacer), Error family, console, RegExp (translated to PCRE2), Date,
+  `ArrayBuffer`, `DataView` and all nine `TypedArray` kinds (a real byte
+  buffer, not a JS-level polyfill over an array — see DESIGN.md §5.2)
 - **Iteration**: `%IteratorPrototype%`, the array and string iterators (the
   string one steps by code point), and `@@iterator` on Array, String and
   `arguments`. `for…of`, spread and array destructuring all go through it, and
@@ -150,9 +152,11 @@ on it:
 
 - [`packages/node-compat`](packages/node-compat) — CommonJS module loading,
   a read-only filesystem confined to a root, `process`, virtual-clock timers,
-  and the ES2015+ *library* surface the engine does not own (Map, Set, typed
-  arrays, `Object.assign`); `Symbol` and collection iteration moved into the
-  engine, because a primitive type cannot be polyfilled.
+  and the ES2015+ *library* surface the engine does not own (Map, Set,
+  `Object.assign`); `Symbol`, collection iteration and `ArrayBuffer`/
+  `TypedArray`/`DataView` moved into the engine itself — a primitive type
+  cannot be polyfilled, and neither can a real byte buffer with the sharing
+  and detach semantics the spec gives it.
 - [`packages/react-ssr-bench`](packages/react-ssr-bench) — renders a React app
   server-side from React's own published CommonJS build, asserts the HTML is
   byte-identical to Node, and reports boot and render separately.

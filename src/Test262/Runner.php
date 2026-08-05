@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace PhpJs\Test262;
 
+use PhpJs\Builtins\BuiltinRegistry;
 use PhpJs\Compiler\CompileError;
 use PhpJs\Engine;
 use PhpJs\JSException;
+use PhpJs\Runtime\JSArrayBuffer;
 use PhpJs\Runtime\JSObject;
+use PhpJs\Vm\Vm;
 
 /**
  * test262 runner for the ES5.1 subset (DESIGN.md §12). The pass rate it
@@ -49,6 +52,33 @@ final class Runner
         /** Per-test wall-clock limit; a mis-executed test can loop forever. */
         private readonly float $timeLimit = 5.0,
     ) {
+        self::registerHostNatives();
+    }
+
+    /**
+     * `$262` is test262's own host API (github.com/tc39/test262/blob/main/INTEROP.md),
+     * not part of the language -- real hosts (browsers, Node harnesses) implement
+     * as much or as little of it as they need for their own tests to run. This
+     * engine only needs `detachArrayBuffer`: the one operation no in-language
+     * ArrayBuffer.prototype method can trigger (`transfer()` is a separate,
+     * still-excluded proposal), and every `detached-buffer.js` test in
+     * ArrayBuffer/DataView/TypedArray goes through it via harness/detachArrayBuffer.js.
+     */
+    private static function registerHostNatives(): void
+    {
+        if (BuiltinRegistry::hasHost('test262.$262.detachArrayBuffer')) {
+            return;
+        }
+        BuiltinRegistry::registerHost([
+            'test262.$262.detachArrayBuffer' => static function (Vm $vm, mixed $t, array $args): mixed {
+                $buf = $args[0] ?? null;
+                if ($buf instanceof JSArrayBuffer) {
+                    $buf->detached = true;
+                    $buf->bytes = '';
+                }
+                return null;
+            },
+        ]);
     }
 
     public function loadIncludePaths(string $file): void
@@ -205,6 +235,9 @@ final class Runner
             $engine->realm->nativeFn('console.log', 'print', 1),
             JSObject::W | JSObject::C
         );
+        $test262Host = $engine->realm->newObject();
+        $engine->realm->defineMethod($test262Host, 'detachArrayBuffer', 'test262.$262.detachArrayBuffer', 1);
+        $engine->realm->globalObject->defineOwnData('$262', $test262Host, JSObject::W | JSObject::C);
 
         $engine->vm->setTimeLimit($this->timeLimit);
         $directive = $mode === 'strict' ? "\"use strict\";\n" : '';

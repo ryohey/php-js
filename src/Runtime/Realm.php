@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace PhpJs\Runtime;
 
+use PhpJs\Builtins\ArrayBufferBuiltins;
 use PhpJs\Builtins\ArrayBuiltins;
 use PhpJs\Builtins\BooleanBuiltins;
 use PhpJs\Builtins\ConsoleBuiltins;
+use PhpJs\Builtins\DataViewBuiltins;
 use PhpJs\Builtins\DateBuiltins;
 use PhpJs\Builtins\ErrorBuiltins;
 use PhpJs\Builtins\FunctionBuiltins;
@@ -19,6 +21,7 @@ use PhpJs\Builtins\PromiseBuiltins;
 use PhpJs\Builtins\RegExpBuiltins;
 use PhpJs\Builtins\StringBuiltins;
 use PhpJs\Builtins\SymbolBuiltins;
+use PhpJs\Builtins\TypedArrayBuiltins;
 use PhpJs\Vm\Vm;
 
 /**
@@ -62,6 +65,9 @@ final class Realm
         'Math', 'JSON', 'console', 'Symbol',
         'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'EvalError', 'URIError',
         'RegExp', 'Date', 'Promise',
+        'ArrayBuffer', 'DataView',
+        'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array',
+        'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array',
         'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'eval',
         'encodeURIComponent', 'decodeURIComponent', 'encodeURI', 'decodeURI',
     ];
@@ -104,6 +110,17 @@ final class Realm
             'RegExp' => $this->regexpConstructor(),
             'Date' => $this->dateConstructor(),
             'Promise' => $this->promiseConstructor(),
+            'ArrayBuffer' => $this->arrayBufferConstructor(),
+            'DataView' => $this->dataViewConstructor(),
+            'Int8Array' => $this->typedArrayConstructor('Int8'),
+            'Uint8Array' => $this->typedArrayConstructor('Uint8'),
+            'Uint8ClampedArray' => $this->typedArrayConstructor('Uint8Clamped'),
+            'Int16Array' => $this->typedArrayConstructor('Int16'),
+            'Uint16Array' => $this->typedArrayConstructor('Uint16'),
+            'Int32Array' => $this->typedArrayConstructor('Int32'),
+            'Uint32Array' => $this->typedArrayConstructor('Uint32'),
+            'Float32Array' => $this->typedArrayConstructor('Float32'),
+            'Float64Array' => $this->typedArrayConstructor('Float64'),
             'parseInt' => $this->nativeFn('global.parseInt', 'parseInt', 2),
             'parseFloat' => $this->nativeFn('global.parseFloat', 'parseFloat', 1),
             'isNaN' => $this->nativeFn('global.isNaN', 'isNaN', 1),
@@ -532,6 +549,102 @@ final class Realm
     public function promiseConstructor(): JSNativeFunction
     {
         return $this->memo['Promise'] ??= PromiseBuiltins::makeConstructor($this);
+    }
+
+    public function arrayBufferPrototype(): JSObject
+    {
+        if (!isset($this->memo['ArrayBuffer.prototype'])) {
+            $proto = new JSObject($this->objectPrototype());
+            $proto->nativeId = 'ArrayBuffer.prototype';
+            $this->memo['ArrayBuffer.prototype'] = $proto;
+            ArrayBufferBuiltins::populateProto($this, $proto);
+            $this->arrayBufferConstructor();
+        }
+        return $this->memo['ArrayBuffer.prototype'];
+    }
+
+    public function arrayBufferConstructor(): JSNativeFunction
+    {
+        return $this->memo['ArrayBuffer'] ??= ArrayBufferBuiltins::makeConstructor($this);
+    }
+
+    public function dataViewPrototype(): JSObject
+    {
+        if (!isset($this->memo['DataView.prototype'])) {
+            $proto = new JSObject($this->objectPrototype());
+            $proto->nativeId = 'DataView.prototype';
+            $this->memo['DataView.prototype'] = $proto;
+            DataViewBuiltins::populateProto($this, $proto);
+            $this->dataViewConstructor();
+        }
+        return $this->memo['DataView.prototype'];
+    }
+
+    public function dataViewConstructor(): JSNativeFunction
+    {
+        return $this->memo['DataView'] ??= DataViewBuiltins::makeConstructor($this);
+    }
+
+    /**
+     * `%TypedArray%.prototype` -- the abstract intrinsic every concrete
+     * kind's own prototype inherits from (`Int8Array.prototype.__proto__
+     * === typedArrayPrototype()`). Not exposed under any global name of its
+     * own; only reachable, same as the spec has it, by walking up from a
+     * concrete kind.
+     */
+    public function typedArrayPrototype(): JSObject
+    {
+        if (!isset($this->memo['%TypedArray%.prototype'])) {
+            $proto = new JSObject($this->objectPrototype());
+            $proto->nativeId = '%TypedArray%.prototype';
+            $this->memo['%TypedArray%.prototype'] = $proto;
+            TypedArrayBuiltins::populateSharedProto($this, $proto);
+        }
+        return $this->memo['%TypedArray%.prototype'];
+    }
+
+    /**
+     * `%TypedArray%` -- the abstract intrinsic constructor every concrete
+     * kind's own constructor inherits from (`Object.getPrototypeOf(Int8Array)
+     * === typedArrayConstructorAbstract()`), the same way each kind's
+     * prototype inherits from `typedArrayPrototype()`. This is where `from`
+     * and `of` live once, so every concrete constructor gets them through the
+     * chain rather than each carrying its own copy. Calling or `new`-ing it
+     * directly throws -- it exists only to be a common ancestor.
+     */
+    public function typedArrayConstructorAbstract(): JSNativeFunction
+    {
+        if (!isset($this->memo['%TypedArray%'])) {
+            // A ctorId, not null: %TypedArray% has an abstract [[Construct]]
+            // slot per 23.2.1.1, so IsConstructor(%TypedArray%) is true --
+            // %TypedArray%.from.call(%TypedArray%, ...) must get past that
+            // check before the "abstract, cannot instantiate" TypeError this
+            // ctorId itself throws when actually invoked.
+            $ctor = $this->nativeFn('%TypedArray%', 'TypedArray', 0, '%TypedArray%.ctor');
+            $ctor->nativeId = '%TypedArray%';
+            $this->memo['%TypedArray%'] = $ctor;
+            $this->linkPair($ctor, $this->typedArrayPrototype());
+            TypedArrayBuiltins::populateAbstractConstructor($this, $ctor);
+        }
+        return $this->memo['%TypedArray%'];
+    }
+
+    /** @param 'Int8'|'Uint8'|'Uint8Clamped'|'Int16'|'Uint16'|'Int32'|'Uint32'|'Float32'|'Float64' $kind */
+    public function typedArrayKindPrototype(string $kind): JSObject
+    {
+        if (!isset($this->memo["{$kind}Array.prototype"])) {
+            TypedArrayBuiltins::makePair($this, $kind);
+        }
+        return $this->memo["{$kind}Array.prototype"];
+    }
+
+    /** @param 'Int8'|'Uint8'|'Uint8Clamped'|'Int16'|'Uint16'|'Int32'|'Uint32'|'Float32'|'Float64' $kind */
+    public function typedArrayConstructor(string $kind): JSNativeFunction
+    {
+        if (!isset($this->memo["{$kind}Array"])) {
+            TypedArrayBuiltins::makePair($this, $kind);
+        }
+        return $this->memo["{$kind}Array"];
     }
 
     /** Register a constructor/prototype pair built by a builtins class. */

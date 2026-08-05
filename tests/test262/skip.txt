@@ -156,93 +156,45 @@ built-ins/Array/fromAsync/ post-ES5 builtin
 built-ins/Promise/allKeyed/ stage-1 proposal, out of scope
 built-ins/Promise/allSettledKeyed/ stage-1 proposal, out of scope
 built-ins/Object/getOwnPropertyDescriptors/ post-ES5 builtin
-built-ins/Object/seal/seal-arraybuffer.js requires ArrayBuffer (out of scope)
-built-ins/Object/seal/seal-typedarray.js requires TypedArray (out of scope)
-built-ins/Object/isSealed/is-sealed-arraybuffer.js requires ArrayBuffer (out of scope)
-built-ins/Object/isSealed/is-sealed-typedarray.js requires TypedArray (out of scope)
-built-ins/Object/freeze/freeze-arraybuffer.js requires ArrayBuffer (out of scope)
-built-ins/Object/freeze/freeze-typedarray.js requires TypedArray (out of scope)
-built-ins/Object/isFrozen/is-frozen-arraybuffer.js requires ArrayBuffer (out of scope)
-built-ins/Object/isFrozen/is-frozen-typedarray.js requires TypedArray (out of scope)
 language/expressions/compound-assignment/S11.13.2_A6 direct-eval scope injection is not implemented (DESIGN.md §15)
 
 # --- Object seal/freeze tests parameterised over out-of-scope built-in types ---
 built-ins/Object/seal/seal-bigint64array.js requires an out-of-scope built-in type
 built-ins/Object/seal/seal-biguint64array.js requires an out-of-scope built-in type
-built-ins/Object/seal/seal-dataview.js requires an out-of-scope built-in type
-built-ins/Object/seal/seal-float32array.js requires an out-of-scope built-in type
-built-ins/Object/seal/seal-float64array.js requires an out-of-scope built-in type
-built-ins/Object/seal/seal-int16array.js requires an out-of-scope built-in type
-built-ins/Object/seal/seal-int32array.js requires an out-of-scope built-in type
-built-ins/Object/seal/seal-int8array.js requires an out-of-scope built-in type
 built-ins/Object/seal/seal-map.js requires an out-of-scope built-in type
 built-ins/Object/seal/seal-proxy.js requires an out-of-scope built-in type
 built-ins/Object/seal/seal-set.js requires an out-of-scope built-in type
 built-ins/Object/seal/seal-symbol.js requires an out-of-scope built-in type
-built-ins/Object/seal/seal-uint16array.js requires an out-of-scope built-in type
-built-ins/Object/seal/seal-uint32array.js requires an out-of-scope built-in type
-built-ins/Object/seal/seal-uint8array.js requires an out-of-scope built-in type
-built-ins/Object/seal/seal-uint8clampedarray.js requires an out-of-scope built-in type
 built-ins/Object/seal/seal-weakmap.js requires an out-of-scope built-in type
 built-ins/Object/seal/seal-weakset.js requires an out-of-scope built-in type
 built-ins/Object/seal/seal-sharedarraybuffer.js requires an out-of-scope built-in type
 built-ins/Object/seal/seal-float16array.js requires an out-of-scope built-in type
 built-ins/Object/isSealed/is-sealed-bigint64array.js requires an out-of-scope built-in type
 built-ins/Object/isSealed/is-sealed-biguint64array.js requires an out-of-scope built-in type
-built-ins/Object/isSealed/is-sealed-dataview.js requires an out-of-scope built-in type
-built-ins/Object/isSealed/is-sealed-float32array.js requires an out-of-scope built-in type
-built-ins/Object/isSealed/is-sealed-float64array.js requires an out-of-scope built-in type
-built-ins/Object/isSealed/is-sealed-int16array.js requires an out-of-scope built-in type
-built-ins/Object/isSealed/is-sealed-int32array.js requires an out-of-scope built-in type
-built-ins/Object/isSealed/is-sealed-int8array.js requires an out-of-scope built-in type
 built-ins/Object/isSealed/is-sealed-map.js requires an out-of-scope built-in type
 built-ins/Object/isSealed/is-sealed-proxy.js requires an out-of-scope built-in type
 built-ins/Object/isSealed/is-sealed-set.js requires an out-of-scope built-in type
 built-ins/Object/isSealed/is-sealed-symbol.js requires an out-of-scope built-in type
-built-ins/Object/isSealed/is-sealed-uint16array.js requires an out-of-scope built-in type
-built-ins/Object/isSealed/is-sealed-uint32array.js requires an out-of-scope built-in type
-built-ins/Object/isSealed/is-sealed-uint8array.js requires an out-of-scope built-in type
-built-ins/Object/isSealed/is-sealed-uint8clampedarray.js requires an out-of-scope built-in type
 built-ins/Object/isSealed/is-sealed-weakmap.js requires an out-of-scope built-in type
 built-ins/Object/isSealed/is-sealed-weakset.js requires an out-of-scope built-in type
 built-ins/Object/isSealed/is-sealed-sharedarraybuffer.js requires an out-of-scope built-in type
 built-ins/Object/isSealed/is-sealed-float16array.js requires an out-of-scope built-in type
 built-ins/Object/freeze/freeze-bigint64array.js requires an out-of-scope built-in type
 built-ins/Object/freeze/freeze-biguint64array.js requires an out-of-scope built-in type
-built-ins/Object/freeze/freeze-dataview.js requires an out-of-scope built-in type
-built-ins/Object/freeze/freeze-float32array.js requires an out-of-scope built-in type
-built-ins/Object/freeze/freeze-float64array.js requires an out-of-scope built-in type
-built-ins/Object/freeze/freeze-int16array.js requires an out-of-scope built-in type
-built-ins/Object/freeze/freeze-int32array.js requires an out-of-scope built-in type
-built-ins/Object/freeze/freeze-int8array.js requires an out-of-scope built-in type
 built-ins/Object/freeze/freeze-map.js requires an out-of-scope built-in type
 built-ins/Object/freeze/freeze-proxy.js requires an out-of-scope built-in type
 built-ins/Object/freeze/freeze-set.js requires an out-of-scope built-in type
 built-ins/Object/freeze/freeze-symbol.js requires an out-of-scope built-in type
-built-ins/Object/freeze/freeze-uint16array.js requires an out-of-scope built-in type
-built-ins/Object/freeze/freeze-uint32array.js requires an out-of-scope built-in type
-built-ins/Object/freeze/freeze-uint8array.js requires an out-of-scope built-in type
-built-ins/Object/freeze/freeze-uint8clampedarray.js requires an out-of-scope built-in type
 built-ins/Object/freeze/freeze-weakmap.js requires an out-of-scope built-in type
 built-ins/Object/freeze/freeze-weakset.js requires an out-of-scope built-in type
 built-ins/Object/freeze/freeze-sharedarraybuffer.js requires an out-of-scope built-in type
 built-ins/Object/freeze/freeze-float16array.js requires an out-of-scope built-in type
 built-ins/Object/isFrozen/is-frozen-bigint64array.js requires an out-of-scope built-in type
 built-ins/Object/isFrozen/is-frozen-biguint64array.js requires an out-of-scope built-in type
-built-ins/Object/isFrozen/is-frozen-dataview.js requires an out-of-scope built-in type
-built-ins/Object/isFrozen/is-frozen-float32array.js requires an out-of-scope built-in type
-built-ins/Object/isFrozen/is-frozen-float64array.js requires an out-of-scope built-in type
-built-ins/Object/isFrozen/is-frozen-int16array.js requires an out-of-scope built-in type
-built-ins/Object/isFrozen/is-frozen-int32array.js requires an out-of-scope built-in type
-built-ins/Object/isFrozen/is-frozen-int8array.js requires an out-of-scope built-in type
 built-ins/Object/isFrozen/is-frozen-map.js requires an out-of-scope built-in type
 built-ins/Object/isFrozen/is-frozen-proxy.js requires an out-of-scope built-in type
 built-ins/Object/isFrozen/is-frozen-set.js requires an out-of-scope built-in type
 built-ins/Object/isFrozen/is-frozen-symbol.js requires an out-of-scope built-in type
-built-ins/Object/isFrozen/is-frozen-uint16array.js requires an out-of-scope built-in type
-built-ins/Object/isFrozen/is-frozen-uint32array.js requires an out-of-scope built-in type
-built-ins/Object/isFrozen/is-frozen-uint8array.js requires an out-of-scope built-in type
-built-ins/Object/isFrozen/is-frozen-uint8clampedarray.js requires an out-of-scope built-in type
 built-ins/Object/isFrozen/is-frozen-weakmap.js requires an out-of-scope built-in type
 built-ins/Object/isFrozen/is-frozen-weakset.js requires an out-of-scope built-in type
 built-ins/Object/isFrozen/is-frozen-sharedarraybuffer.js requires an out-of-scope built-in type
@@ -273,3 +225,46 @@ language/expressions/compound-assignment/S11.13.2_A7.7_T4.js direct-eval scope i
 language/expressions/compound-assignment/S11.13.2_A7.8_T4.js direct-eval scope injection is not implemented (DESIGN.md §15)
 language/expressions/compound-assignment/S11.13.2_A7.9_T4.js direct-eval scope injection is not implemented (DESIGN.md §15)
 language/expressions/compound-assignment/mod-whitespace.js direct-eval scope injection is not implemented (DESIGN.md §15)
+
+# --- TypedArray/ArrayBuffer/DataView: known engine-wide gaps, not specific to these types ---
+built-ins/ArrayBuffer/isView/arg-is-dataview-subclass-instance.js extending a native constructor is not supported yet
+built-ins/ArrayBuffer/isView/arg-is-typedarray-subclass-instance.js extending a native constructor is not supported yet
+built-ins/ArrayBuffer/prototype/slice/species-constructor-is-not-object.js requires Symbol.species (out of scope)
+built-ins/TypedArrayConstructors/ctors/buffer-arg/use-default-proto-if-custom-proto-is-not-object.js requires Reflect (out of scope)
+built-ins/TypedArrayConstructors/ctors/length-arg/use-default-proto-if-custom-proto-is-not-object.js requires Reflect (out of scope)
+built-ins/TypedArrayConstructors/ctors/no-args/use-default-proto-if-custom-proto-is-not-object.js requires Reflect (out of scope)
+built-ins/TypedArrayConstructors/ctors/object-arg/use-default-proto-if-custom-proto-is-not-object.js requires Reflect (out of scope)
+built-ins/TypedArrayConstructors/ctors/typedarray-arg/use-default-proto-if-custom-proto-is-not-object.js requires Reflect (out of scope)
+
+# --- TypedArray.prototype.find/findIndex/findLast/findLastIndex: same scope decision as Array's (excluded-features.txt) ---
+built-ins/TypedArray/prototype/find/ post-ES5 builtin, same scope decision as Array.prototype.find
+built-ins/TypedArray/prototype/findIndex/ post-ES5 builtin, same scope decision as Array.prototype.findIndex
+built-ins/TypedArray/prototype/findLast/ post-ES5 builtin, same scope decision as Array.prototype.findLast
+built-ins/TypedArray/prototype/findLastIndex/ post-ES5 builtin, same scope decision as Array.prototype.findLastIndex
+
+# --- TypedArray.prototype species-constructor construction: Symbol.species out of scope (see excluded-features.txt) ---
+built-ins/TypedArray/prototype/filter/speciesctor-get-ctor-abrupt.js requires Symbol.species (out of scope)
+built-ins/TypedArray/prototype/filter/speciesctor-get-ctor-inherited.js requires Symbol.species (out of scope)
+built-ins/TypedArray/prototype/filter/speciesctor-get-ctor-returns-throws.js requires Symbol.species (out of scope)
+built-ins/TypedArray/prototype/filter/speciesctor-get-ctor.js requires Symbol.species (out of scope)
+built-ins/TypedArray/prototype/map/speciesctor-get-ctor-abrupt.js requires Symbol.species (out of scope)
+built-ins/TypedArray/prototype/map/speciesctor-get-ctor-inherited.js requires Symbol.species (out of scope)
+built-ins/TypedArray/prototype/map/speciesctor-get-ctor-returns-throws.js requires Symbol.species (out of scope)
+built-ins/TypedArray/prototype/map/speciesctor-get-ctor.js requires Symbol.species (out of scope)
+built-ins/TypedArray/prototype/slice/speciesctor-get-ctor-abrupt.js requires Symbol.species (out of scope)
+built-ins/TypedArray/prototype/slice/speciesctor-get-ctor-inherited.js requires Symbol.species (out of scope)
+built-ins/TypedArray/prototype/slice/speciesctor-get-ctor-returns-throws.js requires Symbol.species (out of scope)
+built-ins/TypedArray/prototype/slice/speciesctor-get-ctor.js requires Symbol.species (out of scope)
+built-ins/TypedArray/prototype/subarray/speciesctor-get-ctor-abrupt.js requires Symbol.species (out of scope)
+built-ins/TypedArray/prototype/subarray/speciesctor-get-ctor-inherited.js requires Symbol.species (out of scope)
+built-ins/TypedArray/prototype/subarray/speciesctor-get-ctor-returns-throws.js requires Symbol.species (out of scope)
+built-ins/TypedArray/prototype/subarray/speciesctor-get-ctor.js requires Symbol.species (out of scope)
+
+# --- Untagged uses of Object.setPrototypeOf / the immutable-arraybuffer proposal (both already excluded by feature tag elsewhere) ---
+built-ins/TypedArray/prototype/buffer/this-inherits-typedarray.js requires Object.setPrototypeOf (out of scope)
+built-ins/TypedArray/prototype/copyWithin/coerced-values-end-detached-prototype.js requires makeImmutableArrayBuffer (immutable-arraybuffer, out of scope)
+built-ins/TypedArray/prototype/copyWithin/coerced-values-end-detached.js requires makeImmutableArrayBuffer (immutable-arraybuffer, out of scope)
+built-ins/TypedArray/prototype/copyWithin/coerced-values-start-detached.js requires makeImmutableArrayBuffer (immutable-arraybuffer, out of scope)
+
+# --- Symbol.toPrimitive is not consulted by ToNumber/ToPrimitive yet (pre-existing engine gap, not specific to TypedArray) ---
+built-ins/TypedArray/prototype/sort/sort-tonumber.js requires Symbol.toPrimitive support in ToNumber
