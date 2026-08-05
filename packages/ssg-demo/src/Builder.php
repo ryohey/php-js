@@ -31,13 +31,13 @@ final class Builder
     public const MANIFEST = 'manifest.php';
 
     /**
-     * @param string $appRoot   module root; holds bundle/ and node_modules/
+     * @param string $appRoot   module root; holds app/ and node_modules/
      * @param string $buildDir  where the generated PHP goes
      */
     public function __construct(
         private readonly string $appRoot,
         private readonly string $buildDir,
-        private readonly string $entry = './bundle/entry.cjs',
+        private readonly string $entry = './build/app-cjs/entry.js',
     ) {
     }
 
@@ -49,14 +49,28 @@ final class Builder
     {
         $log ??= static function (string $_): void {
         };
-        if (!is_file($this->appRoot . '/bundle/entry.cjs')) {
+        if (!is_dir($this->appRoot . '/node_modules/sucrase')) {
             throw new \RuntimeException(
-                "No bundle at {$this->appRoot}/bundle/entry.cjs — run `npm install && npm run build` first."
+                "No sucrase at {$this->appRoot}/node_modules/sucrase — run `npm install` first."
             );
         }
         if (!is_dir($this->buildDir) && !mkdir($this->buildDir, 0o777, true) && !is_dir($this->buildDir)) {
             throw new \RuntimeException("Cannot create {$this->buildDir}");
         }
+
+        // Type stripping: TSX/TS under app/ -> plain CJS under build/app-cjs/,
+        // entirely inside php-js (Sucrase runs sucrase itself as interpreted
+        // JS). This is the only step that reads app/ — everything after this
+        // point works from build/app-cjs/ the same way it would from a
+        // hand-written CommonJS tree.
+        $started = microtime(true);
+        $transpiled = (new Sucrase($this->appRoot, $this->appRoot . '/app', $this->buildDir . '/app-cjs'))->run();
+        $log(sprintf(
+            'type stripping      %6.0f ms -> %s (%d files)',
+            (microtime(true) - $started) * 1000,
+            'build/app-cjs/',
+            $transpiled
+        ));
 
         // The polyfill file is the same for every host, so it is compiled once
         // here and never again.

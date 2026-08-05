@@ -27,8 +27,8 @@ final class DemoSiteTest extends TestCase
 
     public static function setUpBeforeClass(): void
     {
-        if (!is_file(Paths::appRoot() . '/bundle/entry.cjs')) {
-            self::markTestSkipped('No bundle. Run `npm install && npm run build` in packages/ssg-demo.');
+        if (!is_dir(Paths::appRoot() . '/node_modules/sucrase')) {
+            self::markTestSkipped('No sucrase. Run `npm install` in packages/ssg-demo.');
         }
         self::$buildDir = sys_get_temp_dir() . '/phpjs-ssg-test-' . getmypid();
         (new Builder(Paths::appRoot(), self::$buildDir, Paths::entry()))->run();
@@ -83,7 +83,7 @@ final class DemoSiteTest extends TestCase
 
     public function testTheBoundaryRejectsTheSitesOwnCode(): void
     {
-        $this->assertFalse(Trust::mayCompileToPhp(Paths::appRoot() . '/bundle/entry.cjs'));
+        $this->assertFalse(Trust::mayCompileToPhp(Paths::buildDir() . '/app-cjs/entry.js'));
         $this->assertFalse(Trust::mayCompileToPhp('/srv/tenant-uploads/user.js'));
         $this->assertTrue(Trust::mayCompileToPhp(Paths::appRoot() . '/node_modules/react/index.js'));
     }

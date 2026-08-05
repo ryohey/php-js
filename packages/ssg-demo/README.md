@@ -11,12 +11,17 @@ a browser.**
 ## Run it
 
 ```console
-$ npm install && npm run build      # TSX -> one ES5 CommonJS bundle
+$ npm install                       # fetches React and sucrase, nothing else
 $ composer install
-$ bin/phpjs-ssg build               # compile React and the bundle into build/
+$ bin/phpjs-ssg build               # type-strip app/, compile React and it into build/
 $ bin/phpjs-ssg export              # optional: static HTML into dist/
 $ bin/phpjs-ssg serve               # http://127.0.0.1:8080/
 ```
+
+`build` is the only step that touches `app/`, and it runs entirely inside
+php-js: no `node`, `vite`, `babel` or `tsc` process is ever spawned to produce
+what ships. `npm install` still runs once, to put React and sucrase's own
+files on disk where php-js can `require` them.
 
 `serve` starts PHP's built-in server with opcache and the tracing JIT on, which
 are not the defaults and are worth having.
@@ -35,7 +40,7 @@ Things worth doing once it is up:
 
 | | |
 |---|---|
-| `build` | Compiles the Vite bundle, React and the polyfills to PHP arrays in `build/`. Nothing is compiled again after this. |
+| `build` | Type-strips `app/` with sucrase, then compiles it, React and the polyfills to PHP arrays in `build/`. Nothing is compiled again after this. |
 | `export` | Renders every route into `dist/` — static site generation, all at once. |
 | `package` | Assembles a render-only tree you can ship inside a plugin (see below). |
 | `serve` | Local server. Renders a page the first time it is asked for, serves the file after. |
@@ -46,18 +51,22 @@ Things worth doing once it is up:
 ## How the pieces fit
 
 ```
-app/*.tsx ──vite+babel──► bundle/entry.cjs ──► bytecode ──┐
-                                                          ├─► request ──► HTML
-node_modules ──php-js-transpile─────────────► PHP ────────┘   (opcache)
+app/*.tsx ──sucrase (in php-js)──► build/app-cjs/*.js ──► bytecode ──┐
+                                                                     ├─► request ──► HTML
+node_modules ─────────────────────php-js-transpile────────► PHP ────┘   (opcache)
 ```
 
-**The sources are TypeScript and JSX** in `app/`, bundled by Vite into one
-CommonJS file.
-Two things in `vite.config.ts` are not defaults and both matter: esbuild handles
-the TSX but cannot target ES5, so Babel downlevels the finished chunk; and JSX
-compiles to classic `React.createElement` calls, so the bundle needs nothing
-from `react/jsx-runtime`. React itself stays external — the runtime loads
-React's own published CommonJS build, which is the thing worth measuring.
+**The sources are TypeScript and JSX** in `app/`. `bin/phpjs-ssg build` runs
+[sucrase](https://github.com/alangpierce/sucrase) — itself just JavaScript —
+inside php-js to strip types and turn JSX into classic `React.createElement`
+calls, one file at a time, into `build/app-cjs/`. No bundler: relative
+`import`s become relative `require`s and php-js's own CommonJS resolver walks
+the resulting tree, the same way it walks `node_modules`.
+Sucrase runs with `disableESTransforms: true` — the engine now parses `??`,
+`?.`, destructuring, classes, `async`/`await` and the rest of what DESIGN.md
+§2.5 has landed, so there is nothing left to downlevel. React itself stays
+external — the runtime loads React's own published CommonJS build, which is
+the thing worth measuring.
 
 **Dependencies are compiled to PHP; the site's own code is not.** The build runs
 [php-transpile](../php-transpile) over `node_modules`, turning 262 of React's 291
@@ -203,12 +212,14 @@ writes.
   the same bytes for every route, and the static export to match the live render
   byte for byte.
 
-## What ES5 costs you, in practice
+## What TSX costs you, in practice
 
-The engine targets ES5.1 (plus Promise) and its compiler will not grow ES6+
-syntax support, so the bundle is downlevelled — that part is mechanical, and it
-turned out to be the whole cost. Nothing in this demo is written around the
-engine.
+DESIGN.md §2.5 tracks how far past ES5.1 the compiler's syntax support goes,
+and by the time this demo stopped needing Babel it covered enough of what `app/`
+and sucrase's own output use — `let`/`const`, destructuring, arrow functions,
+classes, template literals, `for`/`of`, spread, `async`/`await`, optional
+chaining, nullish coalescing — that sucrase only had to strip types and JSX,
+never downlevel syntax. Nothing in this demo is written around the engine.
 
 That was not true at first. `<></>` failed with `Invalid tag: @@react.fragment`,
 because React brands element types with `Symbol.for("react.fragment")` and its
@@ -237,7 +248,7 @@ two engines so the ratio survives that, and the ratio is the durable part.
 ## Layout
 
 ```
-app/                the site: TypeScript and JSX, built by Vite
+app/                the site: TypeScript and JSX, type-stripped by sucrase
   entry.tsx           SSR entry for php-js
   entry.node.tsx      same components, rendered by Node, for the diff
   router.tsx          the route table
@@ -245,12 +256,12 @@ app/                the site: TypeScript and JSX, built by Vite
   content.ts          the site's text and data
 src/                the host: PHP, autoloaded as PhpJs\Ssg\
   Builder.php         the build step
+  Sucrase.php         runs sucrase, inside php-js, over app/
   Renderer.php        renders a route from what the build produced
   Exporter.php        static generation
   Toolbar.php         the strip the server injects
   Trust.php           what may be compiled to PHP, and what may not
-bundle/             Vite output (generated)
-build/              precompiled PHP (generated)
+build/              app-cjs/ (sucrase output) plus precompiled PHP (generated)
 dist/               static export (generated)
 public/             front controller and the stylesheet
 ```

@@ -167,7 +167,7 @@ try {
 function compareWithNode(callable $log): int
 {
     if (!is_file(Paths::nodeEntry())) {
-        fwrite(STDERR, "No Node bundle. Run `npm run build` first.\n");
+        fwrite(STDERR, "No build yet. Run `bin/phpjs-ssg build` first.\n");
         return 1;
     }
     $renderer = Renderer::fromBuild(Paths::buildDir(), 'aot');

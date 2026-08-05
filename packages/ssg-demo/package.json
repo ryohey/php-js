@@ -1,22 +1,18 @@
 {
   "name": "phpjs-ssg-demo",
   "private": true,
-  "description": "TSX sources for the php-js static-site-generation demo, bundled to ES5 CommonJS",
-  "type": "module",
+  "description": "TSX sources for the php-js static-site-generation demo, type-stripped to plain CommonJS by sucrase, running inside php-js itself",
   "scripts": {
-    "build": "vite build"
+    "build": "bin/phpjs-ssg build"
   },
   "dependencies": {
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@babel/core": "^7.24.0",
-    "@babel/preset-env": "^7.24.0",
-    "@rollup/plugin-babel": "^6.0.4",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "typescript": "^5.4.0",
-    "vite": "^5.2.0"
+    "sucrase": "^3.35.1",
+    "typescript": "^5.4.0"
   }
 }

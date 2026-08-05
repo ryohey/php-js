@@ -8,8 +8,8 @@ namespace PhpJs\Ssg;
  * Where everything lives, in one place.
  *
  * The package directory doubles as the module root, because that is where both
- * `bundle/` (what Vite wrote) and `node_modules/` (where React lives) are, and
- * the runtime's filesystem sandbox is confined to it.
+ * `build/app-cjs/` (what `Sucrase::run()` wrote) and `node_modules/` (where
+ * React lives) are, and the runtime's filesystem sandbox is confined to it.
  */
 final class Paths
 {
@@ -57,15 +57,15 @@ final class Paths
         return self::publicDir() . '/assets';
     }
 
-    /** The Vite bundle the runtime loads, relative to the module root. */
+    /** The type-stripped app entry the runtime loads, relative to the module root. */
     public static function entry(): string
     {
-        return './bundle/entry.cjs';
+        return './build/app-cjs/entry.js';
     }
 
     /** Same components, rendered by Node, for the byte-identity check. */
     public static function nodeEntry(): string
     {
-        return self::packageRoot() . '/bundle/entry.node.cjs';
+        return self::buildDir() . '/app-cjs/entry.node.js';
     }
 }

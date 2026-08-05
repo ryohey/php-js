@@ -106,7 +106,7 @@ export const docs: Doc[] = [
         ],
         code: [
           "$host = new NodeHost(__DIR__);",
-          "$app = $host->requireModule('./bundle/entry.js');",
+          "$app = $host->requireModule('./build/app-cjs/entry.js');",
           "$page = $host->call($app->get('renderPage', $vm), null, ['/docs/', '']);",
         ].join('\n'),
       },
@@ -205,7 +205,7 @@ export const about = {
   ],
   facts: [
     { label: 'Target language', value: 'ES5.1 plus Promise' },
-    { label: 'Demo sources', value: 'TypeScript and JSX, bundled to ES5 by Vite' },
+    { label: 'Demo sources', value: 'TypeScript and JSX, type-stripped by sucrase running inside php-js' },
     { label: 'Execution', value: 'Stack bytecode, single dispatch loop' },
     { label: 'Host requirement', value: 'PHP 8.2 or newer, no extensions' },
   ],
