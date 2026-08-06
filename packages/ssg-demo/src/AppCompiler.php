@@ -107,7 +107,7 @@ final class AppCompiler
         // compile-time hook that would otherwise load them lazily.
         $libraryTemplates = require $this->buildDir . '/' . $libraryManifest['engines']['aot']['templates'];
         NodeHost::registerAotCacheDir($this->appRoot . '/' . NodeHost::AOT_CACHE_SUBDIR);
-        NodeHost::preloadPolyfillTemplate(require $this->buildDir . '/' . $libraryManifest['polyfill']);
+        NodeHost::warmPolyfillTemplate($this->appRoot . '/' . NodeHost::AOT_CACHE_SUBDIR);
 
         // No pre-transform step: `require('./app/entry.tsx')` below strips
         // types and JSX on its own, per file, exactly when each one is first

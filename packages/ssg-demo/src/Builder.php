@@ -92,26 +92,26 @@ final class Builder
             @unlink($this->buildDir . '/' . $stale);
         }
 
-        // The polyfill file is the same for every host, so it is compiled once
-        // here and never again.
+        $cacheDir = $this->appRoot . '/' . NodeHost::AOT_CACHE_SUBDIR;
+
+        // The polyfill file is the same for every host, so it is compiled
+        // once here and never again. Cached in the same AOT cache directory
+        // LibraryCompiler is about to populate, by its own content hash --
+        // warmPolyfillTemplate() (called by every NodeHost construction that
+        // resolves this directory, no wiring of this class's own) is what
+        // lets a request (and AppCompiler) skip compiling it too.
         $started = microtime(true);
-        $polyfill = \PhpJs\Compiler\Compiler::compile(NodeHost::polyfillSource());
-        $polyfillPath = $this->writeArray('polyfill.php', $polyfill);
-        // Both build hosts below get it for free, as a request (and
-        // AppCompiler) will.
-        NodeHost::preloadPolyfillTemplate($polyfill);
+        $polyfillPath = NodeHost::writePolyfillArtifact($cacheDir);
         $log(sprintf(
-            'polyfills           %6.0f ms -> %s (%s)',
+            'polyfills           %6.0f ms -> %s',
             (microtime(true) - $started) * 1000,
-            basename($polyfillPath),
-            self::size($polyfillPath)
+            $this->relative($polyfillPath)
         ));
 
         // Ahead-of-time PHP: generic, not React-specific (LibraryCompiler has
         // no idea what LIBRARY_ENTRIES names). Writes into
         // node_modules/.phpjs-aot/, one file per module reached.
         $started = microtime(true);
-        $cacheDir = $this->appRoot . '/' . NodeHost::AOT_CACHE_SUBDIR;
         $aot = (new LibraryCompiler())->compile($this->appRoot, self::LIBRARY_ENTRIES, $cacheDir);
         $log(sprintf(
             'ahead-of-time PHP   %6.0f ms -> %s (%d files), %d / %d functions',
@@ -164,7 +164,6 @@ final class Builder
             'builtAt' => date('c'),
             'appRoot' => $this->appRoot,
             'reactVersion' => $reactVersion,
-            'polyfill' => basename($polyfillPath),
             'converted' => $aot['converted'],
             'seen' => $aot['seen'],
             'refusals' => $aot['refusals'],

@@ -315,15 +315,29 @@ final class ModuleLoader
             }
         }
 
-        // A trailing newline before the closing brace guards against a source
-        // that ends inside a line comment.
-        $wrapped = "(function (exports, require, module, __filename, __dirname) {"
-            . $source . "\n})";
         $started = microtime(true);
-        $template = Compiler::compile($wrapped, $this->onCompileModule !== null ? ($this->onCompileModule)($path) : null);
+        $template = Compiler::compile(self::wrapAsModule($source), $this->onCompileModule !== null ? ($this->onCompileModule)($path) : null);
         $this->compileSeconds += microtime(true) - $started;
         $this->compileCount++;
         return $this->templates[$path] = $template;
+    }
+
+    /**
+     * The CommonJS wrapper every module is compiled inside:
+     * `(function (exports, require, module, __filename, __dirname) { ... })`
+     * — the same shape Node uses, so module scope falls out of ordinary
+     * function scope with no engine support required. Exposed (not just
+     * inlined above) because `NodeHost` wraps its own polyfills.js the same
+     * way, to get an artifact `aotArtifactTemplate()` can recognize despite
+     * that file not being a real module in the sandboxed filesystem — a
+     * second copy of this string would silently drift the two apart instead
+     * of failing loudly.
+     */
+    public static function wrapAsModule(string $source): string
+    {
+        // A trailing newline before the closing brace guards against a source
+        // that ends inside a line comment.
+        return "(function (exports, require, module, __filename, __dirname) {" . $source . "\n})";
     }
 
     /**

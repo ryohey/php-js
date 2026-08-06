@@ -86,7 +86,10 @@ final class Distribution
         //    named by its own module's content hash, so none of them cares
         //    where it ends up, and NodeHost::registerAotCacheDir() (the
         //    Renderer side of this) only needs the directory, not a manifest
-        //    of what's in it.
+        //    of what's in it. The polyfill's own artifact lives in here too
+        //    (NodeHost::writePolyfillArtifact(), same directory Builder
+        //    wrote it into), so there is nothing separate to copy for it --
+        //    constructing a host still compiles nothing.
         [$aotBytes, $aotFiles] = $this->copyDir(
             $this->appRoot . '/' . NodeHost::AOT_CACHE_SUBDIR,
             $outDir . '/aot'
@@ -96,16 +99,7 @@ final class Distribution
         $log(sprintf('aot cache      %6s  %d of %d functions compiled to PHP, %d file(s)',
             self::size($aotBytes), $manifest['converted'], $manifest['seen'], $aotFiles));
 
-        // 3. The polyfill template, so constructing a host compiles nothing.
-        $polyfillBytes = $this->copy(
-            $this->buildDir . '/' . $manifest['polyfill'],
-            $outDir . '/polyfill.php'
-        );
-        $bytes += $polyfillBytes;
-        $files++;
-        $log(sprintf('polyfill       %6s', self::size($polyfillBytes)));
-
-        // 4. The JavaScript the templates name, at its relative path. Only
+        // 3. The JavaScript the templates name, at its relative path. Only
         //    module resolution reads these; nothing is compiled from them.
         $jsBytes = 0;
         $jsFiles = 0;
@@ -121,7 +115,7 @@ final class Distribution
         $log(sprintf('javascript     %6s  %d files (of a %s node_modules)',
             self::size($jsBytes), $jsFiles, self::size($this->directorySize($this->appRoot . '/node_modules'))));
 
-        // 5. The Apache rewrite that lets a cached page skip PHP entirely. Not
+        // 4. The Apache rewrite that lets a cached page skip PHP entirely. Not
         //    applied, only offered: whether AllowOverride permits it is the
         //    host's business, and silently depending on it would be worse.
         $htaccess = (new PageCache('/cache'))->htaccess('/cache');
@@ -129,7 +123,7 @@ final class Distribution
         $bytes += strlen($htaccess);
         $files++;
 
-        // 6. The manifest, with everything the runtime needs and nothing about
+        // 5. The manifest, with everything the runtime needs and nothing about
         //    where it was built.
         $bytes += $this->writeArray($outDir . '/' . self::MANIFEST, [
             'builtAt' => $manifest['builtAt'],
@@ -141,7 +135,6 @@ final class Distribution
             // Relative to this directory, resolved by Distribution::load().
             'templates' => 'templates.php',
             'aot' => 'aot',
-            'polyfill' => 'polyfill.php',
             'jsRoot' => 'js',
         ]);
         $files++;
@@ -184,7 +177,6 @@ final class Distribution
             'routes' => $manifest['routes'],
             'converted' => $manifest['converted'],
             'seen' => $manifest['seen'],
-            'polyfillFile' => $dir . '/' . $manifest['polyfill'],
             'aotCacheDir' => $dir . '/' . $manifest['aot'],
             'templatesInline' => $absolute,
         ];

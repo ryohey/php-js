@@ -36,13 +36,17 @@ final class Renderer
      *                             natives from before preloading $templates,
      *                             or null for the `bytecode` engine (or a
      *                             build with nothing in its cache at all)
+     * @param ?string $polyfillCacheDir where to warm the polyfill template
+     *                                  from -- unlike $aotCacheDir this is
+     *                                  the same regardless of engine, since
+     *                                  the polyfill is always plain bytecode
      * @param array<string, mixed> $templates path => template, already absolute
      */
     private function __construct(
         public readonly string $engine,
         public readonly array $manifest,
-        string $polyfillFile,
         ?string $aotCacheDir,
+        ?string $polyfillCacheDir,
         array $templates,
     ) {
         $started = microtime(true);
@@ -54,7 +58,13 @@ final class Renderer
         if ($aotCacheDir !== null) {
             NodeHost::registerAotCacheDir($aotCacheDir);
         }
-        NodeHost::preloadPolyfillTemplate(require $polyfillFile);
+        // The polyfill needs the same treatment for the same reason: this
+        // host's own $aotCacheDir is disabled below (it only ever runs
+        // preloaded templates), so its constructor would not otherwise look
+        // anywhere for it.
+        if ($polyfillCacheDir !== null) {
+            NodeHost::warmPolyfillTemplate($polyfillCacheDir);
+        }
 
         // aotCacheDir: false -- this host only ever runs preloaded templates
         // (never compiles a module fresh), so the lookup this would enable
@@ -100,11 +110,13 @@ final class Renderer
         $renderer = new self(
             $engine,
             $manifest + ['entry' => $app['entry'], 'routes' => $app['routes']],
-            $buildDir . '/' . $manifest['polyfill'],
             // "bytecode" templates were never stamped in the first place
             // (Builder compiles that set with the lookup disabled), so
             // there is nothing for that engine to register.
             $engine === 'aot' ? $manifest['appRoot'] . '/' . NodeHost::AOT_CACHE_SUBDIR : null,
+            // The polyfill artifact lives in the same directory regardless
+            // of engine -- it is never stamped with native IDs either way.
+            $manifest['appRoot'] . '/' . NodeHost::AOT_CACHE_SUBDIR,
             $libraryTemplates + $appTemplates,
         );
         $renderer->bootMs = (microtime(true) - $started) * 1000;
@@ -124,7 +136,7 @@ final class Renderer
         return new self(
             'aot',
             $loaded,
-            $loaded['polyfillFile'],
+            $loaded['aotCacheDir'],
             $loaded['aotCacheDir'],
             $loaded['templatesInline'],
         );

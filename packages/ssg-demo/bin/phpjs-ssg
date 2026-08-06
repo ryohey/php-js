@@ -7,7 +7,6 @@ use PhpJs\Ssg\Builder;
 use PhpJs\Ssg\Exporter;
 use PhpJs\Ssg\Paths;
 use PhpJs\Ssg\Renderer;
-use PhpJs\Ssg\Sucrase;
 
 foreach ([__DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../../vendor/autoload.php'] as $autoload) {
     if (is_file($autoload)) {
@@ -25,8 +24,6 @@ Commands:
   package            assemble a render-only tree for shipping (package/)
   serve              start a local server that renders on demand and caches
   cache:clear        drop every cached page
-  compare            render every route under Node too and diff the two
-  bench [--items N]  time one route both ways, interleaved
 
 Options:
   --out DIR          export/package target
@@ -34,7 +31,6 @@ Options:
   --host H           serve host (default 127.0.0.1)
   --engine NAME      serve default engine: aot | bytecode (default aot)
   --no-jit           serve without PHP's tracing JIT
-  --items N          rows on the inventory page, for bench
   --ttl N            seconds a cached page stays fresh (default: forever)
   --no-cache         serve without the on-demand cache
 
@@ -144,13 +140,6 @@ try {
             break;
         }
 
-        case 'compare':
-            exit(compareWithNode($log));
-
-        case 'bench':
-            benchBothWays((int)($flags['--items'] ?? 250), $log);
-            break;
-
         default:
             fwrite($command === '' ? STDOUT : STDERR, USAGE);
             exit($command === '' ? 0 : 2);
@@ -158,115 +147,4 @@ try {
 } catch (Throwable $e) {
     fwrite(STDERR, get_class($e) . ': ' . $e->getMessage() . "\n");
     exit(1);
-}
-
-/**
- * Render every route under both runtimes and require the HTML to match byte for
- * byte. This is the demo's real correctness claim: not that the pages look
- * right, but that php-js and Node produce the same bytes from the same source.
- */
-function compareWithNode(callable $log): int
-{
-    // php-js's own side needs no file on disk any more -- constructing the
-    // Renderer requires app/entry.tsx directly, stripping transparently at
-    // require time (AppCompiler, packages/strip-types). Real Node has no TSX
-    // support of its own, though, so entry.node.tsx's module graph still has
-    // to be mirrored to plain .js somewhere Node can require it -- the one
-    // remaining job of Sucrase::run().
-    $renderer = Renderer::fromBuild(Paths::buildDir(), 'aot');
-    (new Sucrase(Paths::appRoot() . '/app', Paths::buildDir() . '/app-cjs'))->run();
-    if (!is_file(Paths::nodeEntry())) {
-        fwrite(STDERR, "app/entry.node.tsx did not produce " . Paths::nodeEntry() . "\n");
-        return 1;
-    }
-    // The path comes through the environment: with `node -e`, argv does not
-    // include a script name and its indices are easy to get wrong.
-    $script = <<<'JS'
-    const entry = require(process.env.PHPJS_SSG_NODE_ENTRY);
-    const routes = JSON.parse(entry.routeManifest());
-    const out = {};
-    for (const route of routes) { out[route] = entry.renderPage(route, '').html; }
-    process.stdout.write(JSON.stringify(out));
-    JS;
-    $descriptors = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
-    $node = proc_open(
-        ['node', '-e', $script],
-        $descriptors,
-        $pipes,
-        Paths::packageRoot(),
-        ['PHPJS_SSG_NODE_ENTRY' => Paths::nodeEntry()] + getenv()
-    );
-    if (!is_resource($node)) {
-        fwrite(STDERR, "Could not start node.\n");
-        return 1;
-    }
-    $stdout = (string)stream_get_contents($pipes[1]);
-    $stderr = (string)stream_get_contents($pipes[2]);
-    fclose($pipes[1]);
-    fclose($pipes[2]);
-    if (proc_close($node) !== 0) {
-        fwrite(STDERR, "node failed: $stderr\n");
-        return 1;
-    }
-    $nodeHtml = json_decode($stdout, true);
-    if (!is_array($nodeHtml)) {
-        fwrite(STDERR, "node produced no usable output.\n");
-        return 1;
-    }
-
-    $mismatched = 0;
-    foreach ($renderer->routes() as $route) {
-        $ours = $renderer->render($route)->html;
-        // Node's side is React's markup only; ours has the doctype in front.
-        $theirs = "<!DOCTYPE html>\n" . ($nodeHtml[$route] ?? '');
-        $same = $ours === $theirs;
-        $mismatched += $same ? 0 : 1;
-        $log(sprintf('%-28s %s  %6.0f KB', $route, $same ? 'identical' : 'DIFFERS  ', strlen($ours) / 1024));
-    }
-    $log($mismatched === 0
-        ? "\nevery route is byte-identical to Node"
-        : "\n$mismatched route(s) differ");
-    return $mismatched === 0 ? 0 : 1;
-}
-
-/**
- * Time one route both ways, interleaved.
- *
- * Interleaved because this host's own speed drifts: alternating the two so they
- * see the same conditions is the only way the ratio means anything.
- */
-function benchBothWays(int $items, callable $log): void
-{
-    $renderers = [];
-    foreach (Renderer::ENGINES as $engine) {
-        $renderers[$engine] = Renderer::fromBuild(Paths::buildDir(), $engine);
-        $renderers[$engine]->render('/inventory/', ['items' => $items]);   // warm up
-    }
-    $log(sprintf('/inventory/?items=%d, 7 interleaved pairs', $items));
-    $log(sprintf('%-12s %12s %12s %10s', '', 'bytecode', 'aot', 'change'));
-    $samples = ['aot' => [], 'bytecode' => []];
-    for ($i = 0; $i < 7; $i++) {
-        foreach (['bytecode', 'aot'] as $engine) {
-            $samples[$engine][] = $renderers[$engine]->render('/inventory/', ['items' => $items])->renderMs;
-        }
-        $log(sprintf(
-            '%-12s %9.2f ms %9.2f ms %9.1f%%',
-            'pair ' . ($i + 1),
-            $samples['bytecode'][$i],
-            $samples['aot'][$i],
-            ($samples['aot'][$i] / $samples['bytecode'][$i] - 1) * 100
-        ));
-    }
-    $median = static function (array $values): float {
-        sort($values);
-        return $values[intdiv(count($values), 2)];
-    };
-    $b = $median($samples['bytecode']);
-    $a = $median($samples['aot']);
-    $log(sprintf(
-        "\nmedian %.2f ms bytecode, %.2f ms ahead-of-time: %.1f%%",
-        $b,
-        $a,
-        ($a / $b - 1) * 100
-    ));
 }

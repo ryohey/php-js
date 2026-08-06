@@ -57,16 +57,4 @@ final class Paths
     {
         return self::publicDir() . '/assets';
     }
-
-    /**
-     * Same components as `app/entry.node.tsx`, type-stripped and mirrored
-     * to plain `.js` for real Node to `require` — Node has no TSX support of
-     * its own, unlike php-js (`packages/strip-types`). Written by `Sucrase`,
-     * invoked only from `bin/phpjs-ssg compare`, the one place a `.js` file
-     * on disk is needed rather than transparent stripping at require time.
-     */
-    public static function nodeEntry(): string
-    {
-        return self::buildDir() . '/app-cjs/entry.node.js';
-    }
 }

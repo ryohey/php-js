@@ -9,11 +9,8 @@ import { metricsId, reactVersion, resolve, routePaths, type RenderOptions } from
  * Requires the legacy (synchronous) server build by path rather than through
  * `react-dom/server`, because that entry also pulls in the streaming renderer
  * and with it Web APIs this host does not provide (MessageChannel,
- * AbortController). Nothing is lost in the comparison: `react-dom/server`
- * assigns `renderToStaticMarkup` straight from this file, so both sides run the
- * same function. Node cannot use the deep path — the package's `exports` map
- * forbids it — so the Node side is entry.node.tsx, which differs in that import
- * and nothing else.
+ * AbortController). `react-dom/server` assigns `renderToStaticMarkup` straight
+ * from this file, so this is the same function that entry point would give.
  */
 
 export interface RenderedPage {

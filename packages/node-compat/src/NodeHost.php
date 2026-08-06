@@ -85,12 +85,20 @@ final class NodeHost
         $this->fs = new FileSystem($this->root);
         $this->modules = new ModuleLoader($this, $this->root);
         $this->timers = new TimerQueue();
-        if ($aotCacheDir === false) {
-            // Explicitly disabled -- leave ModuleLoader's default (no lookup).
-        } elseif ($aotCacheDir !== null) {
-            $this->modules->setAotCacheDir($aotCacheDir);
-        } elseif (is_dir($this->root . '/' . self::AOT_CACHE_SUBDIR)) {
-            $this->modules->setAotCacheDir($this->root . '/' . self::AOT_CACHE_SUBDIR);
+        $resolvedAotCacheDir = match (true) {
+            $aotCacheDir === false => null,   // explicitly disabled
+            $aotCacheDir !== null => $aotCacheDir,
+            is_dir($this->root . '/' . self::AOT_CACHE_SUBDIR) => $this->root . '/' . self::AOT_CACHE_SUBDIR,
+            default => null,
+        };
+        if ($resolvedAotCacheDir !== null) {
+            $this->modules->setAotCacheDir($resolvedAotCacheDir);
+            // Same directory, same content-hash convention, one more file
+            // it might hold: the polyfill's own compiled template. See
+            // installGlobals()/warmPolyfillTemplate() below -- this is what
+            // lets the *first* host in a fresh process skip compiling
+            // polyfills.js too, not just the modules a build named.
+            self::warmPolyfillTemplate($resolvedAotCacheDir);
         }
         // Soft dependency, the same shape as the AOT cache above: this
         // package never requires packages/strip-types, so a project that
@@ -201,11 +209,13 @@ final class NodeHost
         CollectionBuiltins::install($realm);
 
         // Compiling this file is ~30 ms and it is the same file every time, so
-        // it is worth not doing per host: cached for the process, and a build
-        // step can hand over a precompiled template so it is never compiled at
-        // all (see preloadPolyfillTemplate).
-        self::$polyfillTemplate ??= \PhpJs\Compiler\Compiler::compile(self::polyfillSource());
-        $this->engine->runTemplate(self::$polyfillTemplate);
+        // it is worth not doing per host: cached for the process
+        // ($polyfillTemplate), and warmPolyfillTemplate() above may already
+        // have filled that cache from an AOT cache directory, in which case
+        // this never runs at all.
+        self::$polyfillTemplate ??= \PhpJs\Compiler\Compiler::compile(ModuleLoader::wrapAsModule(self::polyfillSource()));
+        $vm = $this->engine->vm;
+        $vm->invoke($vm->runProgram(self::$polyfillTemplate), JSUndefined::$undefined, []);
     }
 
     /** @var array<string, mixed>|null process-level cache of the polyfill template */
@@ -218,20 +228,62 @@ final class NodeHost
     }
 
     /**
-     * Supply a precompiled polyfill template, so constructing a host compiles
-     * no JavaScript at all.
+     * Fill the process-level polyfill-template cache from an AOT cache
+     * directory, if it happens to hold an artifact for polyfills.js's own
+     * content hash (`writePolyfillArtifact()`, the write side) — the same
+     * directory and `{contentHash}.php` shape ordinary modules are already
+     * looked up in (`ModuleLoader::aotArtifactTemplate()`), so nothing here
+     * is a second caching concept.
      *
-     * PHP is shared-nothing, so a server that builds a host per request pays
-     * every compile per request. Templates are plain `var_export`-able arrays
-     * (DESIGN.md §11.1), so a build step can write this one to a file that
-     * opcache keeps in shared memory and pass it back in here. Pass null to
-     * drop the cache and go back to compiling on first use.
-     *
-     * @param array<string, mixed>|null $template
+     * The constructor already calls this with whatever directory it resolved
+     * for ordinary module lookups. The one reason to call it directly is a
+     * host built with `aotCacheDir: false` (disabling that lookup, because it
+     * only ever runs preloaded templates and has no use for it) that still
+     * wants the polyfill cached — polyfills.js is never covered by
+     * `preloadTemplates()`, so this is its only route to skipping a
+     * recompile, and it is independent of that per-instance setting on
+     * purpose. Safe to call with a directory that has no such artifact, or
+     * more than once — a hit only ever fills the cache, never clears it.
      */
-    public static function preloadPolyfillTemplate(?array $template): void
+    public static function warmPolyfillTemplate(string $cacheDir): void
     {
-        self::$polyfillTemplate = $template;
+        if (self::$polyfillTemplate !== null) {
+            return;
+        }
+        $file = rtrim($cacheDir, '/') . '/' . hash('xxh128', self::polyfillSource()) . '.php';
+        if (!is_file($file)) {
+            return;
+        }
+        $artifact = require $file;
+        if (is_array($artifact) && isset($artifact['template']) && is_array($artifact['template'])) {
+            self::$polyfillTemplate = $artifact['template'];
+        }
+    }
+
+    /**
+     * Write the polyfill's own compiled template into an AOT cache directory
+     * under its content hash, so `warmPolyfillTemplate()` (called by every
+     * `NodeHost` construction that resolves that same directory) finds it
+     * instead of compiling polyfills.js from scratch. Nothing about this
+     * file converts to native PHP — `MathExtras`/`CollectionBuiltins` already
+     * cover the parts worth making native; this is a bytecode fallback
+     * only — so the artifact's `'natives'` half is always empty.
+     *
+     * @return string the file written
+     */
+    public static function writePolyfillArtifact(string $cacheDir): string
+    {
+        if (!is_dir($cacheDir) && !mkdir($cacheDir, 0o777, true) && !is_dir($cacheDir)) {
+            throw new \RuntimeException("Cannot create $cacheDir");
+        }
+        $source = self::polyfillSource();
+        $template = self::$polyfillTemplate ??= \PhpJs\Compiler\Compiler::compile(ModuleLoader::wrapAsModule($source));
+        $file = rtrim($cacheDir, '/') . '/' . hash('xxh128', $source) . '.php';
+        file_put_contents($file, "<?php\n\n// Generated by NodeHost::writePolyfillArtifact(). Do not edit.\n\nreturn [\n"
+            . "    'template' => " . var_export($template, true) . ",\n"
+            . "    'natives' => [],\n"
+            . "];\n");
+        return $file;
     }
 
     /**

@@ -49,13 +49,11 @@ Things worth doing once it is up:
 
 | | |
 |---|---|
-| `build` | Compiles React and the polyfills to PHP arrays in `build/`. Never touches `app/`. |
+| `build` | Compiles React (to `build/`) and the polyfills (to `node_modules/.phpjs-aot/`). Never touches `app/`. |
 | `export` | Renders every route into `dist/` — static site generation, all at once. The first route compiles `app/` too (`AppCompiler`), same as any other first render. |
 | `package` | Assembles a render-only tree you can ship inside a plugin (see below); also forces `app/` to compile, since a distribution has no request left to defer it to. |
 | `serve` | Local server. Renders a page the first time it is asked for, serves the file after — the very first render across all routes is also where `app/` compiles, if `build` alone hasn't already forced it. |
 | `cache:clear` | Drops every cached page. |
-| `compare` | Renders every route under Node too and requires the HTML to match byte for byte. |
-| `bench` | Times one route both ways, interleaved, and prints the ratio. |
 
 ## How the pieces fit
 
@@ -178,17 +176,21 @@ makes the file layout, and therefore the Apache bypass, possible.
 ```console
 $ bin/phpjs-ssg package
 templates      1.9 MB  13 modules, paths relativized
-aot cache      760 KB  262 of 291 functions compiled to PHP, 5 file(s)
-polyfill       157 KB
-javascript     287 KB  13 files (of a 34.0 MB node_modules)
+aot cache      2.5 MB  262 of 291 functions compiled to PHP, 6 file(s)
+javascript     283 KB  13 files (of a 34.0 MB node_modules)
 
-22 files, 3.1 MB total
+22 files, 4.6 MB total
 ```
 
 `package` forces `app/` to compile if nothing has yet — a distribution has no
 request left to defer that to — so `templates` here is React's own templates
 and `app/`'s merged into one file, and `javascript` includes both the library
-and the site's own type-stripped sources.
+and the site's own type-stripped sources. `aot cache` is one file per module
+`bin/phpjs-aot` reached — the polyfill included, since it is cached the same
+way (`NodeHost::writePolyfillArtifact()`) — each holding both that module's
+natives and its whole compiled template; `templates` above already carries
+its own copy of the template half for `Renderer::fromDistribution()`'s actual
+use, so this is closer to the ceiling than the achievable floor.
 
 That directory is the deployable unit — drop it into a WordPress plugin, a theme,
 or a zip:
@@ -263,16 +265,15 @@ always the bytecode form of `app/`'s own source, type-stripped by
 line Trust draws is which JavaScript may become PHP, not which process is
 allowed to write a bytecode file.
 
-## Two ways of not being wrong
+## How correctness is checked
 
-- `bin/phpjs-ssg compare` renders every route under Node as well and requires
-  the two to be **byte-identical**. This found a real bug the first time it ran:
-  `(0.625).toFixed(2)` returned `"0.62"` where the spec and every other engine
-  say `"0.63"` — PHP's `sprintf('%F')` rounds half to even and JavaScript rounds
-  ties away from zero. Fixed in the engine, with tests.
-- `DemoSiteTest` requires ahead-of-time PHP and interpreted bytecode to produce
-  the same bytes for every route, and the static export to match the live render
-  byte for byte.
+`DemoSiteTest` requires ahead-of-time PHP and interpreted bytecode to produce
+the same bytes for every route, and the static export to match the live render
+byte for byte. Correctness against JavaScript itself — the actual spec
+conformance claim — is `tests/acceptance` and test262 at the engine level
+(the root of this repository), not something this demo re-checks; a page
+rendering the same way twice within php-js says nothing about whether either
+way is *right*.
 
 ## What TSX costs you, in practice
 
@@ -293,44 +294,26 @@ Symbol primitive (DESIGN.md §3.4) and fragments work.
 Worth stating because it is the general shape of the thing: the gaps that matter
 are types and syntax, not library surface. Library surface a polyfill can cover.
 
-## Numbers from this machine
-
-Not a benchmark — `packages/react-ssr-bench` is the benchmark. These are the
-numbers the demo shows, so you know roughly what to expect. Absolute values
-drift with the machine by a fair margin; `bin/phpjs-ssg bench` interleaves the
-two engines so the ratio survives that, and the ratio is the durable part.
-
-| | bytecode | ahead-of-time PHP |
-|---|---|---|
-| `/inventory/?items=120` render | ~400-420 ms | ~145-150 ms (**−64%**) |
-| `/` render | ~12 ms | ~6 ms |
-| boot, warm opcache, `app/` cached | ~4-10 ms | ~4-10 ms |
-| boot, warm opcache, `app/` *not yet* cached | ~3.5 s | ~3.5 s |
-| boot without a build at all | ~400 ms | ~400 ms |
-
-The middle row is `AppCompiler`'s one-time cost — type-stripping and compiling
-`app/` — paid exactly once (per `build/`, across every process, since it is a
-disk cache) by whichever request or command renders first. Everything after
-that is the top row.
+For actual numbers, `packages/react-ssr-bench` is the real benchmark; the
+toolbar's own **boot**/**render** figures on any page here are the same
+measurement, just per-request rather than aggregated.
 
 ## Layout
 
 ```
 app/                the site: TypeScript and JSX, required directly (type-stripped transparently by ../strip-types)
   entry.tsx           SSR entry for php-js
-  entry.node.tsx      same components, rendered by Node, for the diff
   router.tsx          the route table
   components/         Layout, Home, Docs, Inventory, About
   content.ts          the site's text and data
 src/                the host: PHP, autoloaded as PhpJs\Ssg\
   Builder.php         the library build step (React only, ahead of time)
   AppCompiler.php     compiles app/ on first render (requiring app/entry.tsx directly), caches it, locks against a stampede
-  Sucrase.php         thin wrapper over ../strip-types, used only by `compare` to give Node a plain-JS mirror
   Renderer.php        renders a route from what both of the above produced
   Exporter.php        static generation
   Toolbar.php         the strip the server injects
   Trust.php           what may reach LibraryCompiler (../aot) to be compiled to PHP
-build/              library templates (Builder) plus templates.app.php (AppCompiler); app-cjs/ only exists after `compare` -- all generated
+build/              library templates (Builder) plus templates.app.php (AppCompiler) -- all generated
 node_modules/.phpjs-aot/   React's AOT cache (phpjs-aot / Builder), generated, checked by every require()
 dist/               static export (generated)
 public/             front controller and the stylesheet
