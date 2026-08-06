@@ -17,6 +17,7 @@ use PhpJs\Runtime\JSNativeFunction;
 use PhpJs\Runtime\JSObject;
 use PhpJs\Runtime\JSPromise;
 use PhpJs\Runtime\JSThrowSignal;
+use PhpJs\Runtime\JSTypedArray;
 use PhpJs\Runtime\JSUndefined;
 use PhpJs\Runtime\Realm;
 use PhpJs\Runtime\StringOps;
@@ -735,6 +736,15 @@ final class Vm
                                 $this->sp = $sp;
                                 $stack[$sp - 1] = $this->getMember($obj, $key);
                             }
+                        } elseif ($obj instanceof JSTypedArray && is_int($key)) {
+                            // Same shortcut as JSArray above, skipping the
+                            // int -> string -> CanonicalNumericIndexString
+                            // round trip getOwn() would otherwise redo: an
+                            // already-int key from this opcode is exactly
+                            // what that round trip exists to recover.
+                            $stack[$sp - 1] = ($key >= 0 && $key < $obj->length && !$obj->buffer->detached)
+                                ? $obj->readElement($key)
+                                : JSUndefined::$undefined;
                         } else {
                             $this->sp = $sp;
                             $stack[$sp - 1] = $this->getMember($obj, $key);
@@ -750,6 +760,18 @@ final class Vm
                             $obj->elements[$key] = $val;
                             if ($key >= $obj->length) {
                                 $obj->length = $key + 1;
+                            }
+                        } elseif ($obj instanceof JSTypedArray && is_int($key)) {
+                            // 10.4.5.13: the value is converted -- side
+                            // effects and all -- before the index is even
+                            // checked, and the write itself is silently
+                            // skipped when out of range, never an error.
+                            // convert() can re-enter the VM (a valueOf), so
+                            // sp is synced first the same as the slow path.
+                            $this->sp = $sp;
+                            $converted = $obj->convert($this, $val);
+                            if ($key >= 0 && $key < $obj->length && !$obj->buffer->detached) {
+                                $obj->writeElementRaw($key, $converted);
                             }
                         } else {
                             $this->sp = $sp;
