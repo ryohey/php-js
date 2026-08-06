@@ -26,7 +26,7 @@ final class DeploymentTest extends TestCase
             self::markTestSkipped('No sucrase. Run `npm install` in packages/ssg-demo.');
         }
         self::$buildDir = sys_get_temp_dir() . '/phpjs-deploy-build-' . getmypid();
-        (new Builder(Paths::appRoot(), self::$buildDir, Paths::entry()))->run();
+        (new Builder(Paths::appRoot(), self::$buildDir))->run();
     }
 
     public static function tearDownAfterClass(): void

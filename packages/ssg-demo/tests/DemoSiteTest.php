@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PhpJs\Ssg\Tests;
 
+use PhpJs\Ssg\AppCompiler;
 use PhpJs\Ssg\Builder;
 use PhpJs\Ssg\Exporter;
 use PhpJs\Ssg\Page;
@@ -31,7 +32,11 @@ final class DemoSiteTest extends TestCase
             self::markTestSkipped('No sucrase. Run `npm install` in packages/ssg-demo.');
         }
         self::$buildDir = sys_get_temp_dir() . '/phpjs-ssg-test-' . getmypid();
-        (new Builder(Paths::appRoot(), self::$buildDir, Paths::entry()))->run();
+        (new Builder(Paths::appRoot(), self::$buildDir))->run();
+        // Forces AppCompiler's one-time compile now, so every test in this
+        // class -- not just whichever happens to construct a Renderer first
+        // -- sees build/app-cjs/ and templates.app.php already in place.
+        (new AppCompiler(Paths::appRoot(), self::$buildDir))->ensure();
     }
 
     public static function tearDownAfterClass(): void
@@ -49,8 +54,13 @@ final class DemoSiteTest extends TestCase
     {
         $manifest = require self::$buildDir . '/' . Builder::MANIFEST;
         $this->assertGreaterThan(200, $manifest['converted'], 'ahead-of-time coverage collapsed');
-        $this->assertNotEmpty($manifest['routes']);
         $this->assertStringStartsWith('19.', $manifest['reactVersion']);
+    }
+
+    public function testAppCompilerFindsTheRoutes(): void
+    {
+        $app = require self::$buildDir . '/' . AppCompiler::MANIFEST;
+        $this->assertNotEmpty($app['routes']);
     }
 
     /**
@@ -61,10 +71,15 @@ final class DemoSiteTest extends TestCase
      * be compiled into PHP -- and the filter that decides this is one
      * `str_contains` away from silently accepting everything, which is why this
      * asserts on the built templates instead of on the filter.
+     *
+     * `templates.aot.php` (the library build) is React-only now and has
+     * nothing untrusted in it by construction; the boundary that actually
+     * needs checking is `templates.app.php` (AppCompiler's output), which is
+     * the one place untrusted and trusted paths could in principle mix.
      */
     public function testOnlyPinnedDependenciesAreCompiledToPhp(): void
     {
-        $templates = require self::$buildDir . '/templates.aot.php';
+        $templates = require self::$buildDir . '/' . AppCompiler::TEMPLATES;
         $checked = 0;
         foreach ($templates as $path => $template) {
             if (Trust::mayCompileToPhp($path)) {

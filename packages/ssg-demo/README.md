@@ -13,15 +13,20 @@ a browser.**
 ```console
 $ npm install                       # fetches React and sucrase, nothing else
 $ composer install
-$ bin/phpjs-ssg build               # type-strip app/, compile React and it into build/
+$ bin/phpjs-ssg build               # compile React into build/ -- app/ is untouched
 $ bin/phpjs-ssg export              # optional: static HTML into dist/
 $ bin/phpjs-ssg serve               # http://127.0.0.1:8080/
 ```
 
-`build` is the only step that touches `app/`, and it runs entirely inside
-php-js: no `node`, `vite`, `babel` or `tsc` process is ever spawned to produce
-what ships. `npm install` still runs once, to put React and sucrase's own
-files on disk where php-js can `require` them.
+`build` never reads `app/` at all — it only compiles the library (React), which
+is the expensive, React-sized part and the part that does not change while
+you're editing the site. `app/` is type-stripped and compiled the first time
+anything actually needs it — the first render after a build, whichever request
+or command gets there first — and the result is cached to disk (`AppCompiler`),
+so every render after that, in this process or the next one, just loads it.
+Both steps run entirely inside php-js: no `node`, `vite`, `babel` or `tsc`
+process is ever spawned to produce what ships. `npm install` still runs once,
+to put React and sucrase's own files on disk where php-js can `require` them.
 
 `serve` starts PHP's built-in server with opcache and the tracing JIT on, which
 are not the defaults and are worth having.
@@ -40,10 +45,10 @@ Things worth doing once it is up:
 
 | | |
 |---|---|
-| `build` | Type-strips `app/` with sucrase, then compiles it, React and the polyfills to PHP arrays in `build/`. Nothing is compiled again after this. |
-| `export` | Renders every route into `dist/` — static site generation, all at once. |
-| `package` | Assembles a render-only tree you can ship inside a plugin (see below). |
-| `serve` | Local server. Renders a page the first time it is asked for, serves the file after. |
+| `build` | Compiles React and the polyfills to PHP arrays in `build/`. Never touches `app/`. |
+| `export` | Renders every route into `dist/` — static site generation, all at once. The first route compiles `app/` too (`AppCompiler`), same as any other first render. |
+| `package` | Assembles a render-only tree you can ship inside a plugin (see below); also forces `app/` to compile, since a distribution has no request left to defer it to. |
+| `serve` | Local server. Renders a page the first time it is asked for, serves the file after — the very first render across all routes is also where `app/` compiles, if `build` alone hasn't already forced it. |
 | `cache:clear` | Drops every cached page. |
 | `compare` | Renders every route under Node too and requires the HTML to match byte for byte. |
 | `bench` | Times one route both ways, interleaved, and prints the ratio. |
@@ -51,12 +56,32 @@ Things worth doing once it is up:
 ## How the pieces fit
 
 ```
-app/*.tsx ──sucrase (in php-js)──► build/app-cjs/*.js ──► bytecode ──┐
-                                                                     ├─► request ──► HTML
-node_modules ─────────────────────php-js-transpile────────► PHP ────┘   (opcache)
+                    bin/phpjs-ssg build                  the first render after that
+                            │                                       │
+                            ▼                                       ▼
+node_modules ──php-js-transpile──► PHP ────────┐    app/*.tsx ──sucrase (in php-js)──► build/app-cjs/*.js
+                            │                   │                                              │
+                            └──────► bytecode ──┤                                       bytecode (AppCompiler)
+                                                 │                                              │
+                                                 └──────────────► request ──► HTML ◄────────────┘
+                                                                  (opcache)
 ```
 
-**The sources are TypeScript and JSX** in `app/`. `bin/phpjs-ssg build` runs
+**Two builds, two different moments.** `bin/phpjs-ssg build` (`Builder`) only
+ever compiles the library — React — because that is the expensive,
+React-sized part and the part that does not change while you are editing the
+site. `app/`, the site's own TypeScript and JSX, is compiled by `AppCompiler`
+instead, lazily: the first time any render actually needs it, whichever
+request or CLI command gets there first, with the result written to
+`build/app-cjs/` and `build/templates.app.php` so every render after that —
+in this process or the next one, since PHP is shared-nothing and this is a
+plain file on disk, not a cache in memory — just loads it. It is the same
+shape `PageCache` already gives the *rendered HTML* one layer up (the first
+request renders, the rest serve a file), applied one layer down to
+compilation itself, and it borrows that class's own lock-file trick so a
+burst of concurrent first requests compiles once rather than once each.
+
+**The sources are TypeScript and JSX** in `app/`. `AppCompiler` runs
 [sucrase](https://github.com/alangpierce/sucrase) — itself just JavaScript —
 inside php-js to strip types and turn JSX into classic `React.createElement`
 calls, one file at a time, into `build/app-cjs/`. No bundler: relative
@@ -68,18 +93,22 @@ Sucrase runs with `disableESTransforms: true` — the engine now parses `??`,
 external — the runtime loads React's own published CommonJS build, which is
 the thing worth measuring.
 
-**Dependencies are compiled to PHP; the site's own code is not.** The build runs
-[php-transpile](../php-transpile) over `node_modules`, turning 262 of React's 291
-functions into PHP functions, and stops there — `app/` stays interpreted. That
-split is a security boundary, not an oversight; `src/Trust.php` is where it is
-written down and *Why the site's own code stays interpreted* below is why. The
+**Dependencies are compiled to PHP; the site's own code is not.** `Builder`
+runs [php-transpile](../php-transpile) over `node_modules`, turning 262 of
+React's 291 functions into PHP functions, and stops there — `app/` stays
+interpreted, always, everywhere `AppCompiler` compiles it. That split is a
+security boundary, not an oversight; `src/Trust.php` is where it is written
+down and *Why the site's own code stays interpreted* below is why. The
 bytecode remains the fallback everywhere, so none of this is a dependency.
 
-**A request compiles no JavaScript.** PHP is shared-nothing, so anything the
-build does not precompute is paid per request — and parsing React's server build
-is a few hundred milliseconds. The build writes the bytecode as plain PHP arrays
-that opcache keeps in shared memory, which takes boot from ~400 ms to a few
-milliseconds. A test asserts that a request compiles zero modules, because that
+**A request compiles no JavaScript — after the very first one.** PHP is
+shared-nothing, so anything neither build has precomputed yet is paid per
+request, and parsing React's server build is a few hundred milliseconds
+(compiling `app/` itself, on top of that, is a few seconds — see the numbers
+below). Both builds write bytecode as plain PHP arrays that opcache keeps in
+shared memory, which is what takes boot from ~400 ms down to single-digit
+milliseconds once both layers are cached. A test asserts that a request
+against an *already-warm* build compiles zero modules, because that
 regressing would be invisible except in the timings.
 
 **The toolbar is the host's, not React's.** The layout renders an empty
@@ -127,13 +156,18 @@ makes the file layout, and therefore the Apache bypass, possible.
 
 ```console
 $ bin/phpjs-ssg package
-templates      1.8 MB  7 modules, paths relativized
+templates      1.9 MB  13 modules, paths relativized
 natives        760 KB  262 of 291 functions compiled to PHP
-polyfill       147 KB
-javascript     280 KB  7 files (of a 83.2 MB node_modules)
+polyfill       157 KB
+javascript     287 KB  13 files (of a 33.2 MB node_modules)
 
-12 files, 2.9 MB total
+18 files, 3.1 MB total
 ```
+
+`package` forces `app/` to compile if nothing has yet — a distribution has no
+request left to defer that to — so `templates` here is React's own templates
+and `app/`'s merged into one file, and `javascript` includes both the library
+and the site's own type-stripped sources.
 
 That directory is the deployable unit — drop it into a WordPress plugin, a theme,
 or a zip:
@@ -149,7 +183,7 @@ Three things make it that small, all measured rather than assumed:
   (compiles JavaScript) nor nikic/php-parser (emits PHP) is ever loaded — checked
   by deleting both and rendering.
 - **Rendering needs almost no JavaScript.** The template keys are the exact list
-  of files the program loads: 7 files, 280 KB, against 83 MB of `node_modules`.
+  of files the program loads: 13 files, 287 KB, against 33 MB of `node_modules`.
 - **The second template set is left out.** `templates.bytecode.php` exists only
   so this demo can switch engines.
 
@@ -195,11 +229,15 @@ So: compile `node_modules`, interpret everything else. Extending the filter to
 template outside `node_modules` carries a native ID, because the filter is one
 `str_contains` away from silently accepting everything.
 
-Two related choices in the same spirit: `serve` leaves
+One related choice in the same spirit: `serve` leaves
 `opcache.validate_timestamps` **on**, so a rebuild is always picked up and a
-cached copy never outlives the file it came from; and `build/` is written by the
-build, not by a request — a web process that can write there can run whatever it
-writes.
+cached copy never outlives the file it came from. `build/app-cjs/` and
+`build/templates.app.php` *are* written by a request now (`AppCompiler`,
+the first time one needs them) — the same trust boundary still holds, because
+what a request writes there is always the bytecode form of `app/`'s own
+source, type-stripped and interpreted, never anything with a native ID; the
+line Trust draws is which JavaScript may become PHP, not which process is
+allowed to write a bytecode file.
 
 ## Two ways of not being wrong
 
@@ -242,8 +280,14 @@ two engines so the ratio survives that, and the ratio is the durable part.
 |---|---|---|
 | `/inventory/?items=120` render | ~400-420 ms | ~145-150 ms (**−64%**) |
 | `/` render | ~12 ms | ~6 ms |
-| boot, warm opcache | ~4-10 ms | ~4-10 ms |
-| boot without a build | ~400 ms | ~400 ms |
+| boot, warm opcache, `app/` cached | ~4-10 ms | ~4-10 ms |
+| boot, warm opcache, `app/` *not yet* cached | ~3.5 s | ~3.5 s |
+| boot without a build at all | ~400 ms | ~400 ms |
+
+The middle row is `AppCompiler`'s one-time cost — type-stripping and compiling
+`app/` — paid exactly once (per `build/`, across every process, since it is a
+disk cache) by whichever request or command renders first. Everything after
+that is the top row.
 
 ## Layout
 
@@ -255,13 +299,14 @@ app/                the site: TypeScript and JSX, type-stripped by sucrase
   components/         Layout, Home, Docs, Inventory, About
   content.ts          the site's text and data
 src/                the host: PHP, autoloaded as PhpJs\Ssg\
-  Builder.php         the build step
-  Sucrase.php         runs sucrase, inside php-js, over app/
-  Renderer.php        renders a route from what the build produced
+  Builder.php         the library build step (React only, ahead of time)
+  AppCompiler.php     compiles app/ on first render, caches it, locks against a stampede
+  Sucrase.php         runs sucrase, inside php-js, over app/ (AppCompiler's own tool)
+  Renderer.php        renders a route from what both of the above produced
   Exporter.php        static generation
   Toolbar.php         the strip the server injects
   Trust.php           what may be compiled to PHP, and what may not
-build/              app-cjs/ (sucrase output) plus precompiled PHP (generated)
+build/              library output (Builder) plus app-cjs/ and templates.app.php (AppCompiler) -- all generated
 dist/               static export (generated)
 public/             front controller and the stylesheet
 ```

@@ -58,9 +58,23 @@ final class Renderer
         $this->modulesCompiled = $this->host->modules->compileCount;
     }
 
-    /** From a `phpjs-ssg build` directory, where both engines are available. */
+    /**
+     * From a `phpjs-ssg build` directory, where both engines are available.
+     *
+     * `build/` only ever holds the library (React) precompiled ahead of
+     * time; the app itself is `AppCompiler::ensure()`'s job, called right
+     * here, on whichever request (or CLI command) is the first to construct
+     * a Renderer after a build. Its own output is disk-cached, so only that
+     * first caller pays for it.
+     */
     public static function fromBuild(string $buildDir, string $engine = 'aot'): self
     {
+        // Started here, not left to the constructor's own timer: on the one
+        // request that pays for AppCompiler's compile, that cost has to
+        // land in $bootMs the same as everything else that makes a boot
+        // slow, or the toolbar and the `export`/`serve` logs would silently
+        // stop accounting for the biggest number reasonable.
+        $started = microtime(true);
         $manifestPath = $buildDir . '/' . Builder::MANIFEST;
         if (!is_file($manifestPath)) {
             throw new \RuntimeException("No build in $buildDir — run `bin/phpjs-ssg build` first.");
@@ -68,13 +82,20 @@ final class Renderer
         $manifest = require $manifestPath;
         $files = $manifest['engines'][$engine]
             ?? throw new \InvalidArgumentException("Unknown engine: $engine");
-        return new self(
+        $libraryTemplates = require $buildDir . '/' . $files['templates'];
+
+        $app = (new AppCompiler($manifest['appRoot'], $buildDir))->ensure();
+        $appTemplates = require $buildDir . '/' . $app['templates'];
+
+        $renderer = new self(
             $engine,
-            $manifest,
+            $manifest + ['entry' => $app['entry'], 'routes' => $app['routes']],
             $buildDir . '/' . $manifest['polyfill'],
             isset($files['natives']) ? $buildDir . '/' . $files['natives'] : null,
-            require $buildDir . '/' . $files['templates'],
+            $libraryTemplates + $appTemplates,
         );
+        $renderer->bootMs = (microtime(true) - $started) * 1000;
+        return $renderer;
     }
 
     /**

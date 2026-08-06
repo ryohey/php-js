@@ -52,7 +52,7 @@ try {
     switch ($command) {
         case 'build':
             $started = microtime(true);
-            $manifest = (new Builder(Paths::appRoot(), Paths::buildDir(), Paths::entry()))->run($log);
+            $manifest = (new Builder(Paths::appRoot(), Paths::buildDir()))->run($log);
             $log(sprintf(
                 "\nbuilt in %.1f s. %d of %d React functions compiled to PHP.",
                 microtime(true) - $started,
@@ -166,11 +166,14 @@ try {
  */
 function compareWithNode(callable $log): int
 {
+    // Constructing the Renderer is what compiles app/ if nothing has yet
+    // (AppCompiler) -- including entry.node.tsx, which is the file this
+    // checks for below -- so it has to run before that check, not after.
+    $renderer = Renderer::fromBuild(Paths::buildDir(), 'aot');
     if (!is_file(Paths::nodeEntry())) {
-        fwrite(STDERR, "No build yet. Run `bin/phpjs-ssg build` first.\n");
+        fwrite(STDERR, "app/entry.node.tsx did not produce " . Paths::nodeEntry() . "\n");
         return 1;
     }
-    $renderer = Renderer::fromBuild(Paths::buildDir(), 'aot');
     // The path comes through the environment: with `node -e`, argv does not
     // include a script name and its indices are easy to get wrong.
     $script = <<<'JS'

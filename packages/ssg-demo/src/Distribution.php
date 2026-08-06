@@ -53,13 +53,24 @@ final class Distribution
         };
         $manifest = require $this->buildDir . '/' . Builder::MANIFEST;
         $engine = $manifest['engines']['aot'];
+        // A distribution is fully precompiled — there is no request left to
+        // defer the app's own compile to — so this is where that cost that
+        // `AppCompiler::ensure()` would otherwise charge to the first render
+        // gets paid instead, once, at package time.
+        $app = (new AppCompiler($this->appRoot, $this->buildDir))->ensure();
 
         $this->mkdir($outDir);
         $bytes = 0;
         $files = 0;
 
         // 1. The templates, rekeyed to paths relative to the module root.
-        $templates = require $this->buildDir . '/' . $engine['templates'];
+        //    React's own (ahead-of-time) plus the app's own (bytecode only,
+        //    same as AppCompiler always writes) merged into one file: a
+        //    distribution never lazily compiles anything, so the split that
+        //    lets a live server defer the app's compile has no reason to
+        //    survive packaging.
+        $templates = (require $this->buildDir . '/' . $engine['templates'])
+            + (require $this->buildDir . '/' . $app['templates']);
         $relative = [];
         foreach ($templates as $path => $template) {
             $relative[$this->relativize($path)] = $template;
@@ -118,8 +129,8 @@ final class Distribution
         $bytes += $this->writeArray($outDir . '/' . self::MANIFEST, [
             'builtAt' => $manifest['builtAt'],
             'reactVersion' => $manifest['reactVersion'],
-            'routes' => $manifest['routes'],
-            'entry' => $manifest['entry'],
+            'routes' => $app['routes'],
+            'entry' => $app['entry'],
             'converted' => $manifest['converted'],
             'seen' => $manifest['seen'],
             // Relative to this directory, resolved by Distribution::load().
