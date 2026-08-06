@@ -7,6 +7,7 @@ use PhpJs\Ssg\Builder;
 use PhpJs\Ssg\Exporter;
 use PhpJs\Ssg\Paths;
 use PhpJs\Ssg\Renderer;
+use PhpJs\Ssg\Sucrase;
 
 foreach ([__DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../../vendor/autoload.php'] as $autoload) {
     if (is_file($autoload)) {
@@ -166,10 +167,14 @@ try {
  */
 function compareWithNode(callable $log): int
 {
-    // Constructing the Renderer is what compiles app/ if nothing has yet
-    // (AppCompiler) -- including entry.node.tsx, which is the file this
-    // checks for below -- so it has to run before that check, not after.
+    // php-js's own side needs no file on disk any more -- constructing the
+    // Renderer requires app/entry.tsx directly, stripping transparently at
+    // require time (AppCompiler, packages/strip-types). Real Node has no TSX
+    // support of its own, though, so entry.node.tsx's module graph still has
+    // to be mirrored to plain .js somewhere Node can require it -- the one
+    // remaining job of Sucrase::run().
     $renderer = Renderer::fromBuild(Paths::buildDir(), 'aot');
+    (new Sucrase(Paths::appRoot() . '/app', Paths::buildDir() . '/app-cjs'))->run();
     if (!is_file(Paths::nodeEntry())) {
         fwrite(STDERR, "app/entry.node.tsx did not produce " . Paths::nodeEntry() . "\n");
         return 1;

@@ -1,0 +1,52 @@
+{
+    "name": "ryohey/php-js-strip-types",
+    "description": "TypeScript/JSX type stripping for php-js -- runs sucrase inside the runtime itself, vendored, so a consuming project needs no npm install",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.2",
+        "ryohey/php-js": "dev-main",
+        "ryohey/php-js-node-compat": "dev-main"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "PhpJs\\StripTypes\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "PhpJs\\StripTypes\\Tests\\": "tests/"
+        }
+    },
+    "bin": [
+        "bin/phpjs-strip-types"
+    ],
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../..",
+            "options": {
+                "symlink": true
+            }
+        },
+        {
+            "type": "path",
+            "url": "../node-compat",
+            "options": {
+                "symlink": true
+            }
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/ryohey/peast.git"
+        }
+    ],
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

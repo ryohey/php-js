@@ -54,11 +54,18 @@ final class NodeHost
      *                               `$root/`.AOT_CACHE_SUBDIR (used only if it
      *                               exists), or false to disable the lookup
      *                               entirely even if that directory is there
+     * @param bool    $stripTypes    whether to auto-detect `packages/strip-types`
+     *                               (`PhpJs\StripTypes\Stripper`) and, if it is
+     *                               installed, register it for `ts`/`tsx`/`jsx`
+     *                               so `require()` resolves and strips those
+     *                               extensions transparently. False disables
+     *                               this even when the package is present.
      */
     public function __construct(
         string $root,
         private readonly bool $captureOutput = false,
         string|false|null $aotCacheDir = null,
+        bool $stripTypes = true,
     ) {
         $canonical = realpath($root);
         if ($canonical === false) {
@@ -84,6 +91,16 @@ final class NodeHost
             $this->modules->setAotCacheDir($aotCacheDir);
         } elseif (is_dir($this->root . '/' . self::AOT_CACHE_SUBDIR)) {
             $this->modules->setAotCacheDir($this->root . '/' . self::AOT_CACHE_SUBDIR);
+        }
+        // Soft dependency, the same shape as the AOT cache above: this
+        // package never requires packages/strip-types, so a project that
+        // never installed it pays nothing and behaves exactly as before.
+        // One that did gets `.ts`/`.tsx`/`.jsx` support with no call of its
+        // own to make -- `node --experimental-strip-types`'s own shape.
+        if ($stripTypes && class_exists(\PhpJs\StripTypes\Stripper::class)) {
+            foreach (\PhpJs\StripTypes\Stripper::EXTENSIONS as $extension) {
+                $this->modules->registerSourceTransform($extension, [\PhpJs\StripTypes\Stripper::class, 'strip']);
+            }
         }
 
         $this->engine->realm->hostContext = $this;
@@ -220,14 +237,14 @@ final class NodeHost
     /**
      * Register every native an AOT cache directory holds, all at once.
      *
-     * `ModuleLoader::aotLookupHook()` already does this lazily, one artifact
-     * at a time, as each module actually gets *compiled* — but a template
-     * that arrives preloaded (`ModuleLoader::preloadTemplates()`) skips
-     * compilation entirely, hook included, so a native ID a preloaded
-     * template was stamped with would otherwise never get registered and
-     * would silently fall back to bytecode. Call this first, before
-     * preloading AOT-stamped templates, and the stamps resolve correctly
-     * regardless of which host originally compiled them.
+     * `ModuleLoader::aotArtifactTemplate()` already does this lazily, one
+     * artifact at a time, as each module is actually required — but a
+     * template that arrives preloaded (`ModuleLoader::preloadTemplates()`)
+     * skips that lookup entirely, so a native ID a preloaded template was
+     * stamped with would otherwise never get registered and would silently
+     * fall back to bytecode. Call this first, before preloading AOT-stamped
+     * templates, and the stamps resolve correctly regardless of which host
+     * originally compiled them.
      *
      * Safe to call more than once, from more than one process's build
      * artifacts sharing one `BuiltinRegistry` — already-registered IDs are
@@ -239,12 +256,12 @@ final class NodeHost
     {
         $registered = 0;
         foreach (glob($dir . '/*.php') ?: [] as $file) {
-            $entries = require $file;
-            if (!is_array($entries)) {
+            $artifact = require $file;
+            if (!is_array($artifact) || !isset($artifact['natives']) || !is_array($artifact['natives'])) {
                 continue;
             }
             $fresh = [];
-            foreach ($entries as $id => $fn) {
+            foreach ($artifact['natives'] as $id => $fn) {
                 if (!BuiltinRegistry::hasHost($id)) {
                     $fresh[$id] = $fn;
                 }

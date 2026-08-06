@@ -1,0 +1,65 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+foreach ([__DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../../vendor/autoload.php'] as $autoload) {
+    if (is_file($autoload)) {
+        require $autoload;
+        break;
+    }
+}
+
+use PhpJs\StripTypes\Stripper;
+
+const USAGE = <<<TXT
+Usage: phpjs-strip-types <file.ts|file.tsx|file.jsx> [-o output.js]
+
+Strips TypeScript and JSX down to plain JavaScript -- type erasure, not type
+checking, no bundling: relative imports/exports stay as-is (downleveled to
+CommonJS), one file in and one file out. The same shape as Node's own
+`node --experimental-strip-types`.
+
+Without -o, prints the result to stdout.
+
+TXT;
+
+$args = $argv;
+array_shift($args);
+$file = null;
+$out = null;
+for ($i = 0; $i < count($args); $i++) {
+    switch ($args[$i]) {
+        case '-o':
+            $out = $args[++$i] ?? null;
+            break;
+        case '--help':
+            fwrite(STDOUT, USAGE);
+            exit(0);
+        default:
+            $file = $args[$i];
+    }
+}
+
+if ($file === null) {
+    fwrite(STDERR, USAGE);
+    exit(2);
+}
+
+if (!is_file($file)) {
+    fwrite(STDERR, "Not a file: $file\n");
+    exit(1);
+}
+
+try {
+    $source = (string)file_get_contents($file);
+    $code = Stripper::strip($source, $file);
+    if ($out === null) {
+        fwrite(STDOUT, $code);
+    } else {
+        file_put_contents($out, $code);
+    }
+} catch (Throwable $e) {
+    fwrite(STDERR, get_class($e) . ': ' . $e->getMessage() . "\n");
+    exit(1);
+}

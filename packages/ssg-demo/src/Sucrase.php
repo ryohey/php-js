@@ -4,33 +4,26 @@ declare(strict_types=1);
 
 namespace PhpJs\Ssg;
 
-use PhpJs\Node\NodeHost;
-use PhpJs\Runtime\Conversions;
+use PhpJs\StripTypes\Stripper;
 
 /**
- * Node-style "type stripping": TSX/TS sources under `app/` become plain CJS
- * under `build/app-cjs/`, one file at a time, with no bundling step.
+ * Mirrors `app/`'s TSX/TS sources as plain CJS under `build/app-cjs/`, one
+ * file at a time, with no bundling step — `packages/strip-types`'s
+ * `Stripper` does the actual type erasure; this class only exists to walk a
+ * directory tree and write the result out.
  *
- * This runs sucrase (github.com/alangpierce/sucrase) — a fast, no-type-check
- * TS/JSX-to-CJS transformer — *inside* php-js itself, so the whole pipeline
- * from TSX source to rendered HTML stays pure PHP: no `node`, `vite`, `babel`
- * or `tsc` process is ever spawned. `disableESTransforms` is what makes this
- * safe to skip Babel's ES5 downleveling — the sources use `??`, `?.`,
- * optional catch binding and the rest of what DESIGN.md §2.5 has landed, and
- * turning that flag on tells sucrase to leave all of it alone rather than
- * rewriting it through helper functions the engine does not need.
- *
- * The `imports` transform turns `import`/`export` into `require`/`exports`
- * per file rather than bundling: relative specifiers are untouched, so
- * `ModuleLoader::resolve()` walks the resulting tree exactly as it would a
- * hand-written CommonJS tree.
+ * php-js's own rendering no longer needs this at all: `require('./app/entry.tsx')`
+ * strips and compiles transparently now (`AppCompiler`, `NodeHost`'s
+ * auto-detection of `packages/strip-types`). What still needs a written-out
+ * `.js` mirror is `bin/phpjs-ssg compare` — real Node has no TSX support of
+ * its own, so `entry.node.tsx`'s whole module graph has to exist as files
+ * Node can `require` directly, and this is where that mirror comes from.
  */
 final class Sucrase
 {
     private const SOURCE_EXTENSIONS = ['tsx', 'ts', 'jsx', 'js'];
 
     public function __construct(
-        private readonly string $appRoot,
         private readonly string $srcDir,
         private readonly string $outDir,
     ) {
@@ -39,11 +32,6 @@ final class Sucrase
     /** @return int files transformed */
     public function run(): int
     {
-        $host = new NodeHost($this->appRoot);
-        $vm = $host->vm();
-        $sucrase = $host->requireModule('sucrase');
-        $transform = $sucrase->get('transform', $vm);
-
         $count = 0;
         foreach ($this->sourceFiles() as $full) {
             $rel = substr($full, \strlen($this->srcDir) + 1);
@@ -52,20 +40,11 @@ final class Sucrase
                 throw new \RuntimeException('Cannot create ' . \dirname($outPath));
             }
 
-            $opts = $host->realm()->newObject();
-            $opts->defineOwnData('transforms', $host->realm()->newArray(['typescript', 'jsx', 'imports']));
-            $opts->defineOwnData('jsxRuntime', 'classic');
-            $opts->defineOwnData('production', true);
-            $opts->defineOwnData('disableESTransforms', true);
-            $opts->defineOwnData('filePath', $full);
-
             $src = file_get_contents($full);
             if ($src === false) {
                 throw new \RuntimeException("Cannot read $full");
             }
-            $result = $host->call($transform, null, [$src, $opts]);
-            $code = Conversions::toString($vm, $result->get('code', $vm));
-            file_put_contents($outPath, $code);
+            file_put_contents($outPath, Stripper::strip($src, $full));
             $count++;
         }
         return $count;

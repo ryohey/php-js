@@ -12,31 +12,32 @@ use PhpJs\Runtime\Conversions;
  * after a library build, and caches the result to disk so every request
  * after the first, in this process or any other, just loads it.
  *
- * This is `Builder`'s counterpart at request time rather than build time: type
- * stripping (`Sucrase`) and bytecode compilation happen here instead of in
- * `bin/phpjs-ssg build`, so editing `app/` never requires re-running that
- * (comparatively expensive, React-sized) step, and a server can ship with only
- * the library prebuilt. The library's own (already AOT-stamped) templates are
- * preloaded first, so requiring the app — which transitively requires React —
- * never re-parses it and still gets React's own ahead-of-time PHP; only the
- * app's own files end up newly compiled, and only those are what gets cached
- * here (`Builder::run()` already cached React's, in
- * `node_modules/.phpjs-aot/`).
+ * This is `Builder`'s counterpart at request time rather than build time:
+ * bytecode compilation happens here instead of in `bin/phpjs-ssg build`, so
+ * editing `app/` never requires re-running that (comparatively expensive,
+ * React-sized) step, and a server can ship with only the library prebuilt.
+ * `require('./app/entry.tsx')` below reads TSX straight from `app/` — no
+ * pre-transform step of this class's own anymore, since `packages/strip-types`
+ * strips types and JSX per file, lazily, the moment `NodeHost`'s module
+ * resolver reaches each one (auto-detected; see that package's own README).
+ * The library's own (already AOT-stamped) templates are preloaded first, so
+ * requiring the app — which transitively requires React — never re-parses it
+ * and still gets React's own ahead-of-time PHP; only the app's own files end
+ * up newly compiled, and only those are what gets cached here (`Builder::run()`
+ * already cached React's, in `node_modules/.phpjs-aot/`).
  *
  * Concurrency is the same problem `PageCache` already solves for rendered
  * HTML, one layer down: a burst of first requests must compile once, not
  * once each. `ensure()` mirrors that lock-file shape — the winner compiles,
  * the losers wait for its output.
  *
- * `$appRoot/build/app-cjs/` (the compiled JS itself) and `$buildDir` (this
- * class's own generated PHP: the manifest, the app's templates, the lock
- * file) are not necessarily the same directory, and only one of the two may
- * vary. `NodeHost::requireModule($this->entry)` resolves relative to its own
- * root — `$appRoot`, always, the same way it resolves `node_modules` — so the
- * compiled tree has to live at a fixed spot under `$appRoot` for that
- * resolution to ever find it. `$buildDir` has no such constraint: it is read
- * with `require` directly, an ordinary PHP include, and a caller (a test) is
- * free to point it anywhere.
+ * `$appRoot` (where `app/` and `node_modules/` live — what `require()`
+ * resolves against) and `$buildDir` (this class's own generated PHP: the
+ * manifest, the app's templates, the lock file) are not necessarily the same
+ * directory, and only one of the two may vary in practice: `$buildDir` is
+ * read with `require` directly, an ordinary PHP include, so a caller (a test)
+ * is free to point it anywhere, while `$appRoot` is a real filesystem/module
+ * root and has no such freedom.
  */
 final class AppCompiler
 {
@@ -54,7 +55,7 @@ final class AppCompiler
     public function __construct(
         private readonly string $appRoot,
         private readonly string $buildDir,
-        private readonly string $entry = './build/app-cjs/entry.js',
+        private readonly string $entry = './app/entry.tsx',
     ) {
     }
 
@@ -108,16 +109,12 @@ final class AppCompiler
         NodeHost::registerAotCacheDir($this->appRoot . '/' . NodeHost::AOT_CACHE_SUBDIR);
         NodeHost::preloadPolyfillTemplate(require $this->buildDir . '/' . $libraryManifest['polyfill']);
 
-        // Type stripping: TSX/TS under app/ -> plain CJS under
-        // $appRoot/build/app-cjs/, entirely inside php-js (Sucrase runs
-        // sucrase itself as interpreted JS). Always under $appRoot, not
-        // $buildDir -- NodeHost resolves `require($this->entry)` below
-        // relative to its own root (appRoot), the same way it resolves
-        // node_modules, so the compiled tree has to live where that
-        // resolution can actually find it even when a caller (a test) points
-        // $buildDir somewhere else for the generated PHP files.
-        (new Sucrase($this->appRoot, $this->appRoot . '/app', $this->appRoot . '/build/app-cjs'))->run();
-
+        // No pre-transform step: `require('./app/entry.tsx')` below strips
+        // types and JSX on its own, per file, exactly when each one is first
+        // reached (packages/strip-types, auto-detected by NodeHost). What
+        // used to be Sucrase's job here now happens lazily inside the
+        // compile this class was already doing.
+        //
         // aotCacheDir: false -- app code stays interpreted bytecode always
         // (Trust §"why the site's own code stays interpreted"), enforced
         // here rather than left to the coincidence that none of its content

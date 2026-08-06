@@ -159,23 +159,37 @@ on it:
   and detach semantics the spec gives it. Its `ModuleLoader` also checks an
   ahead-of-time-PHP cache directory, by content hash, on every `require()` —
   transparently: nothing that merely loads a module needs to know one exists.
+  When that cache holds a module's whole compiled template, not just its
+  native functions, `require()` skips compiling it at all rather than merely
+  interpreting less of it. It also soft-detects `packages/strip-types`, the
+  same way, for `.ts`/`.tsx`/`.jsx` support — `node --experimental-strip-types`'s
+  own shape: install the package and `require()` just works, uninstall it and
+  nothing changes for a project that never used it.
+- [`packages/strip-types`](packages/strip-types) — vendors
+  [Sucrase](https://github.com/alangpierce/sucrase) to strip TypeScript and
+  JSX syntax down to plain JavaScript, and registers itself with
+  `node-compat` as a source transform. Not a bundler and not a type checker —
+  the same trade Node's own `--experimental-strip-types` makes.
 - [`packages/php-transpile`](packages/php-transpile) — build-time compiler from
   JavaScript functions to PHP, given a module to compile and told to. Converts
   262 of React's 291 functions with unchanged output; the bytecode stays as
   the fallback.
 - [`packages/aot`](packages/aot) — the CLI (`phpjs-aot build`) that points
   `php-transpile` at whatever `node_modules` libraries a small JSON manifest
-  names and writes the result where `node-compat` looks for it. Nothing here
-  is React-specific; React is just the one library this repo's own demo
-  happens to list.
+  names and writes the result where `node-compat` looks for it: one file per
+  module reached, holding both its compiled template and whatever functions
+  converted to native PHP. Nothing here is React-specific; React is just the
+  one library this repo's own demo happens to list.
 - [`packages/react-ssr-bench`](packages/react-ssr-bench) — renders a React app
   server-side from React's own published CommonJS build, asserts the HTML is
   byte-identical to Node, and reports boot and render separately.
 - [`packages/ssg-demo`](packages/ssg-demo) — a small site written in TypeScript
   and JSX, rendered to HTML by React inside PHP. `bin/phpjs-ssg build` compiles
-  only React (via `packages/aot`); the site's own TSX compiles itself on the
-  first render that needs it and stays cached from then on. `phpjs-ssg package`
-  assembles a 3.1 MB render-only tree you can ship inside a plugin.
+  only React (via `packages/aot`); the site's own `app/*.tsx` is required
+  directly (stripped transparently by `packages/strip-types`) and compiles
+  itself on the first render that needs it, staying cached from then on.
+  `phpjs-ssg package` assembles a 3.1 MB render-only tree you can ship inside
+  a plugin.
 
 ## Performance
 

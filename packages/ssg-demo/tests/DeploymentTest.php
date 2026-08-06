@@ -22,8 +22,8 @@ final class DeploymentTest extends TestCase
 
     public static function setUpBeforeClass(): void
     {
-        if (!is_dir(Paths::appRoot() . '/node_modules/sucrase')) {
-            self::markTestSkipped('No sucrase. Run `npm install` in packages/ssg-demo.');
+        if (!is_dir(Paths::appRoot() . '/node_modules/react')) {
+            self::markTestSkipped('No React. Run `npm install` in packages/ssg-demo.');
         }
         self::$buildDir = sys_get_temp_dir() . '/phpjs-deploy-build-' . getmypid();
         (new Builder(Paths::appRoot(), self::$buildDir))->run();

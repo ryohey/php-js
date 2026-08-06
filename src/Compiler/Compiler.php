@@ -1550,7 +1550,7 @@ final class Compiler
                 $bindings[$name] = $b;
             }
             $this->blockScopes[$owner] = $bindings;
-        } elseif (!$this->blockScopes->contains($owner)) {
+        } elseif (!$this->blockScopes->offsetExists($owner)) {
             return false;
         }
         $this->lexStack[] = ['ctx' => $ctx, 'names' => $this->blockScopes[$owner]];
@@ -1566,7 +1566,7 @@ final class Compiler
      */
     private function emitBlockPrologue(object $owner): void
     {
-        if (!$this->blockScopes->contains($owner)) {
+        if (!$this->blockScopes->offsetExists($owner)) {
             return;
         }
         foreach ($this->blockScopes[$owner] as $b) {
@@ -1973,7 +1973,7 @@ final class Compiler
         // Re-push the same lexStack entry the analysis pass used, so
         // `super(...)` and a named class expression's self-reference resolve
         // to the Binding objects assignSlots already gave slots to.
-        $scoped = $this->blockScopes->contains($node);
+        $scoped = $this->blockScopes->offsetExists($node);
         if ($scoped) {
             $this->lexStack[] = ['ctx' => $c, 'names' => $this->blockScopes[$node]];
         }

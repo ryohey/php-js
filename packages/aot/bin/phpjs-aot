@@ -18,9 +18,12 @@ const USAGE = <<<TXT
 Usage: phpjs-aot build [options]
 
 Ahead-of-time compiles the node_modules libraries a manifest lists into a
-php-js AOT cache: a directory of {contentHash}.php files that any NodeHost
-picks up transparently on a plain `require()` -- no other wiring needed
-(see packages/node-compat's ModuleLoader).
+php-js AOT cache: a directory of {contentHash}.php files, one per module
+reached, that any NodeHost picks up transparently on a plain `require()` --
+no other wiring needed (see packages/node-compat's ModuleLoader). Each file
+holds both the module's whole compiled template -- so `require()` skips
+compiling it at all, not just interpreting it -- and whatever natives came
+out of it.
 
 The manifest is phpjs-aot.json in --root, or a "phpjsAot": { "libraries":
 [...] } key in package.json, whichever is found first:

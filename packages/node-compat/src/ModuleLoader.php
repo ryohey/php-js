@@ -6,7 +6,6 @@ namespace PhpJs\Node;
 
 use PhpJs\Builtins\BuiltinRegistry;
 use PhpJs\Compiler\Compiler;
-use PhpJs\Compiler\Ctx;
 use PhpJs\Runtime\Conversions;
 use PhpJs\Runtime\JSNativeFunction;
 use PhpJs\Runtime\JSObject;
@@ -27,10 +26,21 @@ use PhpJs\Vm\Vm;
  * `$onCompileModule` remains the explicit extension point a *build* installs to
  * emit new natives, but the default path — no hook installed — still checks
  * `$aotCacheDir` for an already-compiled artifact matching this exact module's
- * content and uses it if present, the same as `$onCompileModule` would, falling
- * back to ordinary bytecode when there is none. That is the whole contract: an
- * AOT cache is a directory that happens to have the right files in it, and
- * `require` either finds a match or it does not.
+ * content, `{contentHash}.php`, and uses it outright if present: the whole
+ * compiled template, so `require()` skips `Compiler::compile()` entirely
+ * rather than merely resolving natives inside it (`aotArtifactTemplate()`),
+ * falling back to ordinary bytecode when there is no artifact. That is the
+ * whole contract: an AOT cache is a directory that happens to have the right
+ * files in it, and `require` either finds a match or it does not.
+ *
+ * `$sourceTransforms` is the same idea one step earlier: given a filename
+ * extension this loader would otherwise refuse to resolve at all, run the
+ * module's raw text through a registered transform before it is ever wrapped
+ * or handed to `Compiler::compile()`. `packages/strip-types` uses this to
+ * make `require('./component')` find `component.tsx` and see plain
+ * JavaScript by the time this class's own compiler ever looks at it — again
+ * with no dependency in this direction; see `NodeHost`'s constructor for
+ * where that registration actually happens.
  */
 final class ModuleLoader
 {
@@ -66,6 +76,20 @@ final class ModuleLoader
      */
     private ?string $aotCacheDir = null;
 
+    /**
+     * Extension (without the dot) => a source-to-source transform run on a
+     * module's text before it is wrapped and compiled. `packages/strip-types`
+     * registers `ts`/`tsx`/`jsx` here (via `NodeHost`'s own auto-detection,
+     * not by this class knowing that package exists — see its docblock);
+     * nothing else currently uses this, but it is deliberately not specific
+     * to TypeScript. An extension registered here is also added to
+     * `resolveAsFile()`'s probe list, so `require('./x')` finds `x.tsx` the
+     * same way it already finds `x.js`.
+     *
+     * @var array<string, callable(string $source, string $path): string>
+     */
+    private array $sourceTransforms = [];
+
     public function __construct(
         private readonly NodeHost $host,
         private readonly string $root,
@@ -76,6 +100,15 @@ final class ModuleLoader
     public function setAotCacheDir(?string $dir): void
     {
         $this->aotCacheDir = $dir;
+    }
+
+    /**
+     * @param string $extension without the leading dot, e.g. `'tsx'`
+     * @param callable(string $source, string $path): string $transform
+     */
+    public function registerSourceTransform(string $extension, callable $transform): void
+    {
+        $this->sourceTransforms[$extension] = $transform;
     }
 
     public static function entries(): array
@@ -270,76 +303,77 @@ final class ModuleLoader
             return $this->templates[$path];
         }
         $source ??= $this->host->fs->read($path);
+        $extension = pathinfo($path, PATHINFO_EXTENSION);
+        if (isset($this->sourceTransforms[$extension])) {
+            $source = ($this->sourceTransforms[$extension])($source, $path);
+        }
+
+        if ($this->onCompileModule === null && $this->aotCacheDir !== null) {
+            $cached = $this->aotArtifactTemplate($source);
+            if ($cached !== null) {
+                return $this->templates[$path] = $cached;
+            }
+        }
+
         // A trailing newline before the closing brace guards against a source
         // that ends inside a line comment.
         $wrapped = "(function (exports, require, module, __filename, __dirname) {"
             . $source . "\n})";
         $started = microtime(true);
-        $hook = match (true) {
-            $this->onCompileModule !== null => ($this->onCompileModule)($path),
-            $this->aotCacheDir !== null => $this->aotLookupHook($source),
-            default => null,
-        };
-        $template = Compiler::compile($wrapped, $hook);
+        $template = Compiler::compile($wrapped, $this->onCompileModule !== null ? ($this->onCompileModule)($path) : null);
         $this->compileSeconds += microtime(true) - $started;
         $this->compileCount++;
         return $this->templates[$path] = $template;
     }
 
     /**
-     * The default `onCompileModule`-shaped hook when no build has installed
-     * its own: content-hash this module, and if `$aotCacheDir` has an
-     * artifact under that hash, load it (once, lazily — most compiled
-     * modules will never actually be looked up if nothing there matches) and
-     * stamp whichever function IDs it actually provided. Everything else
-     * returns null and compiles as bytecode, same as if no cache existed.
+     * The whole-module AOT cache lookup: one file, `{contentHash}.php`
+     * (`NodeIntegration::writeArtifacts()`), holding both halves of a build
+     * for this exact module — `'template'`, the compiled template itself, and
+     * `'natives'`, whichever of its functions that build converted to PHP. A
+     * hit returns the template outright, skipping `Compiler::compile()`
+     * entirely rather than merely resolving natives inside it; a miss (no
+     * file, e.g. a module the manifest never named) returns null and
+     * `templateFor()` compiles as ordinary bytecode, same as if no cache
+     * directory existed at all.
+     *
+     * Natives are registered before the template is handed back, since a
+     * template that stamped a `nativeId` cannot run without it
+     * (`BuiltinRegistry::get()` throws on an unknown ID). Registering twice
+     * across modules that happen to share this process is not an error --
+     * only not-yet-seen IDs are offered to `BuiltinRegistry::registerHost()`.
+     *
+     * @return ?array<string, mixed>
      */
-    private function aotLookupHook(string $moduleSource): callable
+    private function aotArtifactTemplate(string $moduleSource): ?array
     {
-        $moduleKey = hash('xxh128', $moduleSource);
-        $cacheFile = $this->aotCacheDir . '/' . $moduleKey . '.php';
-        $checked = false;
-        $counter = 0;
-        return function (object $node, Ctx $ctx, bool $isProgram) use ($cacheFile, $moduleKey, &$checked, &$counter): ?string {
-            if ($isProgram) {
-                return null;
-            }
-            $id = self::aotFunctionId($moduleKey, $counter++, $ctx->name);
-            if (!$checked) {
-                $checked = true;
-                self::loadAotArtifact($cacheFile);
-            }
-            return BuiltinRegistry::hasHost($id) ? $id : null;
-        };
-    }
-
-    private static function loadAotArtifact(string $file): void
-    {
+        $file = $this->aotCacheDir . '/' . hash('xxh128', $moduleSource) . '.php';
         if (!is_file($file)) {
-            return;
+            return null;
         }
-        $entries = require $file;
-        if (!is_array($entries)) {
-            return;
+        $artifact = require $file;
+        if (!is_array($artifact) || !isset($artifact['template']) || !is_array($artifact['template'])) {
+            return null;
         }
-        // Loading the same artifact twice in one process is not an error --
-        // BuiltinRegistry::registerHost() itself would reject a genuine ID
-        // collision, so only the not-yet-seen ones are worth offering it.
-        $fresh = [];
-        foreach ($entries as $id => $fn) {
-            if (!BuiltinRegistry::hasHost($id)) {
-                $fresh[$id] = $fn;
+        if (isset($artifact['natives']) && is_array($artifact['natives'])) {
+            $fresh = [];
+            foreach ($artifact['natives'] as $id => $fn) {
+                if (!BuiltinRegistry::hasHost($id)) {
+                    $fresh[$id] = $fn;
+                }
+            }
+            if ($fresh !== []) {
+                BuiltinRegistry::registerHost($fresh);
             }
         }
-        if ($fresh !== []) {
-            BuiltinRegistry::registerHost($fresh);
-        }
+        return $artifact['template'];
     }
 
     /**
-     * The native-ID format an AOT cache artifact's functions must be keyed
-     * by for `aotLookupHook()` above to ever find them. `php-transpile`'s
-     * `NodeIntegration` produces exactly these IDs when compiling for this
+     * The native-ID format an AOT cache artifact's `'natives'` must be keyed
+     * by for `aotArtifactTemplate()` above to resolve them against whatever
+     * its `'template'` half stamped. `php-transpile`'s `NodeIntegration`
+     * produces exactly these IDs when compiling for this
      * loader's cache directory rather than for a single combined build file,
      * so the two stay in agreement without either package depending on the
      * other's internals -- node-compat owns the format, php-transpile calls
@@ -401,13 +435,23 @@ final class ModuleLoader
 
     private function resolveAsFile(string $path): ?string
     {
-        foreach (['', '.js', '.json'] as $ext) {
+        foreach ($this->probeExtensions() as $ext) {
             $candidate = $path . $ext;
             if ($this->host->fs->isFile($candidate)) {
                 return $this->host->fs->realpath($candidate);
             }
         }
         return null;
+    }
+
+    /** @return list<string> extensions (with a leading dot, `''` for an already-complete specifier) to try resolving, in order */
+    private function probeExtensions(): array
+    {
+        $extensions = ['', '.js', '.json'];
+        foreach (array_keys($this->sourceTransforms) as $extension) {
+            $extensions[] = ".$extension";
+        }
+        return $extensions;
     }
 
     private function mainFrom(string $packageJson): ?string

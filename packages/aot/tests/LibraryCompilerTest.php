@@ -51,6 +51,9 @@ final class LibraryCompilerTest extends TestCase
         $lib = $host->requireModule('fixture-lib');
         $cube = $lib->get('cube', $host->vm());
         $this->assertSame(27, $host->call($cube, null, [3]));
+        // The whole point of the cached template: this require() never
+        // called Compiler::compile() at all.
+        $this->assertSame(0, $host->modules->compileCount, 'the cached template was not used');
     }
 
     public function testTheResultIsInertUntilANodeHostActuallyRequiresTheModule(): void
@@ -59,12 +62,17 @@ final class LibraryCompilerTest extends TestCase
         (new LibraryCompiler())->compile($this->root, ['fixture-lib'], $cacheDir);
 
         // Loading the file directly (not through a NodeHost) must not error
-        // or need anything beyond core PHP -- it is a plain array literal.
+        // or need anything beyond core PHP -- it is a plain array literal
+        // (the 'natives' entries are closures, but the array around them is
+        // not).
         $files = glob($cacheDir . '/*.php') ?: [];
-        $this->assertNotEmpty($files);
-        $entries = require $files[0];
-        $this->assertIsArray($entries);
-        foreach (array_keys($entries) as $id) {
+        $this->assertCount(1, $files);
+
+        $artifact = require $files[0];
+        $this->assertIsArray($artifact);
+        $this->assertIsArray($artifact['template']);
+        $this->assertIsArray($artifact['natives']);
+        foreach (array_keys($artifact['natives']) as $id) {
             $this->assertStringStartsWith('aot:', $id);
         }
     }

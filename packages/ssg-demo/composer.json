@@ -8,6 +8,7 @@
     "ryohey/php-js": "dev-main",
     "ryohey/php-js-aot": "dev-main",
     "ryohey/php-js-node-compat": "dev-main",
+    "ryohey/php-js-strip-types": "dev-main",
     "ryohey/php-js-transpile": "dev-main"
   },
   "require-dev": {
@@ -42,6 +43,11 @@
     {
       "type": "path",
       "url": "../aot",
+      "options": { "symlink": true }
+    },
+    {
+      "type": "path",
+      "url": "../strip-types",
       "options": { "symlink": true }
     },
     {

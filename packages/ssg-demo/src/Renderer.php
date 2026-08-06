@@ -48,7 +48,7 @@ final class Renderer
         $started = microtime(true);
         // Natives first: a template's nativeId has to already be registered
         // before the JSFunction carrying it is instantiated. Bulk, not the
-        // usual lazy per-module lookup (ModuleLoader::aotLookupHook()) --
+        // usual lazy per-module lookup (ModuleLoader::aotArtifactTemplate()) --
         // $templates arrives preloaded below and so never goes through the
         // compile-time hook that lookup rides on.
         if ($aotCacheDir !== null) {

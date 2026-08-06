@@ -1,7 +1,7 @@
 {
   "name": "phpjs-ssg-demo",
   "private": true,
-  "description": "TSX sources for the php-js static-site-generation demo, type-stripped to plain CommonJS by sucrase, running inside php-js itself",
+  "description": "TSX sources for the php-js static-site-generation demo, type-stripped by packages/strip-types running inside php-js itself",
   "scripts": {
     "build": "bin/phpjs-ssg build"
   },
@@ -12,7 +12,6 @@
   "devDependencies": {
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "sucrase": "^3.35.1",
     "typescript": "^5.4.0"
   }
 }

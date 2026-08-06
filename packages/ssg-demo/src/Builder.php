@@ -32,7 +32,7 @@ use PhpJs\Runtime\Conversions;
  * `LIBRARY_ENTRIES` names some `node_modules` specifiers to compile, and it
  * writes its result to `node_modules/.phpjs-aot/`, the directory any
  * `NodeHost` (this one included, right below) checks on every ordinary
- * `require()` with no further wiring (`ModuleLoader::aotLookupHook()`,
+ * `require()` with no further wiring (`ModuleLoader::aotArtifactTemplate()`,
  * packages/node-compat). This class's own job shrinks to: run that, then
  * compile two *template* sets from it — `aot` (native IDs stamped, because
  * the cache now exists when this compiles) and `bytecode` (a second host with

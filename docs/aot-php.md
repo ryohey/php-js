@@ -280,7 +280,7 @@ Core stays clean; this follows the existing split.
   at render time. `NodeIntegration` is the piece that hooks module compilation
   and does the emitting; it has no opinion about *which* modules to compile
   (that is `Trust`'s call, wherever it is invoked from) or where the result
-  ends up (`writePhp()`/`php()` for one combined file, `writePerModule()` for
+  ends up (`writePhp()`/`php()` for one combined file, `writeArtifacts()` for
   an AOT cache directory — see below).
 - **`packages/aot`** — build-time only, and the only *generic* piece: a CLI
   (`phpjs-aot build`) plus a `LibraryCompiler` class that reads a small JSON
@@ -292,12 +292,15 @@ Core stays clean; this follows the existing split.
   were JS polyfills (phase 0), and `ModuleLoader` gained the *consuming* half
   of the AOT cache: on every `require()`, if no build hook is explicitly
   attached, it checks the cache directory (by the module's own content hash)
-  and stamps whatever native IDs it finds — transparently, with no dependency
-  on `php-transpile` at all (registering an already-compiled `.php` file needs
-  none of the emitter). This is what makes AOT invisible to a host: a
-  `NodeHost` constructed against a project root where the conventional cache
-  directory happens to exist just goes faster, and one where it does not
-  behaves exactly as if AOT never existed.
+  for an artifact. A hit hands back the module's whole compiled template
+  outright — `require()` never calls the JS compiler at all, not merely
+  interpreting less of what it produced — and registers whatever native IDs
+  the same artifact carries, transparently, with no dependency on
+  `php-transpile` (registering an already-compiled `.php` file needs none of
+  the emitter). This is what makes AOT invisible to a host: a `NodeHost`
+  constructed against a project root where the conventional cache directory
+  happens to exist just goes faster, and one where it does not behaves
+  exactly as if AOT never existed.
 - **core** — gained nothing beyond what already existed. `nativeId` on a
   function template and `BuiltinRegistry` (§11.3) were already the whole
   mechanism generated PHP substitutes into; the AOT cache is entirely a
@@ -306,17 +309,21 @@ Core stays clean; this follows the existing split.
 Generated PHP is written **one file per module** (not per function — a
 module's several functions share one array, since they are always compiled
 and looked up together), named by that module's own content hash
-(`hash('xxh128', $moduleSource)`), and `ModuleLoader::aotLookupHook()` loads
-one lazily, exactly when a `require()` for that exact module happens — not
-through `opcache.preload`, which this arrived at a simpler alternative to:
-opcache already caches the file the first ordinary `require` pulls in, with
-no separate preload step or server-start hook to keep in sync with what a
-build actually produced. Content-hash naming still gives correct invalidation
-when a library is upgraded, for the same reason as before — build input is
-trusted, but a stale artifact silently rendering wrong HTML is the realistic
-failure — except now that safety is a directory-listing property (an upgraded
-module's hash no longer matches any file there) rather than something a
-combined manifest has to get right.
+(`hash('xxh128', $moduleSource)`). That one file holds both halves of the
+build as a single array: the module's whole compiled template (plain data,
+so `require()` can hand it straight back with no further work) and whatever
+functions inside it converted to native PHP (closures, keyed by the same IDs
+the template already stamped on them). `ModuleLoader::aotArtifactTemplate()`
+loads it lazily, exactly when a `require()` for that exact module happens —
+not through `opcache.preload`, which this arrived at a simpler alternative
+to: opcache already caches the file the first ordinary `require` pulls in,
+with no separate preload step or server-start hook to keep in sync with what
+a build actually produced. Content-hash naming still gives correct
+invalidation when a library is upgraded, for the same reason as before —
+build input is trusted, but a stale artifact silently rendering wrong HTML is
+the realistic failure — except now that safety is a directory-listing
+property (an upgraded module's hash no longer matches any file there) rather
+than something a combined manifest has to get right.
 
 ## 5. Verification
 
@@ -513,15 +520,17 @@ Nothing in this table is on the render's hot path any more. Phase 4 should be
 judged on the application's components, not on React's remainder.
 
 **Phase 3 — opcache wiring. → DONE, and no longer opt-in per project.**
-`NodeIntegration::forBuild()` emits, `writePerModule()` (or `writePhp()`, for
-one combined file) writes, and on the *reading* side a plain `require()` — no
-`Artifact::register()`, no `NodeIntegration::forRun()`, no per-project wiring
-at all — picks a matching artifact up on its own
-(`ModuleLoader::aotLookupHook()`, packages/node-compat, §4). Native IDs are
-still derived from the module's *contents*, so a build and a later run agree,
-and an upgraded dependency stops matching its stale natives instead of
-binding them to the wrong functions; that property is what made this
-generalizable to any `require()`, not only ones a specific project's own
+`NodeIntegration::forBuild()` emits, `writeArtifacts()` (or `writePhp()`, for
+one combined file) writes one file per module holding both its compiled
+template and whatever natives came out of it, and on the *reading* side a
+plain `require()` — no `Artifact::register()`, no `NodeIntegration::forRun()`,
+no per-project wiring at all — picks a matching artifact up on its own,
+skipping compilation of that module entirely rather than merely interpreting
+less of it (`ModuleLoader::aotArtifactTemplate()`, packages/node-compat, §4).
+Native IDs are still derived from the module's *contents*, so a build and a
+later run agree, and an upgraded dependency stops matching its stale natives
+instead of binding them to the wrong functions; that property is what made
+this generalizable to any `require()`, not only ones a specific project's own
 build script chose to instrument. Confirmed with `opcache_get_status()`:
 966 KB of generated code resident in shared memory.
 

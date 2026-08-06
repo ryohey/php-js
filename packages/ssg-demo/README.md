@@ -11,7 +11,7 @@ a browser.**
 ## Run it
 
 ```console
-$ npm install                       # fetches React and sucrase, nothing else
+$ npm install                       # fetches React, nothing else
 $ composer install
 $ bin/phpjs-ssg build               # compile React into build/ -- app/ is untouched
 $ bin/phpjs-ssg export              # optional: static HTML into dist/
@@ -20,13 +20,17 @@ $ bin/phpjs-ssg serve               # http://127.0.0.1:8080/
 
 `build` never reads `app/` at all — it only compiles the library (React), which
 is the expensive, React-sized part and the part that does not change while
-you're editing the site. `app/` is type-stripped and compiled the first time
-anything actually needs it — the first render after a build, whichever request
-or command gets there first — and the result is cached to disk (`AppCompiler`),
-so every render after that, in this process or the next one, just loads it.
-Both steps run entirely inside php-js: no `node`, `vite`, `babel` or `tsc`
-process is ever spawned to produce what ships. `npm install` still runs once,
-to put React and sucrase's own files on disk where php-js can `require` them.
+you're editing the site. `app/` is required directly, `.tsx` extension and
+all, the first time anything actually needs it — the first render after a
+build, whichever request or command gets there first — and the result is
+cached to disk (`AppCompiler`), so every render after that, in this process
+or the next one, just loads it. The type-stripping that makes requiring
+`.tsx` possible happens transparently, inside php-js's own `require()`
+([`packages/strip-types`](../strip-types)); no separate pre-transform step
+produces what `AppCompiler` compiles. Both steps run entirely inside php-js:
+no `node`, `vite`, `babel` or `tsc` process is ever spawned to produce what
+ships. `npm install` still runs once, to put React's own files on disk where
+php-js can `require` them.
 
 `serve` starts PHP's built-in server with opcache and the tracing JIT on, which
 are not the defaults and are worth having.
@@ -58,12 +62,12 @@ Things worth doing once it is up:
 ```
 bin/phpjs-ssg build:                     the first render after that:
 
-node_modules ──phpjs-aot──► node_modules/.phpjs-aot/    app/*.tsx ──sucrase (in php-js)──► build/app-cjs/*.js
-                                    │                                                              │
-                                    │  node-compat's ModuleLoader checks                    bytecode (AppCompiler)
-                                    │  this directory on every require(),                          │
-                                    └─ transparently, no wiring needed ──────► request ──► HTML ◄───┘
-                                                                              (opcache)
+node_modules ──phpjs-aot──► node_modules/.phpjs-aot/    app/*.tsx ──require() (strip-types)──► bytecode (AppCompiler)
+                                    │                                                                      │
+                                    │  node-compat's ModuleLoader checks                                  │
+                                    │  this directory on every require(),                                 │
+                                    └─ transparently, no wiring needed ──────────► request ──► HTML ◄──────┘
+                                                                                  (opcache)
 ```
 
 **Two builds, two different moments.** `bin/phpjs-ssg build` (`Builder`) only
@@ -72,25 +76,31 @@ React-sized part and the part that does not change while you are editing the
 site. `app/`, the site's own TypeScript and JSX, is compiled by `AppCompiler`
 instead, lazily: the first time any render actually needs it, whichever
 request or CLI command gets there first, with the result written to
-`build/app-cjs/` and `build/templates.app.php` so every render after that —
-in this process or the next one, since PHP is shared-nothing and this is a
-plain file on disk, not a cache in memory — just loads it. It is the same
-shape `PageCache` already gives the *rendered HTML* one layer up (the first
-request renders, the rest serve a file), applied one layer down to
-compilation itself, and it borrows that class's own lock-file trick so a
-burst of concurrent first requests compiles once rather than once each.
+`build/templates.app.php` so every render after that — in this process or the
+next one, since PHP is shared-nothing and this is a plain file on disk, not a
+cache in memory — just loads it. It is the same shape `PageCache` already
+gives the *rendered HTML* one layer up (the first request renders, the rest
+serve a file), applied one layer down to compilation itself, and it borrows
+that class's own lock-file trick so a burst of concurrent first requests
+compiles once rather than once each.
 
-**The sources are TypeScript and JSX** in `app/`. `AppCompiler` runs
-[sucrase](https://github.com/alangpierce/sucrase) — itself just JavaScript —
-inside php-js to strip types and turn JSX into classic `React.createElement`
-calls, one file at a time, into `build/app-cjs/`. No bundler: relative
-`import`s become relative `require`s and php-js's own CommonJS resolver walks
-the resulting tree, the same way it walks `node_modules`.
-Sucrase runs with `disableESTransforms: true` — the engine now parses `??`,
-`?.`, destructuring, classes, `async`/`await` and the rest of what DESIGN.md
-§2.5 has landed, so there is nothing left to downlevel. React itself stays
-external — the runtime loads React's own published CommonJS build, which is
-the thing worth measuring.
+**The sources are TypeScript and JSX** in `app/`, and `AppCompiler` requires
+`app/entry.tsx` exactly as written — no separate pre-transform step, no
+`build/app-cjs/` mirror for its own rendering. Requiring a `.tsx` file works
+at all because [`packages/strip-types`](../strip-types) — vendored
+[sucrase](https://github.com/alangpierce/sucrase), itself just JavaScript —
+registers itself with `node-compat`'s `ModuleLoader` as a source transform:
+`require()` strips types and turns JSX into classic `React.createElement`
+calls before the result ever reaches php-js's own compiler, the same way
+`node --experimental-strip-types` makes a `.ts` file requirable with no build
+step of its own. No bundler either way: relative `import`s become relative
+`require`s and php-js's own CommonJS resolver walks the resulting tree, the
+same way it walks `node_modules`. Sucrase runs with
+`disableESTransforms: true` — the engine now parses `??`, `?.`, destructuring,
+classes, `async`/`await` and the rest of what DESIGN.md §2.5 has landed, so
+there is nothing left to downlevel. React itself stays external — the runtime
+loads React's own published CommonJS build, which is the thing worth
+measuring.
 
 **Dependencies are compiled to PHP; the site's own code is not, and neither
 side of that knows the other exists.** `Builder` hands React's package
@@ -245,11 +255,11 @@ away from silently accepting everything.
 
 One related choice in the same spirit: `serve` leaves
 `opcache.validate_timestamps` **on**, so a rebuild is always picked up and a
-cached copy never outlives the file it came from. `build/app-cjs/` and
-`build/templates.app.php` *are* written by a request now (`AppCompiler`,
-the first time one needs them) — the same trust boundary still holds, because
-what a request writes there is always the bytecode form of `app/`'s own
-source, type-stripped and interpreted, never anything with a native ID; the
+cached copy never outlives the file it came from. `build/templates.app.php`
+*is* written by a request now (`AppCompiler`, the first time one needs it) —
+the same trust boundary still holds, because what a request writes there is
+always the bytecode form of `app/`'s own source, type-stripped by
+`packages/strip-types` and interpreted, never anything with a native ID; the
 line Trust draws is which JavaScript may become PHP, not which process is
 allowed to write a bytecode file.
 
@@ -306,7 +316,7 @@ that is the top row.
 ## Layout
 
 ```
-app/                the site: TypeScript and JSX, type-stripped by sucrase
+app/                the site: TypeScript and JSX, required directly (type-stripped transparently by ../strip-types)
   entry.tsx           SSR entry for php-js
   entry.node.tsx      same components, rendered by Node, for the diff
   router.tsx          the route table
@@ -314,13 +324,13 @@ app/                the site: TypeScript and JSX, type-stripped by sucrase
   content.ts          the site's text and data
 src/                the host: PHP, autoloaded as PhpJs\Ssg\
   Builder.php         the library build step (React only, ahead of time)
-  AppCompiler.php     compiles app/ on first render, caches it, locks against a stampede
-  Sucrase.php         runs sucrase, inside php-js, over app/ (AppCompiler's own tool)
+  AppCompiler.php     compiles app/ on first render (requiring app/entry.tsx directly), caches it, locks against a stampede
+  Sucrase.php         thin wrapper over ../strip-types, used only by `compare` to give Node a plain-JS mirror
   Renderer.php        renders a route from what both of the above produced
   Exporter.php        static generation
   Toolbar.php         the strip the server injects
   Trust.php           what may reach LibraryCompiler (../aot) to be compiled to PHP
-build/              library templates (Builder) plus app-cjs/ and templates.app.php (AppCompiler) -- all generated
+build/              library templates (Builder) plus templates.app.php (AppCompiler); app-cjs/ only exists after `compare` -- all generated
 node_modules/.phpjs-aot/   React's AOT cache (phpjs-aot / Builder), generated, checked by every require()
 dist/               static export (generated)
 public/             front controller and the stylesheet

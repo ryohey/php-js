@@ -193,10 +193,10 @@ final class JsonBuiltins
 
     private static function enterCycleCheck(Vm $vm, JSObject $value, JsonStringifyState $state): void
     {
-        if ($state->stack->contains($value)) {
+        if ($state->stack->offsetExists($value)) {
             $vm->throwError('TypeError', 'Converting circular structure to JSON');
         }
-        $state->stack->attach($value);
+        $state->stack->offsetSet($value, null);
     }
 
     private static function serializeObject(Vm $vm, JSObject $value, JsonStringifyState $state): string
@@ -215,7 +215,7 @@ final class JsonBuiltins
             }
             return self::wrap($parts, '{', '}', $state, $stepback);
         } finally {
-            $state->stack->detach($value);
+            $state->stack->offsetUnset($value);
             $state->indent = $stepback;
         }
     }
@@ -232,7 +232,7 @@ final class JsonBuiltins
             }
             return self::wrap($parts, '[', ']', $state, $stepback);
         } finally {
-            $state->stack->detach($value);
+            $state->stack->offsetUnset($value);
             $state->indent = $stepback;
         }
     }

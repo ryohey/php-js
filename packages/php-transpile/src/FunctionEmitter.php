@@ -1228,13 +1228,13 @@ final class FunctionEmitter
         $lhs = $this->expr($node->getLeft());
         // Boolness has to be carried by hand: the marker is keyed on the
         // expression node, and the temporary below is a different node.
-        $lhsIsBool = $this->isBool->contains($lhs);
+        $lhsIsBool = $this->isBool->offsetExists($lhs);
 
         $rhs = null;
         $rhsStmts = $this->block(function () use ($node, &$rhs) {
             $rhs = $this->expr($node->getRight());
         });
-        $rhsIsBool = $this->isBool->contains($rhs);
+        $rhsIsBool = $this->isBool->offsetExists($rhs);
 
         // When both sides are already booleans and the right one needs no
         // statements, this is exactly PHP's own `&&` — same short circuit, same
@@ -1277,7 +1277,7 @@ final class FunctionEmitter
         $bStmts = $this->block(function () use ($node, &$b) {
             $b = $this->expr($node->getAlternate());
         });
-        $bothBool = $this->isBool->contains($a) && $this->isBool->contains($b);
+        $bothBool = $this->isBool->offsetExists($a) && $this->isBool->offsetExists($b);
         if ($aStmts === [] && $bStmts === []) {
             $r = new Expr\Ternary($cond, $a, $b);
             return $bothBool ? $this->bool($r) : $r;
@@ -1475,7 +1475,7 @@ final class FunctionEmitter
 
     private function truthy(Expr $e): Expr
     {
-        if ($this->isBool->contains($e)) {
+        if ($this->isBool->offsetExists($e)) {
             return $e;
         }
         return $this->staticCall('Conversions', 'toBoolean', [$e]);
@@ -1484,7 +1484,7 @@ final class FunctionEmitter
     /** Mark an emitted expression as already being a PHP bool. */
     private function bool(Expr $e): Expr
     {
-        $this->isBool->attach($e);
+        $this->isBool->offsetSet($e, true);
         return $e;
     }
 

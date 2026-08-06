@@ -7,9 +7,10 @@ namespace PhpJs\Ssg;
 /**
  * Where everything lives, in one place.
  *
- * The package directory doubles as the module root, because that is where both
- * `build/app-cjs/` (what `Sucrase::run()` wrote) and `node_modules/` (where
- * React lives) are, and the runtime's filesystem sandbox is confined to it.
+ * The package directory doubles as the module root, because that is where
+ * both `app/` (the site's own TSX, `require`d directly now — see
+ * `AppCompiler`) and `node_modules/` (where React lives) are, and the
+ * runtime's filesystem sandbox is confined to it.
  */
 final class Paths
 {
@@ -57,13 +58,13 @@ final class Paths
         return self::publicDir() . '/assets';
     }
 
-    /** The type-stripped app entry the runtime loads, relative to the module root. */
-    public static function entry(): string
-    {
-        return './build/app-cjs/entry.js';
-    }
-
-    /** Same components, rendered by Node, for the byte-identity check. */
+    /**
+     * Same components as `app/entry.node.tsx`, type-stripped and mirrored
+     * to plain `.js` for real Node to `require` — Node has no TSX support of
+     * its own, unlike php-js (`packages/strip-types`). Written by `Sucrase`,
+     * invoked only from `bin/phpjs-ssg compare`, the one place a `.js` file
+     * on disk is needed rather than transparent stripping at require time.
+     */
     public static function nodeEntry(): string
     {
         return self::buildDir() . '/app-cjs/entry.node.js';

@@ -10,9 +10,10 @@ use PhpJs\Transpile\NodeIntegration;
 
 /**
  * Compiles a manifest's libraries ahead of time into an AOT cache directory —
- * `node_modules/.phpjs-aot/{contentHash}.php`, one file per module reached —
+ * `node_modules/.phpjs-aot/{contentHash}.php`, one file per module reached,
+ * holding both its compiled template and whatever natives came out of it —
  * that any `NodeHost` picks up on a plain `require()` with no other wiring
- * (`ModuleLoader::aotLookupHook()`, packages/node-compat).
+ * (`ModuleLoader::aotArtifactTemplate()`, packages/node-compat).
  *
  * This is deliberately the only thing this class does. Everything about
  * *which* libraries to trust is `Trust`'s call to make in whatever project
@@ -46,7 +47,10 @@ final class LibraryCompiler
         foreach ($libraries as $specifier) {
             $host->requireModule($specifier);
         }
-        $written = $integration->writePerModule($cacheDir);
+        // Every module attach() saw, not just the ones with natives: a
+        // cached template skips Compiler::compile() regardless of how much
+        // of the module converted (ModuleLoader::aotArtifactTemplate()).
+        $written = $integration->writeArtifacts($cacheDir, $host->modules->compiledTemplates());
         return [
             'converted' => $integration->totalConverted(),
             'seen' => $integration->totalSeen(),
