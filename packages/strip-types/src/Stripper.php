@@ -28,6 +28,22 @@ final class Stripper
     /** Extensions this class can meaningfully strip. */
     public const EXTENSIONS = ['ts', 'tsx', 'jsx'];
 
+    /**
+     * Which JSX transform to emit.
+     *
+     * `automatic` (React 17+, and what Next.js and every current toolchain
+     * default to) compiles JSX to `react/jsx-runtime` calls the file did not
+     * have to import, so a component file needs no `import React` at all.
+     * `classic` compiles to `React.createElement` and does require that
+     * import to be present.
+     *
+     * Automatic by default because the failure mode of the other one is a
+     * confusing runtime `ReferenceError: React is not defined` in a file that
+     * looks complete. A project whose React predates 17 can set this to
+     * `'classic'` before the first strip.
+     */
+    public static string $jsxRuntime = 'automatic';
+
     private static ?NodeHost $host = null;
     private static mixed $transformFn = null;
 
@@ -43,7 +59,7 @@ final class Stripper
         $vm = $host->vm();
         $opts = $realm->newObject();
         $opts->defineOwnData('transforms', $realm->newArray(['typescript', 'jsx', 'imports']));
-        $opts->defineOwnData('jsxRuntime', 'classic');
+        $opts->defineOwnData('jsxRuntime', self::$jsxRuntime);
         $opts->defineOwnData('production', true);
         $opts->defineOwnData('disableESTransforms', true);
         $opts->defineOwnData('filePath', $filename);

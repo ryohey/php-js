@@ -1,0 +1,9 @@
+{
+  "name": "phext-fixture-site",
+  "private": true,
+  "description": "Fixture app for phext's tests: a real React, so the renderer is tested against the thing it actually renders",
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

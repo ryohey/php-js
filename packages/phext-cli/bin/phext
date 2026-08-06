@@ -1,0 +1,154 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+foreach ([__DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../../vendor/autoload.php'] as $autoload) {
+    if (is_file($autoload)) {
+        require $autoload;
+        break;
+    }
+}
+
+use PhpJs\Phext\Exporter;
+use PhpJs\PhextCli\Build;
+use PhpJs\PhextCli\Config;
+
+const USAGE = <<<TXT
+Usage: phext <command> [options]
+
+Commands:
+  build            compile the app and its dependencies ahead of any request
+  start            serve the app on a local HTTP server
+  export           render every route to static HTML
+  routes           list the routes the app/ directory defines
+  cache:clear      drop every cached page
+
+Options:
+  --dir DIR        project root, the directory holding app/ (default: .)
+  --out DIR        export target (default: <dir>/out)
+  --port N         start port (default: 3000)
+  --host H         start host (default: 127.0.0.1)
+  --no-cache       start without the page cache: render every request
+  --no-jit         start without PHP's tracing JIT
+
+TXT;
+
+$args = $argv;
+array_shift($args);
+$command = array_shift($args) ?? '';
+$flags = [];
+for ($i = 0; $i < count($args); $i++) {
+    $name = $args[$i];
+    if (!str_starts_with($name, '--')) {
+        fwrite(STDERR, "Unexpected argument: $name\n");
+        exit(2);
+    }
+    $flags[$name] = in_array($name, ['--no-cache', '--no-jit'], true) ? true : ($args[++$i] ?? '');
+}
+
+$log = static fn (string $line): int|false => fwrite(STDOUT, $line . "\n");
+
+try {
+    $config = Config::load((string)($flags['--dir'] ?? getcwd()));
+
+    switch ($command) {
+        case 'build': {
+            $started = microtime(true);
+            $result = (new Build($config->app('')))->run($log);
+            $log(sprintf(
+                "\nbuilt in %.1f s. %d pages, %d of %d dependency functions compiled to PHP.",
+                microtime(true) - $started,
+                $result['pages'],
+                $result['converted'],
+                $result['seen'],
+            ));
+            foreach (array_slice($result['refusals'], 0, 3) as $refusal) {
+                $log(sprintf('  refused %-56s %d', $refusal['reason'], $refusal['count']));
+            }
+            break;
+        }
+
+        case 'export': {
+            $out = (string)($flags['--out'] ?? $config->root . '/out');
+            $app = $config->app('');
+            $result = (new Exporter($app, $out))->run($log);
+            $log(sprintf(
+                "\n%d pages, %.0f KB of HTML, %.1f ms of rendering -> %s",
+                $result['pages'],
+                $result['bytes'] / 1024,
+                $result['renderMs'],
+                $out,
+            ));
+            break;
+        }
+
+        case 'routes': {
+            $app = $config->app('');
+            foreach ($app->router()->routes() as $route) {
+                $log(sprintf(
+                    '%-32s %s',
+                    $route->pattern,
+                    substr($route->pageFile, strlen($config->root) + 1),
+                ));
+            }
+            break;
+        }
+
+        case 'cache:clear': {
+            $cache = $config->app()->cache();
+            if ($cache === null) {
+                $log('No page cache is configured.');
+                break;
+            }
+            $log(sprintf('%d cached files removed from %s', $cache->clear(), $config->cacheDir));
+            break;
+        }
+
+        case 'start': {
+            $host = (string)($flags['--host'] ?? '127.0.0.1');
+            $port = (int)($flags['--port'] ?? 3000);
+            // opcache is what makes a build worth anything and is off by
+            // default under the CLI SAPI; the tracing JIT is worth about 20%
+            // on whatever is still interpreted.
+            $ini = [
+                'opcache.enable_cli=1',
+                'opcache.memory_consumption=256',
+                'opcache.max_accelerated_files=20000',
+                // Timestamp validation stays on: a rebuild has to be picked
+                // up, and a cache that outlives the file it came from is the
+                // wrong default for anything that loads generated code.
+            ];
+            $ini[] = isset($flags['--no-jit']) ? 'opcache.jit=off' : 'opcache.jit=tracing';
+            $ini[] = 'opcache.jit_buffer_size=' . (isset($flags['--no-jit']) ? '0' : '64M');
+
+            putenv('PHEXT_ROOT=' . $config->root);
+            putenv('PHEXT_NO_CACHE=' . (isset($flags['--no-cache']) ? '1' : ''));
+
+            $log("phext on http://$host:$port/");
+            $log('  ' . (isset($flags['--no-cache'])
+                ? 'rendering every request (cache off)'
+                : 'first request to a page renders it, the rest are served from ' . $config->cacheDir));
+            if (!is_dir($config->root . '/' . PhpJs\Node\NodeHost::AOT_CACHE_SUBDIR)) {
+                $log('  no build yet -- run `phext build` to stop paying for compilation per request');
+            }
+            $log('  Ctrl-C to stop');
+
+            $document = __DIR__ . '/../src/front-controller.php';
+            $cmd = array_merge(
+                [PHP_BINARY],
+                array_merge(...array_map(static fn (string $d): array => ['-d', $d], $ini)),
+                ['-S', "$host:$port", '-t', $config->root, $document],
+            );
+            $process = proc_open($cmd, [STDIN, STDOUT, STDERR], $pipes);
+            exit(is_resource($process) ? proc_close($process) : 1);
+        }
+
+        default:
+            fwrite($command === '' ? STDOUT : STDERR, USAGE);
+            exit($command === '' ? 0 : 2);
+    }
+} catch (Throwable $e) {
+    fwrite(STDERR, get_class($e) . ': ' . $e->getMessage() . "\n");
+    exit(1);
+}

@@ -1,0 +1,48 @@
+{
+    "name": "ryohey/phext",
+    "description": "File-based routing, incremental static regeneration and server-side React rendering on php-js",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.2",
+        "ryohey/php-js": "dev-main",
+        "ryohey/php-js-node-compat": "dev-main",
+        "ryohey/php-js-strip-types": "dev-main"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "PhpJs\\Phext\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "PhpJs\\Phext\\Tests\\": "tests/"
+        }
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../.."
+        },
+        {
+            "type": "path",
+            "url": "../node-compat"
+        },
+        {
+            "type": "path",
+            "url": "../strip-types"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/ryohey/peast.git"
+        }
+    ],
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

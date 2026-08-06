@@ -30,12 +30,26 @@ final class StripperTest extends TestCase
         $this->assertSame(5, $engine->evaluate($js));
     }
 
-    public function testStripsJsxToClassicCreateElementCalls(): void
+    public function testStripsJsxThroughTheAutomaticRuntimeByDefault(): void
     {
+        // No `import React` in the source, and none needed: the automatic
+        // runtime is what lets a component file be just the component.
         $tsx = 'const el = <div className="x">{1 + 1}</div>;';
         $js = Stripper::strip($tsx, 'component.tsx');
-        $this->assertStringContainsString('React.createElement', $js);
+        $this->assertStringContainsString('react/jsx-runtime', $js);
         $this->assertStringNotContainsString('<div', $js);
+    }
+
+    public function testTheClassicRuntimeIsStillAvailable(): void
+    {
+        $previous = Stripper::$jsxRuntime;
+        Stripper::$jsxRuntime = 'classic';
+        try {
+            $js = Stripper::strip('const el = <div />;', 'component.tsx');
+            $this->assertStringContainsString('React.createElement', $js);
+        } finally {
+            Stripper::$jsxRuntime = $previous;
+        }
     }
 
     public function testLeavesModernSyntaxAlone(): void

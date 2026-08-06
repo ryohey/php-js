@@ -8,6 +8,8 @@
 /packages/*/package-lock.json
 /packages/*/apps/*/node_modules/
 /packages/*/apps/*/package-lock.json
+/packages/*/tests/fixtures/*/node_modules/
+/packages/*/tests/fixtures/*/package-lock.json
 /packages/*/.phpunit.cache/
 /packages/ssg-demo/build/
 /packages/ssg-demo/dist/
