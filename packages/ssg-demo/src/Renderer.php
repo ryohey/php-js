@@ -36,34 +36,34 @@ final class Renderer
      *                             natives from before preloading $templates,
      *                             or null for the `bytecode` engine (or a
      *                             build with nothing in its cache at all)
-     * @param ?string $polyfillCacheDir where to warm the polyfill template
-     *                                  from -- unlike $aotCacheDir this is
-     *                                  the same regardless of engine, since
-     *                                  the polyfill is always plain bytecode
+     * @param ?string $libraryCacheDir where to warm the engine's own JS
+     *                                 standard library from -- unlike
+     *                                 $aotCacheDir this is the same
+     *                                 regardless of engine, since the
+     *                                 library is always plain bytecode
      * @param array<string, mixed> $templates path => template, already absolute
      */
     private function __construct(
         public readonly string $engine,
         public readonly array $manifest,
         ?string $aotCacheDir,
-        ?string $polyfillCacheDir,
+        ?string $libraryCacheDir,
         array $templates,
     ) {
         $started = microtime(true);
         // Natives first: a template's nativeId has to already be registered
         // before the JSFunction carrying it is instantiated. Bulk, not the
-        // usual lazy per-module lookup (ModuleLoader::aotArtifactTemplate()) --
+        // usual lazy per-module lookup (PhpJs\Cache\ArtifactCache) --
         // $templates arrives preloaded below and so never goes through the
         // compile-time hook that lookup rides on.
         if ($aotCacheDir !== null) {
             NodeHost::registerAotCacheDir($aotCacheDir);
         }
-        // The polyfill needs the same treatment for the same reason: this
-        // host's own $aotCacheDir is disabled below (it only ever runs
-        // preloaded templates), so its constructor would not otherwise look
-        // anywhere for it.
-        if ($polyfillCacheDir !== null) {
-            NodeHost::warmPolyfillTemplate($polyfillCacheDir);
+        // The engine's own JS library needs the same treatment for the same
+        // reason: this host's $aotCacheDir is disabled below (it only ever
+        // runs preloaded templates), so nothing would otherwise look for it.
+        if ($libraryCacheDir !== null) {
+            \PhpJs\Engine::warmEcmaScriptLibrary($libraryCacheDir);
         }
 
         // aotCacheDir: false -- this host only ever runs preloaded templates
@@ -114,7 +114,7 @@ final class Renderer
             // (Builder compiles that set with the lookup disabled), so
             // there is nothing for that engine to register.
             $engine === 'aot' ? $manifest['appRoot'] . '/' . NodeHost::AOT_CACHE_SUBDIR : null,
-            // The polyfill artifact lives in the same directory regardless
+            // The library artifact lives in the same directory regardless
             // of engine -- it is never stamped with native IDs either way.
             $manifest['appRoot'] . '/' . NodeHost::AOT_CACHE_SUBDIR,
             $libraryTemplates + $appTemplates,

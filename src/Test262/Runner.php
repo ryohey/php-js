@@ -226,7 +226,10 @@ final class Runner
     private function runOnce(string $source, FrontMatter $fm, string $mode): array
     {
         $output = '';
-        $engine = new Engine(function (string $s) use (&$output) {
+        // No Environment: test262 tests the language, and a runner that let
+        // them reach a module system or the filesystem would not be testing
+        // the same thing the pass rate claims.
+        $engine = new Engine(null, function (string $s) use (&$output) {
             $output .= $s;
         });
         // test262 uses `print` for async completion signalling.

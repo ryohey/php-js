@@ -2,10 +2,12 @@
 
 declare(strict_types=1);
 
-namespace PhpJs\Node;
+namespace PhpJs\Builtins;
 
 use PhpJs\Runtime\Conversions;
 use PhpJs\Runtime\JSArray;
+use PhpJs\Runtime\JSCollection;
+use PhpJs\Runtime\JSCollectionIterator;
 use PhpJs\Runtime\JSNativeFunction;
 use PhpJs\Runtime\JSObject;
 use PhpJs\Runtime\JSUndefined;
@@ -13,18 +15,11 @@ use PhpJs\Runtime\Realm;
 use PhpJs\Vm\Vm;
 
 /**
- * Native Map / Set / WeakMap / WeakSet.
+ * Map / Set / WeakMap / WeakSet (ES2015 23.1–23.4).
  *
- * React 19 uses Map inside the renderer, and the JS polyfill's key derivation
- * (`keyOf`) plus its accessors were about 6% of a render. The surface here is
- * deliberately the same as the polyfill's — constructor, get/set/has/delete/
- * add/clear/forEach/size — because that is what the polyfill has proven is
- * enough for real library code on an ES5 engine.
- *
- * What is *not* here, and why: no `@@iterator`, no `keys()`/`values()`/
- * `entries()`. Those return iterators, and an ES5.1 target has no `for...of`
- * to consume them (DESIGN.md scope). Adding them would mean an iterator
- * protocol the compiler cannot express.
+ * Native rather than written in the JS library file for a measured reason:
+ * React 19 uses Map inside the renderer, and a JS implementation's key
+ * derivation plus its accessors were about 6% of a render.
  *
  * Weak variants are aliases of the strong ones. Nothing here observes
  * collection, so the only difference would be whether keys are kept alive —
@@ -36,83 +31,86 @@ final class CollectionBuiltins
     public static function entries(): array
     {
         return [
-            'node.Map.ctor' => [self::class, 'mapCtor'],
-            'node.Map.call' => [self::class, 'requiresNew'],
-            'node.Map.prototype.get' => [self::class, 'get'],
-            'node.Map.prototype.set' => [self::class, 'set'],
-            'node.Map.prototype.has' => [self::class, 'has'],
-            'node.Map.prototype.delete' => [self::class, 'delete'],
-            'node.Map.prototype.clear' => [self::class, 'clear'],
-            'node.Map.prototype.forEach' => [self::class, 'mapForEach'],
-            'node.Map.prototype.size' => [self::class, 'size'],
-            'node.Set.ctor' => [self::class, 'setCtor'],
-            'node.Set.call' => [self::class, 'requiresNew'],
-            'node.Set.prototype.add' => [self::class, 'add'],
-            'node.Set.prototype.has' => [self::class, 'has'],
-            'node.Set.prototype.delete' => [self::class, 'delete'],
-            'node.Set.prototype.clear' => [self::class, 'clear'],
-            'node.Set.prototype.forEach' => [self::class, 'setForEach'],
-            'node.Set.prototype.size' => [self::class, 'size'],
-            'node.Collection.iterator.next' => [self::class, 'iteratorNext'],
-            'node.Collection.iterator.self' => [self::class, 'iteratorSelf'],
-            'node.Map.prototype.keys' => [self::class, 'mapKeys'],
-            'node.Map.prototype.values' => [self::class, 'mapValues'],
-            'node.Map.prototype.entries' => [self::class, 'mapEntries'],
-            'node.Set.prototype.keys' => [self::class, 'setValues'],
-            'node.Set.prototype.values' => [self::class, 'setValues'],
-            'node.Set.prototype.entries' => [self::class, 'setEntries'],
+            'Map.ctor' => [self::class, 'mapCtor'],
+            'Map.call' => [self::class, 'requiresNew'],
+            'Map.prototype.get' => [self::class, 'get'],
+            'Map.prototype.set' => [self::class, 'set'],
+            'Map.prototype.has' => [self::class, 'has'],
+            'Map.prototype.delete' => [self::class, 'delete'],
+            'Map.prototype.clear' => [self::class, 'clear'],
+            'Map.prototype.forEach' => [self::class, 'mapForEach'],
+            'Map.prototype.size' => [self::class, 'size'],
+            'Set.ctor' => [self::class, 'setCtor'],
+            'Set.call' => [self::class, 'requiresNew'],
+            'Set.prototype.add' => [self::class, 'add'],
+            'Set.prototype.has' => [self::class, 'has'],
+            'Set.prototype.delete' => [self::class, 'delete'],
+            'Set.prototype.clear' => [self::class, 'clear'],
+            'Set.prototype.forEach' => [self::class, 'setForEach'],
+            'Set.prototype.size' => [self::class, 'size'],
+            'Collection.iterator.next' => [self::class, 'iteratorNext'],
+            'Collection.iterator.self' => [self::class, 'iteratorSelf'],
+            'Map.prototype.keys' => [self::class, 'mapKeys'],
+            'Map.prototype.values' => [self::class, 'mapValues'],
+            'Map.prototype.entries' => [self::class, 'mapEntries'],
+            'Set.prototype.keys' => [self::class, 'setValues'],
+            'Set.prototype.values' => [self::class, 'setValues'],
+            'Set.prototype.entries' => [self::class, 'setEntries'],
         ];
     }
 
-    public static function install(Realm $realm): void
+    /**
+     * Both constructors are built through `Realm`'s memoized accessors
+     * (`mapConstructor()`/`setConstructor()`) and materialized on first
+     * property miss like every other global, so a request that never touches
+     * `Map` builds no Map objects (DESIGN.md §11.2).
+     */
+    public static function makeMapConstructor(Realm $realm): JSNativeFunction
     {
-        $flags = JSObject::W | JSObject::C;
-        $global = $realm->globalObject;
-
-        $mapProto = new JSObject($realm->objectPrototype());
-        $realm->defineMethod($mapProto, 'get', 'node.Map.prototype.get', 1);
-        $realm->defineMethod($mapProto, 'set', 'node.Map.prototype.set', 2);
-        $realm->defineMethod($mapProto, 'has', 'node.Map.prototype.has', 1);
-        $realm->defineMethod($mapProto, 'delete', 'node.Map.prototype.delete', 1);
-        $realm->defineMethod($mapProto, 'clear', 'node.Map.prototype.clear', 0);
-        $realm->defineMethod($mapProto, 'forEach', 'node.Map.prototype.forEach', 1);
+        $proto = new JSObject($realm->objectPrototype());
+        $realm->defineMethod($proto, 'get', 'Map.prototype.get', 1);
+        $realm->defineMethod($proto, 'set', 'Map.prototype.set', 2);
+        $realm->defineMethod($proto, 'has', 'Map.prototype.has', 1);
+        $realm->defineMethod($proto, 'delete', 'Map.prototype.delete', 1);
+        $realm->defineMethod($proto, 'clear', 'Map.prototype.clear', 0);
+        $realm->defineMethod($proto, 'forEach', 'Map.prototype.forEach', 1);
         // Iteration, which is not decoration: TypeScript's own bundle refuses to
         // load without `"entries" in Map.prototype`, and its downlevelled for-of
         // loops then drive these through `next()`.
-        $realm->defineMethod($mapProto, 'keys', 'node.Map.prototype.keys', 0);
-        $realm->defineMethod($mapProto, 'values', 'node.Map.prototype.values', 0);
-        $realm->defineMethod($mapProto, 'entries', 'node.Map.prototype.entries', 0);
-        $mapProto->defineOwnData(
+        $realm->defineMethod($proto, 'keys', 'Map.prototype.keys', 0);
+        $realm->defineMethod($proto, 'values', 'Map.prototype.values', 0);
+        $realm->defineMethod($proto, 'entries', 'Map.prototype.entries', 0);
+        $proto->defineOwnData(
             $realm->wellKnownSymbol('iterator')->propertyKey,
-            $realm->nativeFn('node.Map.prototype.entries', '[Symbol.iterator]', 0),
-            $flags
+            $realm->nativeFn('Map.prototype.entries', '[Symbol.iterator]', 0),
+            JSObject::W | JSObject::C
         );
-        self::defineSize($realm, $mapProto, 'node.Map.prototype.size');
-        $mapCtor = $realm->nativeFn('node.Map.call', 'Map', 0, 'node.Map.ctor');
-        $realm->linkPair($mapCtor, $mapProto);
+        self::defineSize($realm, $proto, 'Map.prototype.size');
+        $ctor = $realm->nativeFn('Map.call', 'Map', 0, 'Map.ctor');
+        $realm->linkPair($ctor, $proto);
+        return $ctor;
+    }
 
-        $setProto = new JSObject($realm->objectPrototype());
-        $realm->defineMethod($setProto, 'add', 'node.Set.prototype.add', 1);
-        $realm->defineMethod($setProto, 'has', 'node.Set.prototype.has', 1);
-        $realm->defineMethod($setProto, 'delete', 'node.Set.prototype.delete', 1);
-        $realm->defineMethod($setProto, 'clear', 'node.Set.prototype.clear', 0);
-        $realm->defineMethod($setProto, 'forEach', 'node.Set.prototype.forEach', 1);
-        $realm->defineMethod($setProto, 'keys', 'node.Set.prototype.keys', 0);
-        $realm->defineMethod($setProto, 'values', 'node.Set.prototype.values', 0);
-        $realm->defineMethod($setProto, 'entries', 'node.Set.prototype.entries', 0);
-        $setProto->defineOwnData(
+    public static function makeSetConstructor(Realm $realm): JSNativeFunction
+    {
+        $proto = new JSObject($realm->objectPrototype());
+        $realm->defineMethod($proto, 'add', 'Set.prototype.add', 1);
+        $realm->defineMethod($proto, 'has', 'Set.prototype.has', 1);
+        $realm->defineMethod($proto, 'delete', 'Set.prototype.delete', 1);
+        $realm->defineMethod($proto, 'clear', 'Set.prototype.clear', 0);
+        $realm->defineMethod($proto, 'forEach', 'Set.prototype.forEach', 1);
+        $realm->defineMethod($proto, 'keys', 'Set.prototype.keys', 0);
+        $realm->defineMethod($proto, 'values', 'Set.prototype.values', 0);
+        $realm->defineMethod($proto, 'entries', 'Set.prototype.entries', 0);
+        $proto->defineOwnData(
             $realm->wellKnownSymbol('iterator')->propertyKey,
-            $realm->nativeFn('node.Set.prototype.values', '[Symbol.iterator]', 0),
-            $flags
+            $realm->nativeFn('Set.prototype.values', '[Symbol.iterator]', 0),
+            JSObject::W | JSObject::C
         );
-        self::defineSize($realm, $setProto, 'node.Set.prototype.size');
-        $setCtor = $realm->nativeFn('node.Set.call', 'Set', 0, 'node.Set.ctor');
-        $realm->linkPair($setCtor, $setProto);
-
-        $global->defineOwnData('Map', $mapCtor, $flags);
-        $global->defineOwnData('WeakMap', $mapCtor, $flags);
-        $global->defineOwnData('Set', $setCtor, $flags);
-        $global->defineOwnData('WeakSet', $setCtor, $flags);
+        self::defineSize($realm, $proto, 'Set.prototype.size');
+        $ctor = $realm->nativeFn('Set.call', 'Set', 0, 'Set.ctor');
+        $realm->linkPair($ctor, $proto);
+        return $ctor;
     }
 
     /** `size` is an accessor on the prototype, as in the spec — not a field. */
@@ -271,10 +269,10 @@ final class CollectionBuiltins
         if ($proto->hasOwn('next')) {
             return $proto;
         }
-        $realm->defineMethod($proto, 'next', 'node.Collection.iterator.next', 0);
+        $realm->defineMethod($proto, 'next', 'Collection.iterator.next', 0);
         $proto->defineOwnData(
             $realm->wellKnownSymbol('iterator')->propertyKey,
-            $realm->nativeFn('node.Collection.iterator.self', '[Symbol.iterator]', 0),
+            $realm->nativeFn('Collection.iterator.self', '[Symbol.iterator]', 0),
             JSObject::W | JSObject::C
         );
         return $proto;

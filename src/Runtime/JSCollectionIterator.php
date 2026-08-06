@@ -2,9 +2,7 @@
 
 declare(strict_types=1);
 
-namespace PhpJs\Node;
-
-use PhpJs\Runtime\JSObject;
+namespace PhpJs\Runtime;
 
 /**
  * The object `Map.prototype.entries()` and friends return.

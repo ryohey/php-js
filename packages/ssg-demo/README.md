@@ -49,7 +49,7 @@ Things worth doing once it is up:
 
 | | |
 |---|---|
-| `build` | Compiles React (to `build/`) and the polyfills (to `node_modules/.phpjs-aot/`). Never touches `app/`. |
+| `build` | Compiles React (to `build/`) and the engine's JS standard library (to `node_modules/.phpjs-aot/`). Never touches `app/`. |
 | `export` | Renders every route into `dist/` — static site generation, all at once. The first route compiles `app/` too (`AppCompiler`), same as any other first render. |
 | `package` | Assembles a render-only tree you can ship inside a plugin (see below); also forces `app/` to compile, since a distribution has no request left to defer it to. |
 | `serve` | Local server. Renders a page the first time it is asked for, serves the file after — the very first render across all routes is also where `app/` compiles, if `build` alone hasn't already forced it. |
@@ -186,7 +186,7 @@ javascript     283 KB  13 files (of a 34.0 MB node_modules)
 request left to defer that to — so `templates` here is React's own templates
 and `app/`'s merged into one file, and `javascript` includes both the library
 and the site's own type-stripped sources. `aot cache` is one file per module
-`bin/phpjs-aot` reached — the polyfill included, since it is cached the same
+`bin/phpjs-aot` reached — the engine's own JS library included, cached the same
 way (`NodeHost::writePolyfillArtifact()`) — each holding both that module's
 natives and its whole compiled template; `templates` above already carries
 its own copy of the template half for `Renderer::fromDistribution()`'s actual

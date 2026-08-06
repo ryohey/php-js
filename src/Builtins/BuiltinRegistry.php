@@ -75,6 +75,7 @@ final class BuiltinRegistry
             ArrayBufferBuiltins::entries(),
             TypedArrayBuiltins::entries(),
             DataViewBuiltins::entries(),
+            CollectionBuiltins::entries(),
         );
     }
 }

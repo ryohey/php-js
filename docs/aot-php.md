@@ -121,8 +121,9 @@ React 17, 73 on React 19 — and the time is concentrated:
 
 That `Math.clz32` line is the finding that reorders the whole plan. React 19
 uses `clz32` for tree-context bit manipulation and calls it 290 times per
-render; `node-compat` ships it as a **JS polyfill that shifts one bit at a
-time**. Replacing `clz32` and `imul` with two native PHP functions — about
+render; at the time it was a **JS shim that shifted one bit at a time**
+(then in `node-compat`, since moved to core along with the rest of the
+standard library -- see DESIGN.md §13.1). Replacing `clz32` and `imul` with two native PHP functions — about
 twenty lines, using the extension point that already exists — takes React 19
 from 128 ms to 102 ms with identical output.
 
@@ -288,42 +289,50 @@ Core stays clean; this follows the existing split.
   and writes the result into an AOT cache directory. It has no idea React (or
   any other specific library) exists — a project names what it wants compiled,
   the same way `packages/ssg-demo` does for React.
-- **`packages/node-compat`** — gained the native ES6-library functions that
-  were JS polyfills (phase 0), and `ModuleLoader` gained the *consuming* half
-  of the AOT cache: on every `require()`, if no build hook is explicitly
-  attached, it checks the cache directory (by the module's own content hash)
-  for an artifact. A hit hands back the module's whole compiled template
-  outright — `require()` never calls the JS compiler at all, not merely
-  interpreting less of what it produced — and registers whatever native IDs
-  the same artifact carries, transparently, with no dependency on
-  `php-transpile` (registering an already-compiled `.php` file needs none of
-  the emitter). This is what makes AOT invisible to a host: a `NodeHost`
-  constructed against a project root where the conventional cache directory
-  happens to exist just goes faster, and one where it does not behaves
-  exactly as if AOT never existed.
-- **core** — gained nothing beyond what already existed. `nativeId` on a
-  function template and `BuiltinRegistry` (§11.3) were already the whole
-  mechanism generated PHP substitutes into; the AOT cache is entirely a
-  node-compat/php-transpile/aot-package concern layered on top.
+- **`packages/node-compat`** — decides *when* to consult a cache, and nothing
+  else about it. On every `require()`, if no build hook is explicitly
+  attached, `ModuleLoader` asks `ArtifactCache` for an artifact matching the
+  module's own content. A hit hands back the whole compiled template —
+  `require()` never calls the JS compiler at all, not merely interpreting
+  less of what it produced — with no dependency on `php-transpile`
+  (registering an already-compiled `.php` file needs none of the emitter).
+  This is what makes AOT invisible to a host: a `NodeHost` constructed
+  against a project root where the conventional cache directory happens to
+  exist just goes faster, and one where it does not behaves exactly as if AOT
+  never existed.
+- **core** — owns the format. `nativeId` on a function template and
+  `BuiltinRegistry` (§11.3) were already the whole mechanism generated PHP
+  substitutes into; `PhpJs\Cache\ArtifactCache` is the rest of it, and it
+  lives here because *caching a compile is the compiler's concern*. It was
+  briefly node-compat's, which was wrong in a way worth remembering: nothing
+  about `{contentHash}.php`, or about the native-ID format, has anything to
+  do with CommonJS, and leaving it there meant four hand-rolled copies of the
+  same file layout across two packages, agreeing only by convention.
 
-Generated PHP is written **one file per module** (not per function — a
-module's several functions share one array, since they are always compiled
-and looked up together), named by that module's own content hash
-(`hash('xxh128', $moduleSource)`). That one file holds both halves of the
-build as a single array: the module's whole compiled template (plain data,
-so `require()` can hand it straight back with no further work) and whatever
-functions inside it converted to native PHP (closures, keyed by the same IDs
-the template already stamped on them). `ModuleLoader::aotArtifactTemplate()`
-loads it lazily, exactly when a `require()` for that exact module happens —
-not through `opcache.preload`, which this arrived at a simpler alternative
-to: opcache already caches the file the first ordinary `require` pulls in,
-with no separate preload step or server-start hook to keep in sync with what
-a build actually produced. Content-hash naming still gives correct
-invalidation when a library is upgraded, for the same reason as before —
-build input is trusted, but a stale artifact silently rendering wrong HTML is
-the realistic failure — except now that safety is a directory-listing
-property (an upgraded module's hash no longer matches any file there) rather
-than something a combined manifest has to get right.
+An artifact is **one file per compiled source** (not per function — a
+module's functions share one array, since they are compiled and looked up
+together), named by that source's own content hash. It holds both halves of a
+build: `'template'`, the whole compiled bytecode (plain data, so a hit is
+handed straight back with no further work), and `'natives'`, whichever
+functions inside it converted to PHP, keyed by the IDs the template already
+stamped on them. The two are independent — a template whose natives are
+missing runs entirely on bytecode, which is what makes it safe to ship them
+separately or not at all.
+
+`ArtifactCache::compile()` loads one lazily, exactly when that source is
+actually reached — not through `opcache.preload`, which this arrived at a
+simpler alternative to: opcache already caches the file the first ordinary
+`require` pulls in, with no separate preload step or server-start hook to
+keep in sync with what a build actually produced. Content-hash naming gives
+correct invalidation for free — build input is trusted, but a stale artifact
+silently rendering wrong HTML is the realistic failure, and here an upgraded
+library's hash simply matches no file at all. The safety is a
+directory-listing property rather than something a manifest has to get right.
+
+Nothing in that description is module-shaped, and the engine takes advantage:
+`js/es-library.js` — the JS half of the standard library — is cached through
+exactly the same mechanism, so a project that ran a build gets an `Engine`
+that compiles nothing at all on construction.
 
 ## 5. Verification
 
@@ -357,10 +366,11 @@ hash unchanged and still byte-identical to Node on both render methods.*
 
 Two things worth carrying forward from doing it:
 
-- The natives install *before* `js/polyfills.js` runs, and that file defines
-  only what is missing, so the JS versions became fallbacks without being
-  deleted. A test asserts the ordering, because inverting it would silently
-  give the 30% back.
+- The natives install *before* the JS library file runs, and that file
+  defines only what is missing, so the JS versions became fallbacks without
+  being deleted. (Both `clz32` and `Map`/`Set` have since been deleted from
+  it outright, which is the intended end state for anything that gets a PHP
+  implementation -- `js/es-library.js` shrinks as core grows.)
 - Reading arguments as `$args[0] ?? JSUndefined` is wrong and it bit twice: JS
   `null` arrives as PHP `null`, so `??` turns it into `undefined`. That made
   `Math.sign(null)` return NaN instead of 0, and made `null` and `undefined`
@@ -526,7 +536,7 @@ template and whatever natives came out of it, and on the *reading* side a
 plain `require()` — no `Artifact::register()`, no `NodeIntegration::forRun()`,
 no per-project wiring at all — picks a matching artifact up on its own,
 skipping compilation of that module entirely rather than merely interpreting
-less of it (`ModuleLoader::aotArtifactTemplate()`, packages/node-compat, §4).
+less of it (`PhpJs\Cache\ArtifactCache`, core, §4).
 Native IDs are still derived from the module's *contents*, so a build and a
 later run agree, and an upgraded dependency stops matching its stale natives
 instead of binding them to the wrong functions; that property is what made

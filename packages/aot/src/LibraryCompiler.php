@@ -13,7 +13,7 @@ use PhpJs\Transpile\NodeIntegration;
  * `node_modules/.phpjs-aot/{contentHash}.php`, one file per module reached,
  * holding both its compiled template and whatever natives came out of it —
  * that any `NodeHost` picks up on a plain `require()` with no other wiring
- * (`ModuleLoader::aotArtifactTemplate()`, packages/node-compat).
+ * (`PhpJs\Cache\ArtifactCache`, core).
  *
  * This is deliberately the only thing this class does. Everything about
  * *which* libraries to trust is `Trust`'s call to make in whatever project
@@ -49,7 +49,7 @@ final class LibraryCompiler
         }
         // Every module attach() saw, not just the ones with natives: a
         // cached template skips Compiler::compile() regardless of how much
-        // of the module converted (ModuleLoader::aotArtifactTemplate()).
+        // of the module converted (PhpJs\Cache\ArtifactCache).
         $written = $integration->writeArtifacts($cacheDir, $host->modules->compiledTemplates());
         return [
             'converted' => $integration->totalConverted(),

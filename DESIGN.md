@@ -1161,10 +1161,12 @@ src/
   Compiler/      # Peast AST → function templates (ScopeAnalyzer, Emitter, ConstPool)
   Vm/            # dispatch loop, frame management, runUntil re-entry point
   Runtime/       # Realm, JSObject family, JSEnv, Conversions, TypeOps, StringOps
-  Builtins/      # BuiltinRegistry and each builtin (Global, ObjectB, ArrayB, StringB, JSONB, MathB, DateB, ErrorB, PromiseB, RegExpB)
+  Builtins/      # BuiltinRegistry and each builtin (Global, ObjectB, ArrayB, StringB, JSONB, MathB, DateB, ErrorB, PromiseB, RegExpB, CollectionB)
   RegExp/        # RegExpTranslator, JSRegExp (PCRE cache, lastIndex control)
-  Cache/         # bytecode file emit/require, version management
-  Host/          # host integration (task queue, console, timers — non-core features)
+  Cache/         # ArtifactCache: compiled templates + generated natives on disk, addressed by content hash (§11.1)
+  Host/          # Environment: the one interface a runtime environment implements (§13.1)
+js/
+  es-library.js  # the part of the ECMAScript standard library written in JS, not PHP
 bin/
   phpjs          # CLI: compile / run / disasm
 tests/
@@ -1173,6 +1175,36 @@ tests/
 ```
 
 Namespace is `PhpJs\`. Requires PHP 8.2+ (readonly, enums, and the immutable-array optimization of recent opcache are assumed).
+
+### 13.1 The language / environment boundary
+
+**`src/` is ECMAScript and nothing else.** The language, the whole standard
+library, and no way to reach outside the process: an `Engine` on its own has
+`Map`, `Object.assign` and `Math.clz32`, and has no `require`, no `process`,
+no timers, no filesystem, no network.
+
+Everything past the language comes from an implementation of
+`PhpJs\Host\Environment`, which is two methods — `install()` (what globals
+exist) and `loadModule()` (how a specifier resolves). `packages/node-compat`
+is one such environment; a `deno-compat` would be another and would need
+nothing from node-compat to exist. The engine never names an environment and
+none is privileged.
+
+Two consequences worth stating, because both were violated before this was
+written down:
+
+- **A standard builtin may not live in an environment.** `Map` is not a Node
+  feature. If two environments would both need it, it is ECMAScript and
+  belongs in `src/`. `js/es-library.js` is the runtime's own — not a
+  "polyfill" a host contributes — and anything in it that later gets a PHP
+  implementation is deleted from it.
+- **A host global may not live in core.** The seal is the point: a bare
+  `Engine` is a sandbox, and that is only true if nothing in `src/` reaches
+  out. `tests/Unit/EnvironmentBoundaryTest.php` asserts both directions,
+  because both fail silently.
+
+Caching a compile (`src/Cache/`) is the *compiler's* concern and stays in
+core — an environment decides *when* to consult a cache, never what one is.
 
 ## 14. Milestones
 

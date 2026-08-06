@@ -2,34 +2,36 @@
 
 declare(strict_types=1);
 
-namespace PhpJs\Node\Tests;
+namespace PhpJs\Tests\Unit;
 
-use PhpJs\Node\NodeHost;
+use PhpJs\Engine;
 use PhpJs\Runtime\Conversions;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
- * The post-ES5 library surface that is implemented natively rather than in
- * `js/polyfills.js`. Expected values are what Node produces.
+ * The post-ES5 standard library that is implemented in PHP rather than in
+ * `js/es-library.js`. Expected values are what Node produces.
  *
- * These are drop-in replacements for shims that library code already relies
+ * Each of these replaced a JS implementation that library code already relied
  * on, so the risk is not "does it work" but "does it differ from the JS
  * version in some corner" — hence the emphasis on -0, NaN, int/float identity
  * and key ordering.
+ *
+ * Runs against a bare `Engine`, which is the other half of the claim: this is
+ * ECMAScript, so it is there with no environment installed (DESIGN.md §13.1).
  */
-final class NativeLibraryTest extends TestCase
+final class StandardLibraryTest extends TestCase
 {
     private function evalJs(string $source): mixed
     {
-        $host = new NodeHost(__DIR__ . '/fixtures', captureOutput: true);
-        return $host->engine->evaluate($source);
+        return (new Engine())->evaluate($source);
     }
 
     private function evalString(string $source): string
     {
-        $host = new NodeHost(__DIR__ . '/fixtures', captureOutput: true);
-        return Conversions::toString($host->vm(), $host->engine->evaluate($source));
+        $engine = new Engine();
+        return Conversions::toString($engine->vm, $engine->evaluate($source));
     }
 
     /** @return iterable<string, array{0: mixed, 1: string}> */
@@ -183,28 +185,17 @@ final class NativeLibraryTest extends TestCase
         $this->assertSame($expected, $actual, $source);
     }
 
-    public function testNativesWinOverThePolyfills(): void
+    public function testTheNativeImplementationIsTheOneInUse(): void
     {
-        // The polyfill file defines the same names with a define-if-absent
-        // helper, so this asserts the ordering in NodeHost::installGlobals.
-        // If it ever inverts, everything still works and 30% of a React 19
-        // render quietly comes back.
+        // `js/es-library.js` defines what is missing and nothing else, so a
+        // native that failed to register would be silently replaced by a JS
+        // fallback -- everything would still work, and 30% of a React 19
+        // render would quietly come back. (Map's own JS version is gone
+        // outright now, but the define-if-absent shape it relied on is still
+        // how the rest of that file works.)
         $this->assertSame('true', $this->evalString('typeof Map.prototype.get === "function" && !("_k" in new Map())'));
         $this->assertSame('true', $this->evalString(
             'Object.getOwnPropertyDescriptor(Map.prototype, "size").get !== undefined'
-        ));
-    }
-
-    public function testCryptoStubProvidesRandomUuid(): void
-    {
-        $uuid = $this->evalString('require("crypto").randomUUID()');
-        $this->assertMatchesRegularExpression('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/', $uuid);
-    }
-
-    public function testCryptoStubRefusesRatherThanWeakens(): void
-    {
-        $this->assertSame('Error', $this->evalString(
-            'var e; try { require("crypto").createHash("sha1"); } catch (err) { e = err.name; } e'
         ));
     }
 }

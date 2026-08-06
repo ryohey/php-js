@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace PhpJs\Node;
 
-use PhpJs\Builtins\BuiltinRegistry;
+use PhpJs\Cache\ArtifactCache;
 use PhpJs\Compiler\Compiler;
 use PhpJs\Runtime\Conversions;
 use PhpJs\Runtime\JSNativeFunction;
@@ -28,10 +28,13 @@ use PhpJs\Vm\Vm;
  * `$aotCacheDir` for an already-compiled artifact matching this exact module's
  * content, `{contentHash}.php`, and uses it outright if present: the whole
  * compiled template, so `require()` skips `Compiler::compile()` entirely
- * rather than merely resolving natives inside it (`aotArtifactTemplate()`),
- * falling back to ordinary bytecode when there is no artifact. That is the
- * whole contract: an AOT cache is a directory that happens to have the right
- * files in it, and `require` either finds a match or it does not.
+ * rather than merely resolving natives inside it. Falls back to ordinary
+ * bytecode when there is no artifact. That is the whole contract: an AOT
+ * cache is a directory that happens to have the right files in it, and
+ * `require` either finds a match or it does not. The format and the lookup
+ * itself are the engine's (`PhpJs\Cache\ArtifactCache`) -- caching a
+ * compile is the compiler's business, not a module system's; what belongs
+ * here is only the decision of *when* to consult one.
  *
  * `$sourceTransforms` is the same idea one step earlier: given a filename
  * extension this loader would otherwise refuse to resolve at all, run the
@@ -308,10 +311,19 @@ final class ModuleLoader
             $source = ($this->sourceTransforms[$extension])($source, $path);
         }
 
+        // A build hook takes precedence: it is generating natives, so it has
+        // to see every function even if an artifact for this module exists.
+        //
+        // Hashed on the module's own source, not the CommonJS wrapper around
+        // it -- `php-transpile` hashes the file it read, and the two have to
+        // name the same artifact or every lookup silently misses.
         if ($this->onCompileModule === null && $this->aotCacheDir !== null) {
-            $cached = $this->aotArtifactTemplate($source);
+            $cached = ArtifactCache::read($this->aotCacheDir, ArtifactCache::contentHash($source));
             if ($cached !== null) {
-                return $this->templates[$path] = $cached;
+                ArtifactCache::registerNatives($cached['natives']);
+                // Deliberately not counted as a compile: `compileCount` is how
+                // a host asserts that a warm build parses no JavaScript.
+                return $this->templates[$path] = $cached['template'];
             }
         }
 
@@ -327,80 +339,15 @@ final class ModuleLoader
      * `(function (exports, require, module, __filename, __dirname) { ... })`
      * — the same shape Node uses, so module scope falls out of ordinary
      * function scope with no engine support required. Exposed (not just
-     * inlined above) because `NodeHost` wraps its own polyfills.js the same
-     * way, to get an artifact `aotArtifactTemplate()` can recognize despite
-     * that file not being a real module in the sandboxed filesystem — a
-     * second copy of this string would silently drift the two apart instead
-     * of failing loudly.
+     * inlined above) because `php-transpile` compiles modules for this loader
+     * and has to wrap them identically -- a second copy of this string would
+     * silently drift the two apart instead of failing loudly.
      */
     public static function wrapAsModule(string $source): string
     {
         // A trailing newline before the closing brace guards against a source
         // that ends inside a line comment.
         return "(function (exports, require, module, __filename, __dirname) {" . $source . "\n})";
-    }
-
-    /**
-     * The whole-module AOT cache lookup: one file, `{contentHash}.php`
-     * (`NodeIntegration::writeArtifacts()`), holding both halves of a build
-     * for this exact module — `'template'`, the compiled template itself, and
-     * `'natives'`, whichever of its functions that build converted to PHP. A
-     * hit returns the template outright, skipping `Compiler::compile()`
-     * entirely rather than merely resolving natives inside it; a miss (no
-     * file, e.g. a module the manifest never named) returns null and
-     * `templateFor()` compiles as ordinary bytecode, same as if no cache
-     * directory existed at all.
-     *
-     * Natives are registered before the template is handed back, since a
-     * template that stamped a `nativeId` cannot run without it
-     * (`BuiltinRegistry::get()` throws on an unknown ID). Registering twice
-     * across modules that happen to share this process is not an error --
-     * only not-yet-seen IDs are offered to `BuiltinRegistry::registerHost()`.
-     *
-     * @return ?array<string, mixed>
-     */
-    private function aotArtifactTemplate(string $moduleSource): ?array
-    {
-        $file = $this->aotCacheDir . '/' . hash('xxh128', $moduleSource) . '.php';
-        if (!is_file($file)) {
-            return null;
-        }
-        $artifact = require $file;
-        if (!is_array($artifact) || !isset($artifact['template']) || !is_array($artifact['template'])) {
-            return null;
-        }
-        if (isset($artifact['natives']) && is_array($artifact['natives'])) {
-            $fresh = [];
-            foreach ($artifact['natives'] as $id => $fn) {
-                if (!BuiltinRegistry::hasHost($id)) {
-                    $fresh[$id] = $fn;
-                }
-            }
-            if ($fresh !== []) {
-                BuiltinRegistry::registerHost($fresh);
-            }
-        }
-        return $artifact['template'];
-    }
-
-    /**
-     * The native-ID format an AOT cache artifact's `'natives'` must be keyed
-     * by for `aotArtifactTemplate()` above to resolve them against whatever
-     * its `'template'` half stamped. `php-transpile`'s `NodeIntegration`
-     * produces exactly these IDs when compiling for this
-     * loader's cache directory rather than for a single combined build file,
-     * so the two stay in agreement without either package depending on the
-     * other's internals -- node-compat owns the format, php-transpile calls
-     * this method to use it (the dependency already runs that direction).
-     */
-    public static function aotFunctionId(string $moduleKey, int $counter, string $name): string
-    {
-        return sprintf(
-            'aot:%s#%d%s',
-            $moduleKey,
-            $counter,
-            $name !== '' ? ':' . preg_replace('/[^A-Za-z0-9_$]/', '', $name) : ''
-        );
     }
 
     /** Node's resolution algorithm, minus conditional exports and ESM. */

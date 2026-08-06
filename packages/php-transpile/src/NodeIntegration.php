@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace PhpJs\Transpile;
 
 use PhpJs\Builtins\BuiltinRegistry;
+use PhpJs\Cache\ArtifactCache;
 use PhpJs\Compiler\Ctx;
-use PhpJs\Node\ModuleLoader;
 use PhpJs\Node\NodeHost;
 use PhpParser\Node as P;
 use PhpParser\Node\Expr;
@@ -108,7 +108,7 @@ final class NodeIntegration
             // agree, and an upgraded dependency simply stops matching its stale
             // natives instead of binding them to the wrong functions. Not the
             // assumptions too, unlike an earlier version of this: the ID format
-            // is shared with `ModuleLoader::aotArtifactTemplate()` (node-compat, which
+            // is shared with `ArtifactCache` (core, which
             // this key must exactly agree with to ever be found by a plain
             // `require`), and that lookup has no assumptions concept of its own
             // to fold in. What that makes true instead is a directory-level
@@ -118,7 +118,7 @@ final class NodeIntegration
             // is the one place that populates a cache directory, and it always
             // builds under one fixed profile for exactly this reason.
             $moduleSource = (string)@file_get_contents($path);
-            $moduleKey = hash('xxh128', $moduleSource);
+            $moduleKey = ArtifactCache::contentHash($moduleSource);
             $this->moduleKeys[$path] = $moduleKey;
             // Module-wide proofs a per-function emitter cannot make itself.
             // Only the build needs the proofs; run mode just matches IDs, and
@@ -131,7 +131,7 @@ final class NodeIntegration
                     return null;
                 }
                 $this->seen[$path]++;
-                $id = ModuleLoader::aotFunctionId($moduleKey, $counter++, $ctx->name);
+                $id = ArtifactCache::functionId($moduleKey, $counter++, $ctx->name);
                 if (!$this->emit) {
                     // Run mode: the native either came from the generated file
                     // or it did not, and JSFunction falls back to bytecode when
@@ -209,27 +209,23 @@ final class NodeIntegration
     }
 
     /**
-     * Write one file per module `attach()` hooked into an AOT cache
-     * directory (`NodeHost::AOT_CACHE_SUBDIR` by convention), named by
-     * exactly the content-hash key `ModuleLoader::aotArtifactTemplate()`
-     * looks for — so a plain `require()` against that directory, from any
-     * process, picks it up with no further wiring. This is `phpjs-aot`'s
-     * (the CLI) own job; `attach()` still has to run first to populate
-     * `$this->emitted`/`$this->moduleKeys`, and the modules actually have to
-     * be required so `$templates` (`ModuleLoader::compiledTemplates()`) has
-     * something to write.
+     * Write one artifact per module `attach()` hooked into a cache directory
+     * (`NodeHost::AOT_CACHE_SUBDIR` by convention), under exactly the
+     * content hash `ArtifactCache` looks a source up by — so a plain
+     * `require()` against that directory, from any process, picks it up with
+     * no further wiring. This is `phpjs-aot`'s (the CLI) own job; `attach()`
+     * still has to run first to populate `$this->emitted`/`$this->moduleKeys`,
+     * and the modules actually have to be required so `$templates`
+     * (`ModuleLoader::compiledTemplates()`) has something to write.
      *
-     * Each file holds both halves of one build as a single array:
-     * `'template'` is the module's whole compiled template — plain data
-     * (DESIGN.md §11.1), so `var_export` is enough — letting `require()`
-     * skip `Compiler::compile()` entirely; `'natives'` is whichever of its
-     * functions this build converted to PHP, keyed by the ID the template
-     * already stamped on them, printed as code (not `var_export`-able,
-     * unlike the template) since they are closures. A module that converted
-     * zero functions still gets a file — an empty `'natives'` array is what
-     * "this module was seen, nothing in it emitted" looks like, and the
-     * template is worth caching regardless of how much of the module went
-     * native.
+     * The format is the engine's; the only reason this does not simply call
+     * `ArtifactCache::write()` is that generated natives are closures, which
+     * `var_export()` cannot serialize — they are printed with this package's
+     * own AST printer and handed over as source (`writeRaw()`).
+     *
+     * A module that converted zero functions still gets an artifact: an empty
+     * `'natives'` is what "seen, nothing emitted" looks like, and the
+     * template is worth caching regardless of how much went native.
      *
      * @param array<string, array<string, mixed>> $templates path => template,
      *                                             as `ModuleLoader::compiledTemplates()` returns
@@ -237,9 +233,6 @@ final class NodeIntegration
      */
     public function writeArtifacts(string $cacheDir, array $templates): array
     {
-        if (!is_dir($cacheDir) && !mkdir($cacheDir, 0o777, true) && !is_dir($cacheDir)) {
-            throw new \RuntimeException("Cannot create $cacheDir");
-        }
         $printer = new PrettyPrinter\Standard(['shortArraySyntax' => true]);
         $written = [];
         foreach ($this->moduleKeys as $path => $moduleKey) {
@@ -253,13 +246,12 @@ final class NodeIntegration
                     $items[] = new P\ArrayItem($closure, new \PhpParser\Node\Scalar\String_($id));
                 }
             }
-            $natives = $printer->prettyPrintExpr(new Expr\Array_($items, ['kind' => Expr\Array_::KIND_SHORT]));
-            $file = rtrim($cacheDir, '/') . '/' . $moduleKey . '.php';
-            file_put_contents($file, "<?php\n\n// Generated by php-js-transpile. Do not edit.\n\nreturn [\n"
-                . "    'template' => " . var_export($templates[$path], true) . ",\n"
-                . "    'natives' => " . $natives . ",\n"
-                . "];\n");
-            $written[$path] = $file;
+            $written[$path] = ArtifactCache::writeRaw(
+                $cacheDir,
+                $moduleKey,
+                var_export($templates[$path], true),
+                $printer->prettyPrintExpr(new Expr\Array_($items, ['kind' => Expr\Array_::KIND_SHORT])),
+            );
         }
         return $written;
     }

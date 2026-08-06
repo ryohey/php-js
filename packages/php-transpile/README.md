@@ -70,9 +70,10 @@ That `Artifact::register()` / `NodeIntegration::forRun()` pair is explicit
 wiring a project opts into for one combined file. There is now a path that
 needs none of it: `writeArtifacts()` writes one file per module instead —
 holding both that module's compiled template and whatever functions
-converted to native PHP — named by exactly the key `packages/node-compat`'s
-`ModuleLoader` looks for on every ordinary `require()`, skipping compilation
-of that module entirely rather than just interpreting less of it. A project
+converted to native PHP — under exactly the content hash the engine's own
+`PhpJs\Cache\ArtifactCache` looks a source up by, so an ordinary `require()`
+finds it, skipping compilation of that module entirely rather than just
+interpreting less of it. A project
 that just wants React (or anything else in `node_modules`) to go faster can
 run [`packages/aot`](../aot)'s CLI once and never call anything in this
 package directly at all. Reach for the pair above only when a deployment

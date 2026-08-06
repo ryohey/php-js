@@ -86,10 +86,10 @@ final class Distribution
         //    named by its own module's content hash, so none of them cares
         //    where it ends up, and NodeHost::registerAotCacheDir() (the
         //    Renderer side of this) only needs the directory, not a manifest
-        //    of what's in it. The polyfill's own artifact lives in here too
-        //    (NodeHost::writePolyfillArtifact(), same directory Builder
-        //    wrote it into), so there is nothing separate to copy for it --
-        //    constructing a host still compiles nothing.
+        //    of what's in it. The engine's own JS standard library is
+        //    cached in here too (Engine::cacheEcmaScriptLibrary(), same
+        //    directory Builder wrote it into), so there is nothing separate
+        //    to copy for it -- constructing a host still compiles nothing.
         [$aotBytes, $aotFiles] = $this->copyDir(
             $this->appRoot . '/' . NodeHost::AOT_CACHE_SUBDIR,
             $outDir . '/aot'

@@ -2,12 +2,7 @@
 
 declare(strict_types=1);
 
-namespace PhpJs\Node;
-
-use PhpJs\Runtime\JSObject;
-use PhpJs\Runtime\JSSymbol;
-use PhpJs\Runtime\JSUndefined;
-use PhpJs\Runtime\TypeOps;
+namespace PhpJs\Runtime;
 
 /**
  * Backing storage for a native Map or Set.

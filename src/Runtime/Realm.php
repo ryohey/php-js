@@ -7,6 +7,7 @@ namespace PhpJs\Runtime;
 use PhpJs\Builtins\ArrayBufferBuiltins;
 use PhpJs\Builtins\ArrayBuiltins;
 use PhpJs\Builtins\BooleanBuiltins;
+use PhpJs\Builtins\CollectionBuiltins;
 use PhpJs\Builtins\ConsoleBuiltins;
 use PhpJs\Builtins\DataViewBuiltins;
 use PhpJs\Builtins\DateBuiltins;
@@ -65,6 +66,7 @@ final class Realm
         'Math', 'JSON', 'console', 'Symbol',
         'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'EvalError', 'URIError',
         'RegExp', 'Date', 'Promise',
+        'Map', 'Set', 'WeakMap', 'WeakSet',
         'ArrayBuffer', 'DataView',
         'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array',
         'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array',
@@ -110,6 +112,9 @@ final class Realm
             'RegExp' => $this->regexpConstructor(),
             'Date' => $this->dateConstructor(),
             'Promise' => $this->promiseConstructor(),
+            // Weak variants are aliases; see CollectionBuiltins.
+            'Map', 'WeakMap' => $this->mapConstructor(),
+            'Set', 'WeakSet' => $this->setConstructor(),
             'ArrayBuffer' => $this->arrayBufferConstructor(),
             'DataView' => $this->dataViewConstructor(),
             'Int8Array' => $this->typedArrayConstructor('Int8'),
@@ -549,6 +554,16 @@ final class Realm
     public function promiseConstructor(): JSNativeFunction
     {
         return $this->memo['Promise'] ??= PromiseBuiltins::makeConstructor($this);
+    }
+
+    public function mapConstructor(): JSNativeFunction
+    {
+        return $this->memo['Map'] ??= CollectionBuiltins::makeMapConstructor($this);
+    }
+
+    public function setConstructor(): JSNativeFunction
+    {
+        return $this->memo['Set'] ??= CollectionBuiltins::makeSetConstructor($this);
     }
 
     public function arrayBufferPrototype(): JSObject

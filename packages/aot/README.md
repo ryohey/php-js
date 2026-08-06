@@ -16,12 +16,11 @@ react, react-dom/cjs/react-dom-server-legacy.node.production.js (./phpjs-aot.jso
 `build` reads a manifest (below), requires each library it names through a
 [`php-transpile`](../php-transpile) `NodeIntegration`, and writes one PHP file
 per module actually reached into `node_modules/.phpjs-aot/` — named by that
-module's own content hash, the same convention
-`ModuleLoader::aotArtifactTemplate()` (in `node-compat`) checks on every
-ordinary `require()`. Each file holds both that module's whole compiled
-template and whatever functions converted to native PHP, so a `require()`
-that finds one skips compiling the module at all, not just interpreting less
-of it. That check is the entire integration: a `NodeHost` constructed against
+module's own content hash, in the format the engine itself owns
+(`PhpJs\Cache\ArtifactCache`) and consults on every ordinary `require()`.
+Each file holds both that module's whole compiled template and whatever
+functions converted to native PHP, so a `require()` that finds one skips
+compiling the module at all, not just interpreting less of it. That check is the entire integration: a `NodeHost` constructed against
 a project root where that directory happens to exist automatically finds a
 matching artifact and uses it; a project (or a specific library) that has
 never run this CLI behaves exactly as if AOT did not exist, because as far as

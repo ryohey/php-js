@@ -13,8 +13,8 @@ use PhpJs\Runtime\Conversions;
  *
  * PHP is shared-nothing, so a server that boots the runtime per request pays
  * for every compile per request. Parsing React's server build is a few hundred
- * milliseconds and the polyfill file is another thirty. Both produce plain
- * `var_export`-able arrays (DESIGN.md §11.1), so this writes them to
+ * milliseconds, and the engine's own JS library is another few. Both produce
+ * plain `var_export`-able arrays (DESIGN.md §11.1), so this writes them to
  * `<?php return [...];` files that opcache keeps in shared memory.
  *
  * Deliberately as far as this goes: `app/` — the site's own TSX — is not
@@ -32,8 +32,7 @@ use PhpJs\Runtime\Conversions;
  * `LIBRARY_ENTRIES` names some `node_modules` specifiers to compile, and it
  * writes its result to `node_modules/.phpjs-aot/`, the directory any
  * `NodeHost` (this one included, right below) checks on every ordinary
- * `require()` with no further wiring (`ModuleLoader::aotArtifactTemplate()`,
- * packages/node-compat). This class's own job shrinks to: run that, then
+ * `require()` with no further wiring (`PhpJs\Cache\ArtifactCache`, core). This class's own job shrinks to: run that, then
  * compile two *template* sets from it — `aot` (native IDs stamped, because
  * the cache now exists when this compiles) and `bytecode` (a second host with
  * the lookup explicitly disabled) — so the demo can still show the same page
@@ -94,18 +93,17 @@ final class Builder
 
         $cacheDir = $this->appRoot . '/' . NodeHost::AOT_CACHE_SUBDIR;
 
-        // The polyfill file is the same for every host, so it is compiled
-        // once here and never again. Cached in the same AOT cache directory
-        // LibraryCompiler is about to populate, by its own content hash --
-        // warmPolyfillTemplate() (called by every NodeHost construction that
-        // resolves this directory, no wiring of this class's own) is what
-        // lets a request (and AppCompiler) skip compiling it too.
+        // The JS half of the engine's own standard library: the same file for
+        // every host, so it is compiled once here and never again. It goes in
+        // the same cache directory LibraryCompiler is about to populate, under
+        // its own content hash, and every NodeHost constructed against that
+        // directory finds it with no wiring of this class's own.
         $started = microtime(true);
-        $polyfillPath = NodeHost::writePolyfillArtifact($cacheDir);
+        $libraryPath = \PhpJs\Engine::cacheEcmaScriptLibrary($cacheDir);
         $log(sprintf(
-            'polyfills           %6.0f ms -> %s',
+            'js standard library %6.0f ms -> %s',
             (microtime(true) - $started) * 1000,
-            $this->relative($polyfillPath)
+            $this->relative($libraryPath)
         ));
 
         // Ahead-of-time PHP: generic, not React-specific (LibraryCompiler has

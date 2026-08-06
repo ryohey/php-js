@@ -147,24 +147,26 @@ $engine->runTemplate($tpl);
 
 ## Packages
 
-Host concerns live outside the core, in separate composer packages that depend
-on it:
+The core package is ECMAScript: the language, its whole standard library, and
+no way to reach outside the process. An `Engine` on its own has `Map` and
+`Object.assign` and has no `require`, no `process`, no I/O. Everything past
+the language is a *runtime environment*, supplied through the one interface
+core defines for it (`PhpJs\Host\Environment` — DESIGN.md §13.1), and lives
+in its own composer package:
 
-- [`packages/node-compat`](packages/node-compat) — CommonJS module loading,
-  a read-only filesystem confined to a root, `process`, virtual-clock timers,
-  and the ES2015+ *library* surface the engine does not own (Map, Set,
-  `Object.assign`); `Symbol`, collection iteration and `ArrayBuffer`/
-  `TypedArray`/`DataView` moved into the engine itself — a primitive type
-  cannot be polyfilled, and neither can a real byte buffer with the sharing
-  and detach semantics the spec gives it. Its `ModuleLoader` also checks an
-  ahead-of-time-PHP cache directory, by content hash, on every `require()` —
-  transparently: nothing that merely loads a module needs to know one exists.
-  When that cache holds a module's whole compiled template, not just its
-  native functions, `require()` skips compiling it at all rather than merely
-  interpreting less of it. It also soft-detects `packages/strip-types`, the
-  same way, for `.ts`/`.tsx`/`.jsx` support — `node --experimental-strip-types`'s
-  own shape: install the package and `require()` just works, uninstall it and
-  nothing changes for a project that never used it.
+- [`packages/node-compat`](packages/node-compat) — Node, as an environment:
+  CommonJS module loading, a read-only filesystem confined to a root,
+  `process`, virtual-clock timers, and Node's core-module stubs. Nothing in
+  it is standard-library surface, which is what makes it replaceable — a
+  `deno-compat` would implement the same interface and need none of this.
+  Its `ModuleLoader` decides when to consult an ahead-of-time-PHP cache, by
+  content hash, on every `require()` — transparently: nothing that merely
+  loads a module needs to know one exists, and a hit skips compiling that
+  module at all rather than merely interpreting less of it. It also
+  soft-detects `packages/strip-types`, the same way, for `.ts`/`.tsx`/`.jsx`
+  support — `node --experimental-strip-types`'s own shape: install the
+  package and `require()` just works, uninstall it and nothing changes for a
+  project that never used it.
 - [`packages/strip-types`](packages/strip-types) — vendors
   [Sucrase](https://github.com/alangpierce/sucrase) to strip TypeScript and
   JSX syntax down to plain JavaScript, and registers itself with
@@ -176,10 +178,11 @@ on it:
   the fallback.
 - [`packages/aot`](packages/aot) — the CLI (`phpjs-aot build`) that points
   `php-transpile` at whatever `node_modules` libraries a small JSON manifest
-  names and writes the result where `node-compat` looks for it: one file per
-  module reached, holding both its compiled template and whatever functions
-  converted to native PHP. Nothing here is React-specific; React is just the
-  one library this repo's own demo happens to list.
+  names and writes the result into a cache directory: one file per module
+  reached, in the format core owns (`PhpJs\Cache\ArtifactCache`), holding
+  both its compiled template and whatever functions converted to native PHP.
+  Nothing here is React-specific; React is just the one library this repo's
+  own demo happens to list.
 - [`packages/react-ssr-bench`](packages/react-ssr-bench) — renders a React app
   server-side from React's own published CommonJS build, asserts the HTML is
   byte-identical to Node, and reports boot and render separately.

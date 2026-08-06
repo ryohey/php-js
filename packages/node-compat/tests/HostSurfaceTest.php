@@ -172,4 +172,21 @@ final class HostSurfaceTest extends TestCase
         $host = $this->host();
         $this->assertSame('true', $this->eval($host, 'String(global === globalThis)'));
     }
+
+    public function testCryptoStubProvidesRandomUuid(): void
+    {
+        $uuid = $this->eval($this->host(), 'require("crypto").randomUUID()');
+        $this->assertMatchesRegularExpression(
+            '/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/',
+            $uuid
+        );
+    }
+
+    public function testCryptoStubRefusesRatherThanWeakens(): void
+    {
+        $this->assertSame('Error', $this->eval(
+            $this->host(),
+            'var e; try { require("crypto").createHash("sha1"); } catch (err) { e = err.name; } e'
+        ));
+    }
 }

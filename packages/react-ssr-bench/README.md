@@ -78,7 +78,7 @@ times the cost of a cheap opcode.
 The bigger surprise came from profiling by *JS function* instead of by opcode:
 a render runs only 36 (React 17) to 73 (React 19) distinct functions, and a
 quarter of React 19's was `node-compat`'s own JS shims — `Math.clz32` alone was
-20%, as a polyfill that shifts one bit at a time. Reimplementing those natively
+20%, as a JS shim that shifts one bit at a time. Reimplementing those natively
 cut React 19 by 30%. **Profile by function before touching the VM.**
 
 The corollary is that plausible micro-optimizations lose about as often as they
