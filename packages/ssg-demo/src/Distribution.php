@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace PhpJs\Ssg;
 
+use PhpJs\Node\NodeHost;
+
 /**
  * Assembles everything a render-only host needs, as a directory you can drop
  * into a WordPress plugin, a theme, or a zip.
@@ -80,16 +82,19 @@ final class Distribution
         $log(sprintf('templates      %6s  %d modules, paths relativized',
             self::size($bytes), count($relative)));
 
-        // 2. The generated PHP, copied as-is: native IDs are content hashes, so
-        //    it does not care where it ends up.
-        $nativesBytes = $this->copy(
-            $this->buildDir . '/' . $engine['natives'],
-            $outDir . '/natives.php'
+        // 2. The AOT cache directory, copied as a whole: every file in it is
+        //    named by its own module's content hash, so none of them cares
+        //    where it ends up, and NodeHost::registerAotCacheDir() (the
+        //    Renderer side of this) only needs the directory, not a manifest
+        //    of what's in it.
+        [$aotBytes, $aotFiles] = $this->copyDir(
+            $this->appRoot . '/' . NodeHost::AOT_CACHE_SUBDIR,
+            $outDir . '/aot'
         );
-        $bytes += $nativesBytes;
-        $files++;
-        $log(sprintf('natives        %6s  %d of %d functions compiled to PHP',
-            self::size($nativesBytes), $manifest['converted'], $manifest['seen']));
+        $bytes += $aotBytes;
+        $files += $aotFiles;
+        $log(sprintf('aot cache      %6s  %d of %d functions compiled to PHP, %d file(s)',
+            self::size($aotBytes), $manifest['converted'], $manifest['seen'], $aotFiles));
 
         // 3. The polyfill template, so constructing a host compiles nothing.
         $polyfillBytes = $this->copy(
@@ -135,7 +140,7 @@ final class Distribution
             'seen' => $manifest['seen'],
             // Relative to this directory, resolved by Distribution::load().
             'templates' => 'templates.php',
-            'natives' => 'natives.php',
+            'aot' => 'aot',
             'polyfill' => 'polyfill.php',
             'jsRoot' => 'js',
         ]);
@@ -180,7 +185,7 @@ final class Distribution
             'converted' => $manifest['converted'],
             'seen' => $manifest['seen'],
             'polyfillFile' => $dir . '/' . $manifest['polyfill'],
-            'nativesFile' => $dir . '/' . $manifest['natives'],
+            'aotCacheDir' => $dir . '/' . $manifest['aot'],
             'templatesInline' => $absolute,
         ];
     }
@@ -205,6 +210,19 @@ final class Distribution
             throw new \RuntimeException("Cannot copy $from to $to");
         }
         return (int)filesize($to);
+    }
+
+    /** @return array{0: int, 1: int} [bytes, files] */
+    private function copyDir(string $from, string $to): array
+    {
+        $this->mkdir($to);
+        $bytes = 0;
+        $files = 0;
+        foreach (glob($from . '/*.php') ?: [] as $file) {
+            $bytes += $this->copy($file, $to . '/' . basename($file));
+            $files++;
+        }
+        return [$bytes, $files];
     }
 
     /** @param array<mixed> $value */

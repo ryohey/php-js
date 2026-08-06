@@ -38,12 +38,27 @@ final class NodeHost
     private string $output = '';
 
     /**
-     * @param string $root       module resolution root; also the fs sandbox root
-     * @param bool   $captureOutput keep console/stdout text instead of printing
+     * Where an AOT cache lives by convention, relative to a module root — a
+     * dot-prefixed directory under `node_modules`, the same idea as
+     * `node_modules/.bin` or `node_modules/.cache`: tooling's own, not a
+     * package, invisible to ordinary `require` resolution. `phpjs-aot`
+     * writes here; the constructor below reads it if it happens to exist.
+     */
+    public const AOT_CACHE_SUBDIR = 'node_modules/.phpjs-aot';
+
+    /**
+     * @param string  $root          module resolution root; also the fs sandbox root
+     * @param bool    $captureOutput keep console/stdout text instead of printing
+     * @param ?string $aotCacheDir   an AOT cache directory to consult on every
+     *                               module compile, or null to auto-detect
+     *                               `$root/`.AOT_CACHE_SUBDIR (used only if it
+     *                               exists), or false to disable the lookup
+     *                               entirely even if that directory is there
      */
     public function __construct(
         string $root,
         private readonly bool $captureOutput = false,
+        string|false|null $aotCacheDir = null,
     ) {
         $canonical = realpath($root);
         if ($canonical === false) {
@@ -63,6 +78,13 @@ final class NodeHost
         $this->fs = new FileSystem($this->root);
         $this->modules = new ModuleLoader($this, $this->root);
         $this->timers = new TimerQueue();
+        if ($aotCacheDir === false) {
+            // Explicitly disabled -- leave ModuleLoader's default (no lookup).
+        } elseif ($aotCacheDir !== null) {
+            $this->modules->setAotCacheDir($aotCacheDir);
+        } elseif (is_dir($this->root . '/' . self::AOT_CACHE_SUBDIR)) {
+            $this->modules->setAotCacheDir($this->root . '/' . self::AOT_CACHE_SUBDIR);
+        }
 
         $this->engine->realm->hostContext = $this;
         $this->installGlobals();
@@ -193,6 +215,46 @@ final class NodeHost
     public static function preloadPolyfillTemplate(?array $template): void
     {
         self::$polyfillTemplate = $template;
+    }
+
+    /**
+     * Register every native an AOT cache directory holds, all at once.
+     *
+     * `ModuleLoader::aotLookupHook()` already does this lazily, one artifact
+     * at a time, as each module actually gets *compiled* — but a template
+     * that arrives preloaded (`ModuleLoader::preloadTemplates()`) skips
+     * compilation entirely, hook included, so a native ID a preloaded
+     * template was stamped with would otherwise never get registered and
+     * would silently fall back to bytecode. Call this first, before
+     * preloading AOT-stamped templates, and the stamps resolve correctly
+     * regardless of which host originally compiled them.
+     *
+     * Safe to call more than once, from more than one process's build
+     * artifacts sharing one `BuiltinRegistry` — already-registered IDs are
+     * left alone the same way `Artifact::register()` treats them.
+     *
+     * @return int natives newly registered (0 if the directory has none, or does not exist)
+     */
+    public static function registerAotCacheDir(string $dir): int
+    {
+        $registered = 0;
+        foreach (glob($dir . '/*.php') ?: [] as $file) {
+            $entries = require $file;
+            if (!is_array($entries)) {
+                continue;
+            }
+            $fresh = [];
+            foreach ($entries as $id => $fn) {
+                if (!BuiltinRegistry::hasHost($id)) {
+                    $fresh[$id] = $fn;
+                }
+            }
+            if ($fresh !== []) {
+                BuiltinRegistry::registerHost($fresh);
+                $registered += count($fresh);
+            }
+        }
+        return $registered;
     }
 
     /** Load a CommonJS module and return its `exports`. */

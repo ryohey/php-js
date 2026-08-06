@@ -6,7 +6,6 @@ namespace PhpJs\Ssg;
 
 use PhpJs\Node\NodeHost;
 use PhpJs\Runtime\Conversions;
-use PhpJs\Transpile\Artifact;
 
 /**
  * Renders a route, using only what the build produced.
@@ -33,24 +32,35 @@ final class Renderer
 
     /**
      * @param array<string, mixed> $manifest
+     * @param ?string $aotCacheDir an AOT cache directory to bulk-register
+     *                             natives from before preloading $templates,
+     *                             or null for the `bytecode` engine (or a
+     *                             build with nothing in its cache at all)
      * @param array<string, mixed> $templates path => template, already absolute
      */
     private function __construct(
         public readonly string $engine,
         public readonly array $manifest,
         string $polyfillFile,
-        ?string $nativesFile,
+        ?string $aotCacheDir,
         array $templates,
     ) {
         $started = microtime(true);
-        // The generated PHP first: a template's natives have to be registered
-        // before the JSFunction that would use them is instantiated.
-        if ($nativesFile !== null) {
-            Artifact::register($nativesFile);
+        // Natives first: a template's nativeId has to already be registered
+        // before the JSFunction carrying it is instantiated. Bulk, not the
+        // usual lazy per-module lookup (ModuleLoader::aotLookupHook()) --
+        // $templates arrives preloaded below and so never goes through the
+        // compile-time hook that lookup rides on.
+        if ($aotCacheDir !== null) {
+            NodeHost::registerAotCacheDir($aotCacheDir);
         }
         NodeHost::preloadPolyfillTemplate(require $polyfillFile);
 
-        $this->host = new NodeHost($manifest['appRoot'], captureOutput: true);
+        // aotCacheDir: false -- this host only ever runs preloaded templates
+        // (never compiles a module fresh), so the lookup this would enable
+        // could not fire anyway; disabling it outright skips the pointless
+        // directory check.
+        $this->host = new NodeHost($manifest['appRoot'], captureOutput: true, aotCacheDir: false);
         $this->host->modules->preloadTemplates($templates);
         $this->entry = $this->host->requireModule($manifest['entry']);
         $this->renderFn = $this->entry->get('renderPage', $this->host->vm());
@@ -91,7 +101,10 @@ final class Renderer
             $engine,
             $manifest + ['entry' => $app['entry'], 'routes' => $app['routes']],
             $buildDir . '/' . $manifest['polyfill'],
-            isset($files['natives']) ? $buildDir . '/' . $files['natives'] : null,
+            // "bytecode" templates were never stamped in the first place
+            // (Builder compiles that set with the lookup disabled), so
+            // there is nothing for that engine to register.
+            $engine === 'aot' ? $manifest['appRoot'] . '/' . NodeHost::AOT_CACHE_SUBDIR : null,
             $libraryTemplates + $appTemplates,
         );
         $renderer->bootMs = (microtime(true) - $started) * 1000;
@@ -112,7 +125,7 @@ final class Renderer
             'aot',
             $loaded,
             $loaded['polyfillFile'],
-            $loaded['nativesFile'],
+            $loaded['aotCacheDir'],
             $loaded['templatesInline'],
         );
     }

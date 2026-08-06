@@ -56,15 +56,14 @@ Things worth doing once it is up:
 ## How the pieces fit
 
 ```
-                    bin/phpjs-ssg build                  the first render after that
-                            │                                       │
-                            ▼                                       ▼
-node_modules ──php-js-transpile──► PHP ────────┐    app/*.tsx ──sucrase (in php-js)──► build/app-cjs/*.js
-                            │                   │                                              │
-                            └──────► bytecode ──┤                                       bytecode (AppCompiler)
-                                                 │                                              │
-                                                 └──────────────► request ──► HTML ◄────────────┘
-                                                                  (opcache)
+bin/phpjs-ssg build:                     the first render after that:
+
+node_modules ──phpjs-aot──► node_modules/.phpjs-aot/    app/*.tsx ──sucrase (in php-js)──► build/app-cjs/*.js
+                                    │                                                              │
+                                    │  node-compat's ModuleLoader checks                    bytecode (AppCompiler)
+                                    │  this directory on every require(),                          │
+                                    └─ transparently, no wiring needed ──────► request ──► HTML ◄───┘
+                                                                              (opcache)
 ```
 
 **Two builds, two different moments.** `bin/phpjs-ssg build` (`Builder`) only
@@ -93,13 +92,25 @@ Sucrase runs with `disableESTransforms: true` — the engine now parses `??`,
 external — the runtime loads React's own published CommonJS build, which is
 the thing worth measuring.
 
-**Dependencies are compiled to PHP; the site's own code is not.** `Builder`
-runs [php-transpile](../php-transpile) over `node_modules`, turning 262 of
-React's 291 functions into PHP functions, and stops there — `app/` stays
-interpreted, always, everywhere `AppCompiler` compiles it. That split is a
-security boundary, not an oversight; `src/Trust.php` is where it is written
-down and *Why the site's own code stays interpreted* below is why. The
-bytecode remains the fallback everywhere, so none of this is a dependency.
+**Dependencies are compiled to PHP; the site's own code is not, and neither
+side of that knows the other exists.** `Builder` hands React's package
+specifiers to [`phpjs-aot`](../aot) (`bin/phpjs-aot build`, or its
+`LibraryCompiler` class directly — the two are the same call), which has no
+idea what React is: it just AOT-compiles whatever `node_modules` specifiers a
+manifest names, 262 of React's 291 functions here, into
+`node_modules/.phpjs-aot/`. From there the *runtime* side is generic too —
+[`node-compat`](../node-compat)'s `ModuleLoader` checks that directory, by
+content hash, on every ordinary `require()`, with no wiring this package (or
+any other) has to do. `app/` never gets AOT-compiled — always interpreted,
+everywhere `AppCompiler` compiles it — not because anything here special-cases
+`app/`, but because nothing ever ran `phpjs-aot` over it: an artifact simply
+does not exist for those files, and a missing artifact is indistinguishable
+from "load the JS normally," which is what happens. `src/Trust.php` is this
+package's own policy for *which* `node_modules` specifiers ever reach
+`LibraryCompiler` in the first place — a decision this project makes, not one
+`phpjs-aot` or `node-compat` make for it — and *Why the site's own code stays
+interpreted* below is why the split matters at all. The bytecode remains the
+fallback everywhere, so none of this is a dependency.
 
 **A request compiles no JavaScript — after the very first one.** PHP is
 shared-nothing, so anything neither build has precomputed yet is paid per
@@ -157,11 +168,11 @@ makes the file layout, and therefore the Apache bypass, possible.
 ```console
 $ bin/phpjs-ssg package
 templates      1.9 MB  13 modules, paths relativized
-natives        760 KB  262 of 291 functions compiled to PHP
+aot cache      760 KB  262 of 291 functions compiled to PHP, 5 file(s)
 polyfill       157 KB
-javascript     287 KB  13 files (of a 33.2 MB node_modules)
+javascript     287 KB  13 files (of a 34.0 MB node_modules)
 
-18 files, 3.1 MB total
+22 files, 3.1 MB total
 ```
 
 `package` forces `app/` to compile if nothing has yet — a distribution has no
@@ -225,9 +236,12 @@ is that the interpreter is the part with the safety rails, and code you did not
 pin is exactly the code that needs them.
 
 So: compile `node_modules`, interpret everything else. Extending the filter to
-`app/` was measured at about **3%** — a fair price. A test asserts that no
-template outside `node_modules` carries a native ID, because the filter is one
-`str_contains` away from silently accepting everything.
+`app/` was measured at about **3%** — a fair price. `Trust::filter()` is where
+that line is drawn for this package specifically — the one thing standing
+between `phpjs-aot` (which itself trusts whatever manifest it is given) and
+`app/` ever being handed to it — and a test asserts that no template outside
+`node_modules` carries a native ID, because the filter is one `str_contains`
+away from silently accepting everything.
 
 One related choice in the same spirit: `serve` leaves
 `opcache.validate_timestamps` **on**, so a rebuild is always picked up and a
@@ -305,11 +319,22 @@ src/                the host: PHP, autoloaded as PhpJs\Ssg\
   Renderer.php        renders a route from what both of the above produced
   Exporter.php        static generation
   Toolbar.php         the strip the server injects
-  Trust.php           what may be compiled to PHP, and what may not
-build/              library output (Builder) plus app-cjs/ and templates.app.php (AppCompiler) -- all generated
+  Trust.php           what may reach LibraryCompiler (../aot) to be compiled to PHP
+build/              library templates (Builder) plus app-cjs/ and templates.app.php (AppCompiler) -- all generated
+node_modules/.phpjs-aot/   React's AOT cache (phpjs-aot / Builder), generated, checked by every require()
 dist/               static export (generated)
 public/             front controller and the stylesheet
 ```
+
+`Builder` doesn't compile anything to PHP itself anymore — that whole job
+belongs to [`packages/aot`](../aot) now, a package this one depends on like
+any other. `Builder::run()` calls `LibraryCompiler::compile()` directly with
+`Builder::LIBRARY_ENTRIES` rather than going through a `phpjs-aot.json`
+manifest and the CLI (both exist for a project that would rather not write
+PHP to say the same thing — see that package's own README) — either way, what
+used to be this package's own bespoke `NodeIntegration` wiring is one call
+into a directory any [`node-compat`](../node-compat) host already knows to
+check.
 
 `app/` is the guest and `src/` is the host — one is JavaScript this runtime
 executes, the other is the PHP doing the executing, and they are the two sides of

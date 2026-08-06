@@ -6,6 +6,7 @@
   "require": {
     "php": ">=8.2",
     "ryohey/php-js": "dev-main",
+    "ryohey/php-js-aot": "dev-main",
     "ryohey/php-js-node-compat": "dev-main",
     "ryohey/php-js-transpile": "dev-main"
   },
@@ -36,6 +37,11 @@
     {
       "type": "path",
       "url": "../php-transpile",
+      "options": { "symlink": true }
+    },
+    {
+      "type": "path",
+      "url": "../aot",
       "options": { "symlink": true }
     },
     {

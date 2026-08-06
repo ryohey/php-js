@@ -1,0 +1,51 @@
+{
+    "name": "ryohey/php-js-aot",
+    "description": "CLI that ahead-of-time compiles pinned node_modules libraries into a php-js AOT cache",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.2",
+        "ryohey/php-js": "dev-main",
+        "ryohey/php-js-node-compat": "dev-main",
+        "ryohey/php-js-transpile": "dev-main"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "PhpJs\\Aot\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "PhpJs\\Aot\\Tests\\": "tests/"
+        }
+    },
+    "bin": [
+        "bin/phpjs-aot"
+    ],
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../.."
+        },
+        {
+            "type": "path",
+            "url": "../node-compat"
+        },
+        {
+            "type": "path",
+            "url": "../php-transpile"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/ryohey/peast.git"
+        }
+    ],
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

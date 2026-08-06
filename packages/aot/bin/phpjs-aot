@@ -1,0 +1,102 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+foreach ([__DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../../vendor/autoload.php'] as $autoload) {
+    if (is_file($autoload)) {
+        require $autoload;
+        break;
+    }
+}
+
+use PhpJs\Aot\LibraryCompiler;
+use PhpJs\Aot\Manifest;
+use PhpJs\Node\NodeHost;
+
+const USAGE = <<<TXT
+Usage: phpjs-aot build [options]
+
+Ahead-of-time compiles the node_modules libraries a manifest lists into a
+php-js AOT cache: a directory of {contentHash}.php files that any NodeHost
+picks up transparently on a plain `require()` -- no other wiring needed
+(see packages/node-compat's ModuleLoader).
+
+The manifest is phpjs-aot.json in --root, or a "phpjsAot": { "libraries":
+[...] } key in package.json, whichever is found first:
+
+  {
+    "libraries": ["react", "react-dom/cjs/react-dom-server-legacy.node.production.js"]
+  }
+
+A specifier is resolved exactly the way `require()` would from --root, so a
+deep path into a package (as above, or wherever a package's own conditional
+exports would otherwise get in the way) works the same here as it does live.
+
+Options:
+  --root DIR      module resolution root (default: current directory)
+  --config FILE   explicit manifest path, overriding the default lookup
+  --cache-dir DIR where to write (default: <root>/node_modules/.phpjs-aot)
+
+TXT;
+
+$args = $argv;
+array_shift($args);
+$command = array_shift($args) ?? '';
+$root = getcwd();
+$config = null;
+$cacheDir = null;
+for ($i = 0; $i < count($args); $i++) {
+    switch ($args[$i]) {
+        case '--root':
+            $root = $args[++$i] ?? $root;
+            break;
+        case '--config':
+            $config = $args[++$i] ?? null;
+            break;
+        case '--cache-dir':
+            $cacheDir = $args[++$i] ?? null;
+            break;
+        case '--help':
+            fwrite(STDOUT, USAGE);
+            exit(0);
+        default:
+            fwrite(STDERR, "Unknown option: {$args[$i]}\n");
+            exit(2);
+    }
+}
+
+if ($command !== 'build') {
+    fwrite($command === '' ? STDOUT : STDERR, USAGE);
+    exit($command === '' ? 0 : 2);
+}
+
+$resolvedRoot = realpath($root);
+if ($resolvedRoot === false) {
+    fwrite(STDERR, "No such directory: $root\n");
+    exit(1);
+}
+$root = $resolvedRoot;
+$cacheDir ??= $root . '/' . NodeHost::AOT_CACHE_SUBDIR;
+
+try {
+    $manifest = Manifest::discover($root, $config);
+    $started = microtime(true);
+    $result = (new LibraryCompiler())->compile($root, $manifest->libraries, $cacheDir);
+    printf(
+        "%s (%s)\n%d / %d functions compiled to PHP, %d module file(s) -> %s, in %.1fs\n",
+        implode(', ', $manifest->libraries),
+        $manifest->source,
+        $result['converted'],
+        $result['seen'],
+        $result['files'],
+        $cacheDir,
+        microtime(true) - $started
+    );
+    foreach ($result['refusals'] as $r) {
+        printf("  refused %-56s %d\n", $r['reason'], $r['count']);
+    }
+} catch (Throwable $e) {
+    fwrite(STDERR, get_class($e) . ': ' . $e->getMessage() . "\n");
+    exit(1);
+}

@@ -218,7 +218,8 @@ final class DeploymentTest extends TestCase
         // Bytecode-only templates exist so the demo can switch engines; a
         // deployment renders one way and should not carry the other copy.
         $this->assertFileDoesNotExist($packaged . '/templates.bytecode.php');
-        $this->assertFileExists($packaged . '/natives.php');
+        $this->assertDirectoryExists($packaged . '/aot');
+        $this->assertNotEmpty(glob($packaged . '/aot/*.php'), 'no AOT cache files were packaged');
         $this->assertFileExists($packaged . '/htaccess.example');
         $this->assertGreaterThan(200, $result['functions']);
         // Comfortably smaller than node_modules, which is the point.

@@ -156,17 +156,26 @@ on it:
   `Object.assign`); `Symbol`, collection iteration and `ArrayBuffer`/
   `TypedArray`/`DataView` moved into the engine itself — a primitive type
   cannot be polyfilled, and neither can a real byte buffer with the sharing
-  and detach semantics the spec gives it.
+  and detach semantics the spec gives it. Its `ModuleLoader` also checks an
+  ahead-of-time-PHP cache directory, by content hash, on every `require()` —
+  transparently: nothing that merely loads a module needs to know one exists.
+- [`packages/php-transpile`](packages/php-transpile) — build-time compiler from
+  JavaScript functions to PHP, given a module to compile and told to. Converts
+  262 of React's 291 functions with unchanged output; the bytecode stays as
+  the fallback.
+- [`packages/aot`](packages/aot) — the CLI (`phpjs-aot build`) that points
+  `php-transpile` at whatever `node_modules` libraries a small JSON manifest
+  names and writes the result where `node-compat` looks for it. Nothing here
+  is React-specific; React is just the one library this repo's own demo
+  happens to list.
 - [`packages/react-ssr-bench`](packages/react-ssr-bench) — renders a React app
   server-side from React's own published CommonJS build, asserts the HTML is
   byte-identical to Node, and reports boot and render separately.
-- [`packages/php-transpile`](packages/php-transpile) — build-time compiler from
-  JavaScript functions to PHP. Converts 262 of React's 291 functions with
-  unchanged output; the bytecode stays as the fallback.
 - [`packages/ssg-demo`](packages/ssg-demo) — a small site written in TypeScript
-  and JSX, rendered to HTML by React inside PHP. Renders a page on first request
-  and serves the file after; `phpjs-ssg package` assembles a 2.9 MB render-only
-  tree you can ship inside a plugin.
+  and JSX, rendered to HTML by React inside PHP. `bin/phpjs-ssg build` compiles
+  only React (via `packages/aot`); the site's own TSX compiles itself on the
+  first render that needs it and stays cached from then on. `phpjs-ssg package`
+  assembles a 3.1 MB render-only tree you can ship inside a plugin.
 
 ## Performance
 

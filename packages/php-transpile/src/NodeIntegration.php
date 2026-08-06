@@ -6,6 +6,7 @@ namespace PhpJs\Transpile;
 
 use PhpJs\Builtins\BuiltinRegistry;
 use PhpJs\Compiler\Ctx;
+use PhpJs\Node\ModuleLoader;
 use PhpJs\Node\NodeHost;
 use PhpParser\Node as P;
 use PhpParser\Node\Expr;
@@ -37,6 +38,8 @@ final class NodeIntegration
 
     /** @var array<string, Expr\Closure> */
     private array $emitted = [];
+    /** @var array<string, string> module path => the content-hash key its IDs are prefixed with */
+    private array $moduleKeys = [];
 
     public function __construct(
         /** Return true for modules that should be compiled ahead of time. */
@@ -103,11 +106,20 @@ final class NodeIntegration
             $this->converted[$path] = 0;
             // Derived from the module's *contents*, so a build and a later run
             // agree, and an upgraded dependency simply stops matching its stale
-            // natives instead of binding them to the wrong functions.
+            // natives instead of binding them to the wrong functions. Not the
+            // assumptions too, unlike an earlier version of this: the ID format
+            // is shared with `ModuleLoader::aotLookupHook()` (node-compat, which
+            // this key must exactly agree with to ever be found by a plain
+            // `require`), and that lookup has no assumptions concept of its own
+            // to fold in. What that makes true instead is a directory-level
+            // invariant, not a hash-level one: every artifact under one cache
+            // directory must have been built under the same `Assumptions`, and
+            // nothing here enforces that automatically -- `phpjs-aot` (the CLI)
+            // is the one place that populates a cache directory, and it always
+            // builds under one fixed profile for exactly this reason.
             $moduleSource = (string)@file_get_contents($path);
-            // The assumptions are part of the identity: code built under them
-            // is not interchangeable with code built without them.
-            $moduleKey = hash('xxh128', $moduleSource . '|' . ($this->assume->standardBuiltins ? 'sb' : ''));
+            $moduleKey = hash('xxh128', $moduleSource);
+            $this->moduleKeys[$path] = $moduleKey;
             // Module-wide proofs a per-function emitter cannot make itself.
             // Only the build needs the proofs; run mode just matches IDs, and
             // scanning a 240 KB module there would be pure boot cost.
@@ -119,12 +131,7 @@ final class NodeIntegration
                     return null;
                 }
                 $this->seen[$path]++;
-                $id = sprintf(
-                    'aot:%s#%d%s',
-                    $moduleKey,
-                    $counter++,
-                    $ctx->name !== '' ? ':' . preg_replace('/[^A-Za-z0-9_$]/', '', $ctx->name) : ''
-                );
+                $id = ModuleLoader::aotFunctionId($moduleKey, $counter++, $ctx->name);
                 if (!$this->emit) {
                     // Run mode: the native either came from the generated file
                     // or it did not, and JSFunction falls back to bytecode when
@@ -193,6 +200,48 @@ final class NodeIntegration
         }
         file_put_contents($path, $this->php());
         return $path;
+    }
+
+    /**
+     * Write one file per compiled module into an AOT cache directory
+     * (`NodeHost::AOT_CACHE_SUBDIR` by convention), named by exactly the
+     * content-hash key `ModuleLoader::aotLookupHook()` looks for — so a plain
+     * `require()` against that directory, from any process, picks these up
+     * with no further wiring. This is `phpjs-aot`'s (the CLI) own job; `attach()`
+     * still has to run first to populate `$this->emitted`/`$this->moduleKeys`.
+     *
+     * Unlike `writePhp()`, a module that converted nothing writes no file at
+     * all — an empty array is a valid but pointless artifact, and skipping it
+     * keeps a cache directory's contents equal to "modules with at least one
+     * native", which is also exactly what a directory listing of it means.
+     *
+     * @return array<string, string> module path => the cache file written for it
+     */
+    public function writePerModule(string $cacheDir): array
+    {
+        if (!is_dir($cacheDir) && !mkdir($cacheDir, 0o777, true) && !is_dir($cacheDir)) {
+            throw new \RuntimeException("Cannot create $cacheDir");
+        }
+        $printer = new PrettyPrinter\Standard(['shortArraySyntax' => true]);
+        $written = [];
+        foreach ($this->moduleKeys as $path => $moduleKey) {
+            $prefix = "aot:$moduleKey#";
+            $items = [];
+            foreach ($this->emitted as $id => $closure) {
+                if (str_starts_with($id, $prefix)) {
+                    $items[] = new P\ArrayItem($closure, new \PhpParser\Node\Scalar\String_($id));
+                }
+            }
+            if ($items === []) {
+                continue;
+            }
+            $file = rtrim($cacheDir, '/') . '/' . $moduleKey . '.php';
+            file_put_contents($file, "<?php\n\n// Generated by php-js-transpile. Do not edit.\n\n"
+                . $printer->prettyPrint([new Stmt\Return_(new Expr\Array_($items, ['kind' => Expr\Array_::KIND_SHORT]))])
+                . "\n");
+            $written[$path] = $file;
+        }
+        return $written;
     }
 
     /** The whole generated corpus as one loadable PHP file. */

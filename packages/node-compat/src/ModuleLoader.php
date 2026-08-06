@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace PhpJs\Node;
 
+use PhpJs\Builtins\BuiltinRegistry;
 use PhpJs\Compiler\Compiler;
+use PhpJs\Compiler\Ctx;
 use PhpJs\Runtime\Conversions;
 use PhpJs\Runtime\JSNativeFunction;
 use PhpJs\Runtime\JSObject;
@@ -19,6 +21,16 @@ use PhpJs\Vm\Vm;
  * of ordinary function scope with no engine support required. The `require`
  * handed to a module is a native function whose $data is just its directory
  * string, keeping the JS heap free of PHP objects (DESIGN.md §11.3).
+ *
+ * Ahead-of-time PHP (packages/php-transpile, docs/aot-php.md) is transparent
+ * from here: nothing that merely `require`s a module needs to know it exists.
+ * `$onCompileModule` remains the explicit extension point a *build* installs to
+ * emit new natives, but the default path — no hook installed — still checks
+ * `$aotCacheDir` for an already-compiled artifact matching this exact module's
+ * content and uses it if present, the same as `$onCompileModule` would, falling
+ * back to ordinary bytecode when there is none. That is the whole contract: an
+ * AOT cache is a directory that happens to have the right files in it, and
+ * `require` either finds a match or it does not.
  */
 final class ModuleLoader
 {
@@ -37,8 +49,9 @@ final class ModuleLoader
      * Optional per-module compile hook, passed straight to `Compiler::compile`
      * as its per-function callback. The ahead-of-time PHP compiler
      * (packages/php-transpile, docs/aot-php.md) installs one here to claim the
-     * functions it can compile; nothing else uses it, and with none installed
-     * the loader behaves exactly as before.
+     * functions it can compile *and generate PHP for them*. Set only during a
+     * build; leave it null everywhere else and `$aotCacheDir` (if any) drives
+     * the same stamping instead, read-only.
      *
      * `fn(string $path): ?callable` — given a module path, return the hook for
      * that module, or null to compile it as ordinary bytecode.
@@ -46,10 +59,23 @@ final class ModuleLoader
      */
     public $onCompileModule = null;
 
+    /**
+     * Where to look for an already-compiled `{contentHash}.php` for a module
+     * this loader is about to compile. Null disables the lookup entirely, at
+     * zero cost — the exact behavior before this existed.
+     */
+    private ?string $aotCacheDir = null;
+
     public function __construct(
         private readonly NodeHost $host,
         private readonly string $root,
     ) {
+    }
+
+    /** @param ?string $dir a directory of `{contentHash}.php` files, or null to disable the lookup */
+    public function setAotCacheDir(?string $dir): void
+    {
+        $this->aotCacheDir = $dir;
     }
 
     public static function entries(): array
@@ -249,11 +275,84 @@ final class ModuleLoader
         $wrapped = "(function (exports, require, module, __filename, __dirname) {"
             . $source . "\n})";
         $started = microtime(true);
-        $hook = $this->onCompileModule === null ? null : ($this->onCompileModule)($path);
+        $hook = match (true) {
+            $this->onCompileModule !== null => ($this->onCompileModule)($path),
+            $this->aotCacheDir !== null => $this->aotLookupHook($source),
+            default => null,
+        };
         $template = Compiler::compile($wrapped, $hook);
         $this->compileSeconds += microtime(true) - $started;
         $this->compileCount++;
         return $this->templates[$path] = $template;
+    }
+
+    /**
+     * The default `onCompileModule`-shaped hook when no build has installed
+     * its own: content-hash this module, and if `$aotCacheDir` has an
+     * artifact under that hash, load it (once, lazily — most compiled
+     * modules will never actually be looked up if nothing there matches) and
+     * stamp whichever function IDs it actually provided. Everything else
+     * returns null and compiles as bytecode, same as if no cache existed.
+     */
+    private function aotLookupHook(string $moduleSource): callable
+    {
+        $moduleKey = hash('xxh128', $moduleSource);
+        $cacheFile = $this->aotCacheDir . '/' . $moduleKey . '.php';
+        $checked = false;
+        $counter = 0;
+        return function (object $node, Ctx $ctx, bool $isProgram) use ($cacheFile, $moduleKey, &$checked, &$counter): ?string {
+            if ($isProgram) {
+                return null;
+            }
+            $id = self::aotFunctionId($moduleKey, $counter++, $ctx->name);
+            if (!$checked) {
+                $checked = true;
+                self::loadAotArtifact($cacheFile);
+            }
+            return BuiltinRegistry::hasHost($id) ? $id : null;
+        };
+    }
+
+    private static function loadAotArtifact(string $file): void
+    {
+        if (!is_file($file)) {
+            return;
+        }
+        $entries = require $file;
+        if (!is_array($entries)) {
+            return;
+        }
+        // Loading the same artifact twice in one process is not an error --
+        // BuiltinRegistry::registerHost() itself would reject a genuine ID
+        // collision, so only the not-yet-seen ones are worth offering it.
+        $fresh = [];
+        foreach ($entries as $id => $fn) {
+            if (!BuiltinRegistry::hasHost($id)) {
+                $fresh[$id] = $fn;
+            }
+        }
+        if ($fresh !== []) {
+            BuiltinRegistry::registerHost($fresh);
+        }
+    }
+
+    /**
+     * The native-ID format an AOT cache artifact's functions must be keyed
+     * by for `aotLookupHook()` above to ever find them. `php-transpile`'s
+     * `NodeIntegration` produces exactly these IDs when compiling for this
+     * loader's cache directory rather than for a single combined build file,
+     * so the two stay in agreement without either package depending on the
+     * other's internals -- node-compat owns the format, php-transpile calls
+     * this method to use it (the dependency already runs that direction).
+     */
+    public static function aotFunctionId(string $moduleKey, int $counter, string $name): string
+    {
+        return sprintf(
+            'aot:%s#%d%s',
+            $moduleKey,
+            $counter,
+            $name !== '' ? ':' . preg_replace('/[^A-Za-z0-9_$]/', '', $name) : ''
+        );
     }
 
     /** Node's resolution algorithm, minus conditional exports and ESM. */

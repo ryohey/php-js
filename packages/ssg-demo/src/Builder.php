@@ -4,10 +4,9 @@ declare(strict_types=1);
 
 namespace PhpJs\Ssg;
 
+use PhpJs\Aot\LibraryCompiler;
 use PhpJs\Node\NodeHost;
 use PhpJs\Runtime\Conversions;
-use PhpJs\Transpile\Assumptions;
-use PhpJs\Transpile\NodeIntegration;
 
 /**
  * The library build step: React, ahead of any request.
@@ -27,12 +26,18 @@ use PhpJs\Transpile\NodeIntegration;
  * request compile and cache the site itself — the shape `bin/phpjs-ssg serve`
  * already gives the *rendered HTML* (`PageCache`), one layer lower.
  *
- * Two sets of module templates come out of it, not one. `aot` templates carry
- * the `nativeId`s the ahead-of-time compiler stamped on them; `bytecode`
- * templates carry none. That is what lets the demo serve the same page both ways
- * inside a single long-lived process: native functions are registered
- * process-wide and cannot be unregistered, but a template that was never
- * stamped will never reach them.
+ * The ahead-of-time-PHP half of this is not this class's own concern anymore.
+ * `LibraryCompiler` (`packages/aot`) is the generic version of what used to
+ * live here directly: it does not know React exists, only that
+ * `LIBRARY_ENTRIES` names some `node_modules` specifiers to compile, and it
+ * writes its result to `node_modules/.phpjs-aot/`, the directory any
+ * `NodeHost` (this one included, right below) checks on every ordinary
+ * `require()` with no further wiring (`ModuleLoader::aotLookupHook()`,
+ * packages/node-compat). This class's own job shrinks to: run that, then
+ * compile two *template* sets from it — `aot` (native IDs stamped, because
+ * the cache now exists when this compiles) and `bytecode` (a second host with
+ * the lookup explicitly disabled) — so the demo can still show the same page
+ * both ways.
  */
 final class Builder
 {
@@ -102,44 +107,48 @@ final class Builder
             self::size($polyfillPath)
         ));
 
-        // Pass 1: ahead-of-time compiled. The hook stamps native IDs onto the
-        // templates as they are compiled, so the templates and the generated
-        // PHP come out of the same pass and cannot disagree.
+        // Ahead-of-time PHP: generic, not React-specific (LibraryCompiler has
+        // no idea what LIBRARY_ENTRIES names). Writes into
+        // node_modules/.phpjs-aot/, one file per module reached.
+        $started = microtime(true);
+        $cacheDir = $this->appRoot . '/' . NodeHost::AOT_CACHE_SUBDIR;
+        $aot = (new LibraryCompiler())->compile($this->appRoot, self::LIBRARY_ENTRIES, $cacheDir);
+        $log(sprintf(
+            'ahead-of-time PHP   %6.0f ms -> %s (%d files), %d / %d functions',
+            (microtime(true) - $started) * 1000,
+            $this->relative($cacheDir),
+            $aot['files'],
+            $aot['converted'],
+            $aot['seen']
+        ));
+
+        // "aot" templates: an ordinary host, constructed *after* the cache
+        // directory above exists, so it auto-discovers it -- every module
+        // compiled here gets whatever native IDs the cache has for it
+        // stamped on transparently, no hook of this class's own to attach.
         $started = microtime(true);
         $host = $this->freshHost();
-        // Only what a lockfile pins gets compiled into PHP; the site's own
-        // JavaScript stays interpreted. Trust explains why, and a test holds it.
-        $aot = NodeIntegration::forBuild(Trust::filter(), Assumptions::closedBuild());
-        $aot->attach($host);
         foreach (self::LIBRARY_ENTRIES as $specifier) {
             $host->requireModule($specifier);
         }
         $vm = $host->vm();
         $reactVersion = Conversions::toString($vm, $host->requireModule('react')->get('version', $vm));
         $aotTemplates = $this->writeArray('templates.aot.php', $host->modules->compiledTemplates());
-        $natives = $aot->writePhp($this->buildDir . '/natives.php');
         $log(sprintf(
-            'ahead-of-time PHP   %6.0f ms -> %s (%s), %d / %d functions',
+            'templates (aot)     %6.0f ms -> %s (%s), %d modules',
             (microtime(true) - $started) * 1000,
-            basename($natives),
-            self::size($natives),
-            $aot->totalConverted(),
-            $aot->totalSeen()
-        ));
-        $log(sprintf(
-            'templates (aot)              -> %s (%s), %d modules',
             basename($aotTemplates),
             self::size($aotTemplates),
             count($host->modules->compiledTemplates())
         ));
 
-        // Pass 2: no hook, so nothing is stamped and these templates can only
-        // ever run as bytecode. A separate host, because a template is compiled
-        // once per loader and the first pass already cached the stamped ones.
-        // AppCompiler preloads this set too, which is what lets requiring the
-        // app skip re-parsing React entirely.
+        // "bytecode" templates: the lookup explicitly disabled, so nothing
+        // is stamped and these can only ever run as bytecode, regardless of
+        // what node_modules/.phpjs-aot/ has in it. AppCompiler preloads the
+        // *aot* set instead of this one, which is what lets requiring the
+        // app skip re-parsing React entirely while still running it fast.
         $started = microtime(true);
-        $plainHost = $this->freshHost();
+        $plainHost = $this->freshHost(aotCacheDir: false);
         foreach (self::LIBRARY_ENTRIES as $specifier) {
             $plainHost->requireModule($specifier);
         }
@@ -156,11 +165,11 @@ final class Builder
             'appRoot' => $this->appRoot,
             'reactVersion' => $reactVersion,
             'polyfill' => basename($polyfillPath),
-            'converted' => $aot->totalConverted(),
-            'seen' => $aot->totalSeen(),
-            'refusals' => $aot->refusalSummary(),
+            'converted' => $aot['converted'],
+            'seen' => $aot['seen'],
+            'refusals' => $aot['refusals'],
             'engines' => [
-                'aot' => ['templates' => basename($aotTemplates), 'natives' => basename($natives)],
+                'aot' => ['templates' => basename($aotTemplates)],
                 'bytecode' => ['templates' => basename($plainTemplates)],
             ],
         ];
@@ -170,9 +179,9 @@ final class Builder
         return $manifest;
     }
 
-    private function freshHost(): NodeHost
+    private function freshHost(string|false|null $aotCacheDir = null): NodeHost
     {
-        return new NodeHost($this->appRoot, captureOutput: true);
+        return new NodeHost($this->appRoot, captureOutput: true, aotCacheDir: $aotCacheDir);
     }
 
     /** @param array<mixed> $value */
@@ -183,6 +192,12 @@ final class Builder
         file_put_contents($path, "<?php\n\n// Generated by phpjs-ssg build. Do not edit.\n\nreturn "
             . var_export($value, true) . ";\n");
         return $path;
+    }
+
+    private function relative(string $path): string
+    {
+        $root = rtrim($this->appRoot, '/') . '/';
+        return str_starts_with($path, $root) ? substr($path, strlen($root)) : $path;
     }
 
     private static function size(string $path): string

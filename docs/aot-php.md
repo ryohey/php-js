@@ -1,6 +1,7 @@
 # Ahead-of-time PHP for the hot path
 
-Status: **phases 0, 0.5, 1, 1.5, 2, 2.5 and 3 done.** This adapts an
+Status: **phases 0, 0.5, 1, 1.5, 2, 2.5 and 3 done — and phase 3's own file
+path generalized past React specifically, §4.** This adapts an
 externally drafted "hot-path transpilation" strategy to what this runtime
 actually is and what it actually measures. Read DESIGN.md first; its §2
 (compilation pipeline), §5 (object model) and §11 (shared-nothing / opcache)
@@ -274,21 +275,48 @@ concatenates strings — but that was never the risk worth naming.
 
 Core stays clean; this follows the existing split.
 
-- **`packages/php-transpile`** (new) — build-time only. Depends on
-  `nikic/php-parser`. Reads JS with the core `Compiler`'s analysis pass, emits
-  PHP files plus a registry manifest. Never loaded at render time.
-- **`packages/node-compat`** — gains the native ES6-library functions that are
-  currently JS polyfills, and a `crypto` stub. This is phase 0 and needs no new
-  package.
-- **core** — gains at most `JSTranspiledFunction`, a `nativeId` template field,
-  and three lines in `NEW_FUNC`. Nothing else.
+- **`packages/php-transpile`** — build-time only. Depends on `nikic/php-parser`.
+  Reads JS with the core `Compiler`'s analysis pass, emits PHP. Never loaded
+  at render time. `NodeIntegration` is the piece that hooks module compilation
+  and does the emitting; it has no opinion about *which* modules to compile
+  (that is `Trust`'s call, wherever it is invoked from) or where the result
+  ends up (`writePhp()`/`php()` for one combined file, `writePerModule()` for
+  an AOT cache directory — see below).
+- **`packages/aot`** — build-time only, and the only *generic* piece: a CLI
+  (`phpjs-aot build`) plus a `LibraryCompiler` class that reads a small JSON
+  manifest naming `node_modules` specifiers, runs `php-transpile` over them,
+  and writes the result into an AOT cache directory. It has no idea React (or
+  any other specific library) exists — a project names what it wants compiled,
+  the same way `packages/ssg-demo` does for React.
+- **`packages/node-compat`** — gained the native ES6-library functions that
+  were JS polyfills (phase 0), and `ModuleLoader` gained the *consuming* half
+  of the AOT cache: on every `require()`, if no build hook is explicitly
+  attached, it checks the cache directory (by the module's own content hash)
+  and stamps whatever native IDs it finds — transparently, with no dependency
+  on `php-transpile` at all (registering an already-compiled `.php` file needs
+  none of the emitter). This is what makes AOT invisible to a host: a
+  `NodeHost` constructed against a project root where the conventional cache
+  directory happens to exist just goes faster, and one where it does not
+  behaves exactly as if AOT never existed.
+- **core** — gained nothing beyond what already existed. `nativeId` on a
+  function template and `BuiltinRegistry` (§11.3) were already the whole
+  mechanism generated PHP substitutes into; the AOT cache is entirely a
+  node-compat/php-transpile/aot-package concern layered on top.
 
-Generated PHP is written one function per file, named by content hash
-(`hash('xxh128', $jsSource)`), and loaded through `opcache.preload` at server
-start. Content-hash naming also gives correct invalidation when React is
-upgraded, which matters more here than the draft's path-traversal argument —
-build input is trusted, but a stale artifact silently rendering wrong HTML is
-the realistic failure.
+Generated PHP is written **one file per module** (not per function — a
+module's several functions share one array, since they are always compiled
+and looked up together), named by that module's own content hash
+(`hash('xxh128', $moduleSource)`), and `ModuleLoader::aotLookupHook()` loads
+one lazily, exactly when a `require()` for that exact module happens — not
+through `opcache.preload`, which this arrived at a simpler alternative to:
+opcache already caches the file the first ordinary `require` pulls in, with
+no separate preload step or server-start hook to keep in sync with what a
+build actually produced. Content-hash naming still gives correct invalidation
+when a library is upgraded, for the same reason as before — build input is
+trusted, but a stale artifact silently rendering wrong HTML is the realistic
+failure — except now that safety is a directory-listing property (an upgraded
+module's hash no longer matches any file there) rather than something a
+combined manifest has to get right.
 
 ## 5. Verification
 
@@ -484,12 +512,17 @@ was not compiled ahead of time, which here means the application's own.
 Nothing in this table is on the render's hot path any more. Phase 4 should be
 judged on the application's components, not on React's remainder.
 
-**Phase 3 — opcache wiring. → DONE for the file path; preload untested.**
-`NodeIntegration::forBuild()` emits, `writePhp()` writes, `Artifact::register()`
-`require`s, and `NodeIntegration::forRun()` stamps the IDs without recompiling.
-Native IDs are derived from the module's *contents*, so a build and a later run
-agree, and an upgraded dependency stops matching its stale natives instead of
-binding them to the wrong functions. Confirmed with `opcache_get_status()`:
+**Phase 3 — opcache wiring. → DONE, and no longer opt-in per project.**
+`NodeIntegration::forBuild()` emits, `writePerModule()` (or `writePhp()`, for
+one combined file) writes, and on the *reading* side a plain `require()` — no
+`Artifact::register()`, no `NodeIntegration::forRun()`, no per-project wiring
+at all — picks a matching artifact up on its own
+(`ModuleLoader::aotLookupHook()`, packages/node-compat, §4). Native IDs are
+still derived from the module's *contents*, so a build and a later run agree,
+and an upgraded dependency stops matching its stale natives instead of
+binding them to the wrong functions; that property is what made this
+generalizable to any `require()`, not only ones a specific project's own
+build script chose to instrument. Confirmed with `opcache_get_status()`:
 966 KB of generated code resident in shared memory.
 
 Two results, one expected and one not — see §11.

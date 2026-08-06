@@ -16,10 +16,12 @@ use PhpJs\Runtime\Conversions;
  * stripping (`Sucrase`) and bytecode compilation happen here instead of in
  * `bin/phpjs-ssg build`, so editing `app/` never requires re-running that
  * (comparatively expensive, React-sized) step, and a server can ship with only
- * the library prebuilt. The library's own bytecode templates are preloaded
- * first, so requiring the app — which transitively requires React — never
- * re-parses it; only the app's own files end up newly compiled, and only
- * those are what gets cached here (`Builder::run()` already cached React's).
+ * the library prebuilt. The library's own (already AOT-stamped) templates are
+ * preloaded first, so requiring the app — which transitively requires React —
+ * never re-parses it and still gets React's own ahead-of-time PHP; only the
+ * app's own files end up newly compiled, and only those are what gets cached
+ * here (`Builder::run()` already cached React's, in
+ * `node_modules/.phpjs-aot/`).
  *
  * Concurrency is the same problem `PageCache` already solves for rendered
  * HTML, one layer down: a burst of first requests must compile once, not
@@ -95,7 +97,15 @@ final class AppCompiler
             throw new \RuntimeException("No library build at {$this->buildDir} — run `bin/phpjs-ssg build` first.");
         }
         $libraryManifest = require $libraryManifestFile;
-        $libraryTemplates = require $this->buildDir . '/' . $libraryManifest['engines']['bytecode']['templates'];
+        // The *aot* set, not bytecode -- native IDs stamped, because
+        // Builder::run() compiled it after node_modules/.phpjs-aot/ already
+        // existed. Preloading it skips both the re-parse *and* the
+        // interpretation React's own functions would otherwise cost; the
+        // registerAotCacheDir() call is what makes the stamps resolve to
+        // something, since a preloaded template never reaches the
+        // compile-time hook that would otherwise load them lazily.
+        $libraryTemplates = require $this->buildDir . '/' . $libraryManifest['engines']['aot']['templates'];
+        NodeHost::registerAotCacheDir($this->appRoot . '/' . NodeHost::AOT_CACHE_SUBDIR);
         NodeHost::preloadPolyfillTemplate(require $this->buildDir . '/' . $libraryManifest['polyfill']);
 
         // Type stripping: TSX/TS under app/ -> plain CJS under
@@ -108,11 +118,13 @@ final class AppCompiler
         // $buildDir somewhere else for the generated PHP files.
         (new Sucrase($this->appRoot, $this->appRoot . '/app', $this->appRoot . '/build/app-cjs'))->run();
 
-        // No AOT hook: app code stays interpreted bytecode always (Trust
-        // §"why the site's own code stays interpreted"). Preloading the
-        // library's own bytecode templates first is what keeps requiring the
-        // app — which transitively requires React — from re-parsing it.
-        $host = new NodeHost($this->appRoot, captureOutput: true);
+        // aotCacheDir: false -- app code stays interpreted bytecode always
+        // (Trust §"why the site's own code stays interpreted"), enforced
+        // here rather than left to the coincidence that none of its content
+        // hashes could ever match an artifact in the library's own cache.
+        // React itself still runs fast: its templates arrived preloaded
+        // above, already stamped, natives already registered.
+        $host = new NodeHost($this->appRoot, captureOutput: true, aotCacheDir: false);
         $host->modules->preloadTemplates($libraryTemplates);
         $vm = $host->vm();
         $entry = $host->requireModule($this->entry);
