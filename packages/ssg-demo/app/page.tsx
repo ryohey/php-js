@@ -1,8 +1,9 @@
-import React from 'react';
+import { features } from './_components/content';
 
-import { features } from '../content';
+export const metadata = { title: 'Home' };
 
-export function Home() {
+
+export default function Home() {
   return (
     <>
       <section className="hero">

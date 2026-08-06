@@ -183,16 +183,24 @@ in its own composer package:
   both its compiled template and whatever functions converted to native PHP.
   Nothing here is React-specific; React is just the one library this repo's
   own demo happens to list.
+- [`packages/phext`](packages/phext) — a framework in the shape of Next.js's
+  App Router: the `app/` directory is the route table (`page.tsx`, nested
+  `layout.tsx`, `[slug]` segments, `not-found.tsx`), pages export a default
+  component plus optional `metadata` and `generateStaticParams()`, and a page
+  cache does incremental static regeneration by TTL. No
+  stale-while-revalidate: that needs a background worker and PHP is
+  shared-nothing. Its README lists what it refuses, by name.
+- [`packages/phext-cli`](packages/phext-cli) — the `phext` binary: `build`,
+  `start`, `export`, `routes`, `cache:clear`. The only package a site
+  depends on, the way an app depends on `next` and not on Next.js's
+  internals.
 - [`packages/react-ssr-bench`](packages/react-ssr-bench) — renders a React app
   server-side from React's own published CommonJS build, asserts the HTML is
   byte-identical to Node, and reports boot and render separately.
-- [`packages/ssg-demo`](packages/ssg-demo) — a small site written in TypeScript
-  and JSX, rendered to HTML by React inside PHP. `bin/phpjs-ssg build` compiles
-  only React (via `packages/aot`); the site's own `app/*.tsx` is required
-  directly (stripped transparently by `packages/strip-types`) and compiles
-  itself on the first render that needs it, staying cached from then on.
-  `phpjs-ssg package` assembles a 3.1 MB render-only tree you can ship inside
-  a plugin.
+- [`packages/ssg-demo`](packages/ssg-demo) — a small phext site: TypeScript,
+  JSX, React 19, and **no PHP of its own at all** — `app/`, `public/`, and two
+  manifests. It used to carry ~900 lines of bespoke PHP; that is now phext,
+  which is what those packages exist for.
 
 ## Performance
 

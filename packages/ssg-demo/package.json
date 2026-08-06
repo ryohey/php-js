@@ -1,9 +1,14 @@
 {
-  "name": "phpjs-ssg-demo",
+  "name": "phext-ssg-demo",
   "private": true,
-  "description": "TSX sources for the php-js static-site-generation demo, type-stripped by packages/strip-types running inside php-js itself",
+  "description": "A small React site rendered by php-js, built and served with phext",
   "scripts": {
-    "build": "bin/phpjs-ssg build"
+    "build": "phext build",
+    "start": "phext start",
+    "export": "phext export"
+  },
+  "phext": {
+    "cacheDir": "public/cache"
   },
   "dependencies": {
     "react": "^19.0.0",

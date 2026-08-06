@@ -1,8 +1,8 @@
-import React from 'react';
+import { about } from '../_components/content';
 
-import { about } from '../content';
+export const metadata = { title: 'About' };
 
-export function About() {
+export default function About() {
   return (
     <section className="prose">
       <h1>About</h1>
@@ -19,18 +19,6 @@ export function About() {
           </div>
         ))}
       </dl>
-    </section>
-  );
-}
-
-export function NotFound({ path }: { path: string }) {
-  return (
-    <section className="prose">
-      <h1>Not found</h1>
-      <p className="lede">There is no page at {path}.</p>
-      <p>
-        <a href="/">Back to the home page</a>
-      </p>
     </section>
   );
 }

@@ -1,21 +1,15 @@
-import React from 'react';
+import { nav, site } from './_components/content';
 
-import { nav, site } from '../content';
+export const metadata = {
+  title: site.name,
+  description: site.tagline,
+};
 
-/**
- * The id of the element the host fills in with its timings.
- *
- * Rendered empty on purpose: only the host knows how long the render took, so
- * it substitutes its own markup into this element afterwards. A deployment that
- * does not want a toolbar just leaves the empty element alone.
- */
-export const METRICS_ID = 'phpjs-metrics';
-
-function Nav({ path }: { path: string }) {
+function Nav({ pathname }: { pathname: string }) {
   return (
     <nav className="nav">
       {nav.map((item) => {
-        const current = item.href === path;
+        const current = item.href === pathname;
         return (
           <a
             key={item.href}
@@ -31,26 +25,27 @@ function Nav({ path }: { path: string }) {
   );
 }
 
-export interface LayoutProps {
-  title: string;
-  description?: string;
-  path: string;
-  children: React.ReactNode;
-}
-
 /**
  * The whole document, React's output all the way out to `<html>` — the browser
  * receives markup React produced, not a PHP template wrapped around it.
+ *
+ * `pathname` is a phext addition: Next.js does not hand a server layout the
+ * current path, which is why highlighting the active link there normally needs
+ * a client component. This site has no client JavaScript at all.
  */
-export function Layout({ title, description, path, children }: LayoutProps) {
+export default function RootLayout({
+  children,
+  pathname,
+}: {
+  children: React.ReactNode;
+  pathname: string;
+}) {
   return (
     <html lang="en">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>{`${title} — ${site.name}`}</title>
-        <meta name="description" content={description ?? site.tagline} />
-        <link rel="stylesheet" href="/assets/site.css" />
+        <link rel="stylesheet" href="/site.css" />
         {/* Inline, so a demo run produces no 404 for a file nobody shipped. */}
         <link
           rel="icon"
@@ -66,13 +61,12 @@ export function Layout({ title, description, path, children }: LayoutProps) {
         />
       </head>
       <body>
-        <div id={METRICS_ID} />
         <header className="masthead">
           <a className="brand" href="/">
             {site.name}
           </a>
           <p className="tagline">{site.tagline}</p>
-          <Nav path={path} />
+          <Nav pathname={pathname} />
         </header>
         <main className="main">{children}</main>
         <footer className="footer">

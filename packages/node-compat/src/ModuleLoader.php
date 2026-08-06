@@ -53,6 +53,8 @@ final class ModuleLoader
     private array $loading = [];
     /** @var array<string, array<string, mixed>> resolved path => compiled template */
     private array $templates = [];
+    /** @var array<string, string> resolved path => content hash, for modules this loader compiled */
+    private array $contentHashes = [];
     /** @var array<string, mixed> built-in module name => exports */
     private array $builtins = [];
 
@@ -89,7 +91,7 @@ final class ModuleLoader
      * `resolveAsFile()`'s probe list, so `require('./x')` finds `x.tsx` the
      * same way it already finds `x.js`.
      *
-     * @var array<string, callable(string $source, string $path): string>
+     * @var array<string, array{0: callable(string $source, string $path): string, 1: string}>
      */
     private array $sourceTransforms = [];
 
@@ -108,10 +110,17 @@ final class ModuleLoader
     /**
      * @param string $extension without the leading dot, e.g. `'tsx'`
      * @param callable(string $source, string $path): string $transform
+     * @param string $fingerprint anything that changes what `$transform`
+     *        produces from the same input — its version, its settings. It
+     *        goes into the cache key, so changing it invalidates exactly the
+     *        artifacts it should. Leaving it empty is a claim that the
+     *        transform's output depends on nothing but its input, and a
+     *        *wrong* such claim is silent: a stale artifact keeps being
+     *        served after the transform's behaviour changes.
      */
-    public function registerSourceTransform(string $extension, callable $transform): void
+    public function registerSourceTransform(string $extension, callable $transform, string $fingerprint = ''): void
     {
-        $this->sourceTransforms[$extension] = $transform;
+        $this->sourceTransforms[$extension] = [$transform, $fingerprint];
     }
 
     public static function entries(): array
@@ -306,19 +315,26 @@ final class ModuleLoader
             return $this->templates[$path];
         }
         $source ??= $this->host->fs->read($path);
-        $extension = pathinfo($path, PATHINFO_EXTENSION);
-        if (isset($this->sourceTransforms[$extension])) {
-            $source = ($this->sourceTransforms[$extension])($source, $path);
-        }
+        [$transform, $fingerprint] = $this->sourceTransforms[pathinfo($path, PATHINFO_EXTENSION)] ?? [null, ''];
+
+        // Keyed on the file as it is on disk, plus whatever fingerprint the
+        // transform declared -- never on the transform's *output*, which
+        // would have to be produced before the cache could be consulted. For
+        // TypeScript that means booting a whole second engine to strip a file
+        // whose compiled form is already sitting on disk, which costs about
+        // two seconds and defeats the entire point of having cached it.
+        //
+        // Hashing the file rather than the CommonJS wrapper around it is what
+        // keeps this in agreement with `php-transpile`, which hashes the file
+        // it read; a mismatch there is silent, and every lookup would miss.
+        $cacheKey = ArtifactCache::contentHash(
+            $fingerprint === '' ? $source : $source . "\0" . $fingerprint
+        );
 
         // A build hook takes precedence: it is generating natives, so it has
         // to see every function even if an artifact for this module exists.
-        //
-        // Hashed on the module's own source, not the CommonJS wrapper around
-        // it -- `php-transpile` hashes the file it read, and the two have to
-        // name the same artifact or every lookup silently misses.
         if ($this->onCompileModule === null && $this->aotCacheDir !== null) {
-            $cached = ArtifactCache::read($this->aotCacheDir, ArtifactCache::contentHash($source));
+            $cached = ArtifactCache::read($this->aotCacheDir, $cacheKey);
             if ($cached !== null) {
                 ArtifactCache::registerNatives($cached['natives']);
                 // Deliberately not counted as a compile: `compileCount` is how
@@ -327,11 +343,53 @@ final class ModuleLoader
             }
         }
 
+        if ($transform !== null) {
+            $source = $transform($source, $path);
+        }
+
         $started = microtime(true);
         $template = Compiler::compile(self::wrapAsModule($source), $this->onCompileModule !== null ? ($this->onCompileModule)($path) : null);
         $this->compileSeconds += microtime(true) - $started;
         $this->compileCount++;
+        // Remembered so a build can write this module's artifact under the
+        // same key a later `require()` will look it up by.
+        $this->contentHashes[$path] = $cacheKey;
         return $this->templates[$path] = $template;
+    }
+
+    /**
+     * Write the modules compiled so far into a cache directory, so a later
+     * process finds them instead of compiling them again.
+     *
+     * The counterpart of the lookup in `templateFor()`, and the reason a
+     * build step can make a request compile nothing at all. Only modules this
+     * loader actually compiled are written — one it read back from the cache
+     * is already there, and one that arrived through `preloadTemplates()` was
+     * never hashed.
+     *
+     * Artifacts are written with no natives. That is not a limitation to be
+     * fixed later: generating natives means generating PHP, which is
+     * `packages/php-transpile`'s job and carries a trust boundary
+     * (docs/aot-php.md) this class has no business crossing on its own. What
+     * this caches is bytecode, which is data.
+     *
+     * @param  null|callable(string): bool $accept decides per module path;
+     *         the default writes everything. A build that has already
+     *         produced *native* artifacts for its dependencies must exclude
+     *         them here, or this would overwrite those with natives-free
+     *         ones and silently undo the compilation.
+     * @return array<string, string> module path => the file written
+     */
+    public function cacheCompiledTemplates(string $cacheDir, ?callable $accept = null): array
+    {
+        $written = [];
+        foreach ($this->contentHashes as $path => $hash) {
+            if ($accept !== null && !$accept($path)) {
+                continue;
+            }
+            $written[$path] = ArtifactCache::write($cacheDir, $hash, $this->templates[$path]);
+        }
+        return $written;
     }
 
     /**

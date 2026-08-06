@@ -1,6 +1,6 @@
 import React from 'react';
 
-import { buildInventory, type InventoryItem } from '../content';
+import { buildInventory, type InventoryItem } from './content';
 
 function Badge({ tone, children }: { tone: string; children: React.ReactNode }) {
   return <span className={`badge badge-${tone}`}>{children}</span>;

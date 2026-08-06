@@ -43,9 +43,16 @@ final class Build
      * The deep `react-dom` path rather than `react-dom/server`, for the
      * reason `Phext\Renderer` documents: the package entry also pulls in the
      * streaming renderer, which needs Web APIs this runtime does not have.
+     *
+     * `react/jsx-runtime` is here because every page compiles into calls to
+     * it (the automatic JSX transform), and a module the *app* pulls in but
+     * no library entry names would otherwise be compiled on the first request
+     * and never cached — the app step below deliberately refuses to write
+     * anything under `node_modules`.
      */
     public const FRAMEWORK_LIBRARIES = [
         'react',
+        'react/jsx-runtime',
         'react-dom/cjs/react-dom-server-legacy.node.production.js',
     ];
 
@@ -55,7 +62,7 @@ final class Build
 
     /**
      * @param  null|callable(string): void $log
-     * @return array{libraries: int, converted: int, seen: int, pages: int, refusals: list<array{reason: string, count: int}>}
+     * @return array{libraries: int, converted: int, seen: int, pages: int, modules: list<string>, refusals: list<array{reason: string, count: int}>}
      */
     public function run(?callable $log = null): array
     {
@@ -80,21 +87,30 @@ final class Build
             $aot['files'],
         ));
 
-        // Compiling the pages now means the first request does not. They are
-        // reached by rendering them, which is also the only way to find out
-        // that they *can* be rendered -- a build that succeeds is a build
-        // whose every page is known to work.
+        // Rendering every page is how its modules get compiled, and also the
+        // only way to find out that they *can* be rendered -- a build that
+        // succeeds is a build whose every page is known to work.
         $started = microtime(true);
         $pages = 0;
         foreach ($this->app->paths() as $path) {
             $this->app->renderUncached($path);
             $pages++;
         }
+        // ...and then the compiled bytecode is written where the next process
+        // will find it. `node_modules` is excluded because `LibraryCompiler`
+        // has already written *native* artifacts for those, and these would
+        // overwrite them with natives-free ones -- silently undoing the
+        // ahead-of-time compilation a moment after doing it.
+        $modules = $this->app->host()->modules->cacheCompiledTemplates(
+            $cacheDir,
+            static fn (string $path): bool => !str_contains($path, '/node_modules/'),
+        );
         $log(sprintf(
-            '%-22s %6.0f ms  %d pages',
+            '%-22s %6.0f ms  %d pages, %d modules',
             'app',
             (microtime(true) - $started) * 1000,
             $pages,
+            count($modules),
         ));
 
         return [
@@ -102,6 +118,7 @@ final class Build
             'converted' => $aot['converted'],
             'seen' => $aot['seen'],
             'pages' => $pages,
+            'modules' => array_keys($modules),
             'refusals' => $aot['refusals'],
         ];
     }

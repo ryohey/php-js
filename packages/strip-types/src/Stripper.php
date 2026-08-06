@@ -44,6 +44,21 @@ final class Stripper
      */
     public static string $jsxRuntime = 'automatic';
 
+    /**
+     * Everything about *this* stripper that changes what it produces from the
+     * same input, for whoever is caching that output.
+     *
+     * The sucrase version belongs here because it is vendored and pinned:
+     * bumping it is a deliberate edit to this repository, and one that can
+     * change the emitted JavaScript. Anything else that becomes configurable
+     * has to be added here at the same time, or a cache keyed on this will
+     * keep serving output the new setting would not have produced.
+     */
+    public static function fingerprint(): string
+    {
+        return 'sucrase-3.35;jsx=' . self::$jsxRuntime;
+    }
+
     private static ?NodeHost $host = null;
     private static mixed $transformFn = null;
 

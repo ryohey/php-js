@@ -120,8 +120,13 @@ final class NodeHost implements Environment
         // One that did gets `.ts`/`.tsx`/`.jsx` support with no call of its
         // own to make -- `node --experimental-strip-types`'s own shape.
         if ($stripTypes && class_exists(\PhpJs\StripTypes\Stripper::class)) {
+            $fingerprint = \PhpJs\StripTypes\Stripper::fingerprint();
             foreach (\PhpJs\StripTypes\Stripper::EXTENSIONS as $extension) {
-                $this->modules->registerSourceTransform($extension, [\PhpJs\StripTypes\Stripper::class, 'strip']);
+                $this->modules->registerSourceTransform(
+                    $extension,
+                    [\PhpJs\StripTypes\Stripper::class, 'strip'],
+                    $fingerprint,
+                );
             }
         }
 

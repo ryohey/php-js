@@ -66,9 +66,12 @@ final class Renderer
         $realm = $this->host->realm();
         $this->boot();
 
+        $pathname = $match->route->pathFor($match->params);
+
         $props = $realm->newObject();
         $props->defineOwnData('params', self::toJs($realm, $match->params));
         $props->defineOwnData('searchParams', self::toJs($realm, $searchParams));
+        $props->defineOwnData('pathname', $pathname);
 
         $element = $this->host->call($this->createElement, null, [
             $this->componentIn($match->route->pageFile),
@@ -78,6 +81,12 @@ final class Renderer
         foreach (array_reverse($match->route->layouts) as $layout) {
             $layoutProps = $realm->newObject();
             $layoutProps->defineOwnData('params', self::toJs($realm, $match->params));
+            // Next.js does not give a server layout the current path, which is
+            // why highlighting the active nav link there needs a client
+            // component. A synchronous server render knows it for certain, so
+            // withholding it would be imitating a limitation rather than a
+            // design.
+            $layoutProps->defineOwnData('pathname', $pathname);
             $layoutProps->defineOwnData('children', $element);
             $element = $this->host->call($this->createElement, null, [
                 $this->componentIn($layout),
